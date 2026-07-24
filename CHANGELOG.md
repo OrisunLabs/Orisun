@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-07-24
+
 ### Breaking Changes
 
 - Replaced `ORISUN_PG_SCHEMAS` with `ORISUN_PG_ADMIN_SCHEMA`. PostgreSQL now
