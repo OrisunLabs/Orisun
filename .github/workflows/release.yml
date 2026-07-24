@@ -24,20 +24,19 @@ jobs:
   validate:
     name: Validate Release
     runs-on: ubuntu-latest
+    timeout-minutes: 95
+    permissions:
+      actions: read
+      contents: read
     outputs:
       version: ${{ steps.get_version.outputs.version }}
+      commit: ${{ steps.resolve_release.outputs.commit }}
+      short_commit: ${{ steps.resolve_release.outputs.short_commit }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.5'
-          check-latest: true
 
       - name: Extract version from tag
         id: get_version
@@ -48,11 +47,77 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set version environment variable
-        run: echo "VERSION=v${{ steps.get_version.outputs.version }}" >> $GITHUB_ENV
+      - name: Resolve release commit
+        id: resolve_release
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          set -euo pipefail
 
-      - name: Run tests
-        run: go test -p 1 -timeout 90m -v ./...
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RELEASE_REF="refs/tags/v${VERSION}"
+            git fetch --force origin "${RELEASE_REF}:${RELEASE_REF}"
+          else
+            RELEASE_REF="${GITHUB_REF}"
+          fi
+
+          git fetch origin main
+          RELEASE_COMMIT=$(git rev-parse "${RELEASE_REF}^{commit}")
+
+          if ! git merge-base --is-ancestor "${RELEASE_COMMIT}" origin/main; then
+            echo "::error::Release tag v${VERSION} does not point to a commit on main."
+            exit 1
+          fi
+
+          echo "commit=${RELEASE_COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "short_commit=${RELEASE_COMMIT:0:8}" >> "$GITHUB_OUTPUT"
+          echo "Release v${VERSION} resolves to ${RELEASE_COMMIT}."
+
+      - name: Require successful CI for release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.resolve_release.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 360); do
+            RESPONSE=$(gh api \
+              --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f head_sha="${RELEASE_COMMIT}" \
+              -f branch=main \
+              -f event=push \
+              -f per_page=10)
+            RUN=$(jq -c --arg sha "${RELEASE_COMMIT}" \
+              '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | reverse | .[0] // empty' \
+              <<<"${RESPONSE}")
+
+            if [ -z "${RUN}" ]; then
+              echo "Waiting for CI to start for ${RELEASE_COMMIT} (attempt ${attempt}/360)..."
+              sleep 15
+              continue
+            fi
+
+            STATUS=$(jq -r '.status' <<<"${RUN}")
+            CONCLUSION=$(jq -r '.conclusion // ""' <<<"${RUN}")
+            RUN_URL=$(jq -r '.html_url' <<<"${RUN}")
+
+            if [ "${STATUS}" = "completed" ]; then
+              if [ "${CONCLUSION}" = "success" ]; then
+                echo "Verified successful CI for ${RELEASE_COMMIT}: ${RUN_URL}"
+                exit 0
+              fi
+
+              echo "::error::CI for ${RELEASE_COMMIT} concluded ${CONCLUSION}: ${RUN_URL}"
+              exit 1
+            fi
+
+            echo "CI for ${RELEASE_COMMIT} is ${STATUS}; waiting: ${RUN_URL}"
+            sleep 15
+          done
+
+          echo "::error::Timed out waiting for CI on ${RELEASE_COMMIT}."
+          exit 1
 
   build-binaries:
     name: Build Binaries
@@ -117,6 +182,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -128,7 +195,7 @@ jobs:
         run: |
           mkdir -p build
           GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build \
-            -ldflags="-w -s -X 'github.com/OrisunLabs/Orisun/orisun.Version=v${{ needs.validate.outputs.version }}' -X 'github.com/OrisunLabs/Orisun/orisun.BuildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')' -X 'github.com/OrisunLabs/Orisun/orisun.GitCommit=${GITHUB_SHA::8}'" \
+            -ldflags="-w -s -X 'github.com/OrisunLabs/Orisun/orisun.Version=v${{ needs.validate.outputs.version }}' -X 'github.com/OrisunLabs/Orisun/orisun.BuildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')' -X 'github.com/OrisunLabs/Orisun/orisun.GitCommit=${{ needs.validate.outputs.short_commit }}'" \
             -o build/${{ matrix.binary }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension || '' }} \
             ${{ matrix.package }}
 
@@ -160,6 +227,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -181,7 +250,7 @@ jobs:
           mkdir -p build
           CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.arch }} go build \
             -tags foundationdb \
-            -ldflags="-X 'github.com/OrisunLabs/Orisun/orisun.Version=v${{ needs.validate.outputs.version }}' -X 'github.com/OrisunLabs/Orisun/orisun.BuildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')' -X 'github.com/OrisunLabs/Orisun/orisun.GitCommit=${GITHUB_SHA::8}'" \
+            -ldflags="-X 'github.com/OrisunLabs/Orisun/orisun.Version=v${{ needs.validate.outputs.version }}' -X 'github.com/OrisunLabs/Orisun/orisun.BuildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')' -X 'github.com/OrisunLabs/Orisun/orisun.GitCommit=${{ needs.validate.outputs.short_commit }}'" \
             -o build/orisun-fdb-linux-${{ matrix.arch }} \
             ./cmd/orisun-fdb
 
@@ -205,6 +274,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.validate.outputs.commit }}
           submodules: recursive
 
       - name: Download all artifacts
@@ -294,7 +364,7 @@ jobs:
           echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           name: Release v${{ needs.validate.outputs.version }}
           body_path: ${{ steps.release_notes.outputs.path }}
@@ -329,6 +399,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.validate.outputs.commit }}
           submodules: recursive
 
       - name: Set up Docker Buildx
@@ -353,7 +424,7 @@ jobs:
         id: docker_meta
         run: |
           echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
-          echo "git_commit=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+          echo "git_commit=${{ needs.validate.outputs.short_commit }}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker images
         uses: docker/build-push-action@v5
