@@ -40,7 +40,12 @@ PostgreSQL mode stores two ordering-related values:
 - `transaction_id`: Orisun's logical commit position, durable across PostgreSQL major upgrades and restore workflows.
 - `pg_xact_id`: PostgreSQL's internal transaction ID, used only as a current-cluster visibility marker so publishers and catch-up reads do not skip older open transactions.
 
-Do not use PostgreSQL internal transaction IDs as application cursors. From Orisun `0.3.1`, startup migrations remap older Orisun databases that exposed PostgreSQL transaction IDs as public commit positions. See [Positions and Ordering](./positions#postgresql-transaction-ids) and [Deployment](../operations/deployment#postgresql-major-upgrades).
+Do not use PostgreSQL internal transaction IDs as application cursors. The
+required `0.8.0` bridge release remaps older Orisun databases that exposed
+PostgreSQL transaction IDs as public commit positions; later releases no longer
+carry that one-time migration. See
+[Positions and Ordering](./positions#postgresql-transaction-ids) and
+[Deployment](../operations/deployment#postgresql-major-upgrades).
 
 ## FoundationDB
 
@@ -126,13 +131,18 @@ Choose SQLite when a single active node is acceptable and simplicity matters. It
 
 A boundary is a logical domain. Boundaries isolate event logs, indexes, publisher checkpoints, and projector checkpoints. The admin boundary contains the event-sourced boundary catalog. Use the Admin `CreateBoundary` RPC for both new and existing physical storage; set `existed_before_catalog` when adopting storage that predates the catalog definition. Active servers and embedded stores provision and begin publishing the boundary without a restart.
 
-PostgreSQL maps boundaries to schemas. `ORISUN_PG_SCHEMAS` bootstraps the admin boundary and is the one-time migration source for legacy mappings:
+PostgreSQL maps boundaries to schemas. `ORISUN_PG_ADMIN_SCHEMA` identifies the
+admin boundary's schema:
 
 ```bash
-ORISUN_PG_SCHEMAS=orders:public,payments:public,orisun_admin:admin
+ORISUN_PG_ADMIN_SCHEMA=admin
 ```
 
-New PostgreSQL boundaries specify their schema in the command placement and do not need to be added to the environment variable. SQLite maps each boundary to files and discovers legacy files during startup:
+Application boundary placements are durable catalog state. New PostgreSQL
+boundaries specify their schema in the command placement and do not need an
+environment mapping. Existing installations from before 0.8.0 must upgrade
+through 0.8.0 so its legacy `ORISUN_PG_SCHEMAS` importer can create that
+catalog. SQLite maps each catalogued boundary to files:
 
 ```text
 /var/lib/orisun/sqlite/orders.db

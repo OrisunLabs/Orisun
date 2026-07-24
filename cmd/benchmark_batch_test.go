@@ -172,7 +172,7 @@ func (bb *BatchBenchmark) startServer(b *testing.B) {
 	os.Setenv("ORISUN_PG_USER", "postgres")
 	os.Setenv("ORISUN_PG_PASSWORD", "postgres")
 	os.Setenv("ORISUN_PG_NAME", "orisun_test")
-	os.Setenv("ORISUN_PG_SCHEMAS", "benchmark_test:public,benchmark_admin:admin")
+	os.Setenv("ORISUN_PG_ADMIN_SCHEMA", "admin")
 	os.Setenv("ORISUN_ADMIN_BOUNDARY", "benchmark_admin")
 	os.Setenv("ORISUN_NATS_PORT", "14224")
 	os.Setenv("ORISUN_GRPC_PORT", "15006")

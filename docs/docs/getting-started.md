@@ -36,7 +36,7 @@ Use SQLite first when you want the shortest feedback loop:
 1. Download `orisun-sqlite` from [GitHub Releases](https://github.com/OrisunLabs/Orisun/releases).
 2. Start it with the [SQLite binary example](#run-sqlite-from-a-binary).
 3. Verify the server with [grpcurl](#verify-the-api).
-4. Create the `orders` boundary with [Create the SQLite boundary](#create-the-sqlite-boundary).
+4. Create the `orders` boundary with [Create the application boundary](#create-the-application-boundary).
 5. Save the first event with [Save your first event](#save-your-first-event).
 
 You can move to PostgreSQL later without changing the EventStore API.
@@ -145,7 +145,7 @@ ORISUN_PG_PORT=5432 \
 ORISUN_PG_USER=postgres \
 ORISUN_PG_PASSWORD='password@1' \
 ORISUN_PG_NAME=orisun \
-ORISUN_PG_SCHEMAS=orders:public,orisun_admin:admin \
+ORISUN_PG_ADMIN_SCHEMA=admin \
 ORISUN_ADMIN_BOUNDARY=orisun_admin \
 ORISUN_ADMIN_USERNAME=admin \
 ORISUN_ADMIN_PASSWORD=changeit \
@@ -180,7 +180,7 @@ ORISUN_PG_PORT=5433 \
 ORISUN_PG_USER=yugabyte \
 ORISUN_PG_PASSWORD=yugabyte \
 ORISUN_PG_NAME=yugabyte \
-ORISUN_PG_SCHEMAS=orders:public,orisun_admin:admin \
+ORISUN_PG_ADMIN_SCHEMA=admin \
 ORISUN_PG_LISTEN_ENABLED=true \
 ORISUN_ADMIN_BOUNDARY=orisun_admin \
 ORISUN_ADMIN_USERNAME=admin \
@@ -198,7 +198,7 @@ Create `docker-compose.yml`:
 ```yaml
 services:
   orisun:
-    image: orisunlabs/orisun:0.6.1-sqlite
+    image: orisunlabs/orisun:sqlite
     environment:
       ORISUN_BACKEND: sqlite
       ORISUN_SQLITE_DIR: /var/lib/orisun/sqlite
@@ -241,14 +241,14 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   orisun:
-    image: orisunlabs/orisun:0.6.1-pg
+    image: orisunlabs/orisun:pg
     environment:
       ORISUN_PG_HOST: postgres
       ORISUN_PG_PORT: 5432
       ORISUN_PG_USER: postgres
       ORISUN_PG_PASSWORD: password@1
       ORISUN_PG_NAME: orisun
-      ORISUN_PG_SCHEMAS: orders:public,orisun_admin:admin
+      ORISUN_PG_ADMIN_SCHEMA: admin
       ORISUN_ADMIN_BOUNDARY: orisun_admin
       ORISUN_ADMIN_USERNAME: admin
       ORISUN_ADMIN_PASSWORD: changeit
@@ -293,7 +293,7 @@ services:
       - yugabyte-data:/root/var
 
   orisun:
-    image: orisunlabs/orisun:0.6.1-pg
+    image: orisunlabs/orisun:pg
     environment:
       ORISUN_BACKEND: postgres
       ORISUN_PG_DIALECT: yugabyte
@@ -302,7 +302,7 @@ services:
       ORISUN_PG_USER: yugabyte
       ORISUN_PG_PASSWORD: yugabyte
       ORISUN_PG_NAME: yugabyte
-      ORISUN_PG_SCHEMAS: orders:public,orisun_admin:admin
+      ORISUN_PG_ADMIN_SCHEMA: admin
       ORISUN_PG_LISTEN_ENABLED: "true"
       ORISUN_ADMIN_BOUNDARY: orisun_admin
       ORISUN_ADMIN_USERNAME: admin
@@ -347,14 +347,21 @@ orisun.EventStore
 Change `ORISUN_ADMIN_PASSWORD` before production use.
 :::
 
-## Create the SQLite boundary
+## Create the application boundary
 
-A fresh SQLite directory contains only the admin boundary. Create the application
-boundary through the event-backed Admin API before writing application events:
+A fresh installation contains only the admin boundary. Create the application
+boundary through the event-backed Admin API before writing application events.
+Use the placement for the backend you started:
 
 ```bash
+# SQLite
 grpcurl -H "$AUTH" \
   -d '{"name":"orders","description":"Order events","placement":{"backend":"sqlite","namespace":"orders"}}' \
+  localhost:5005 orisun.Admin/CreateBoundary
+
+# PostgreSQL or YugabyteDB
+grpcurl -H "$AUTH" \
+  -d '{"name":"orders","description":"Order events","placement":{"backend":"postgres","namespace":"public"}}' \
   localhost:5005 orisun.Admin/CreateBoundary
 ```
 
@@ -369,10 +376,8 @@ grpcurl -H "$AUTH" \
   localhost:5005 orisun.Admin/GetBoundary
 ```
 
-The PostgreSQL and YugabyteDB examples below include `orders:public` as a
-legacy migration mapping, so startup imports and activates `orders`
-automatically. New deployments may instead keep only the admin mapping and call
-`CreateBoundary` with backend `postgres` and the desired schema namespace.
+PostgreSQL application placements are catalog state; they are not configured
+through environment mappings.
 
 ## Save your first event
 

@@ -39,21 +39,17 @@ func main() {
 }
 
 func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.JetStream, logger l.Logger) (server.Backend, error) {
-	boundaries, err := sqlitebackend.DiscoverBoundaryNames(config.Sqlite, config.Admin.Boundary)
-	if err != nil {
-		return server.Backend{}, err
-	}
 	runtime, err := sqlitebackend.InitializeSqliteDatabaseRuntime(
 		ctx,
 		config.Sqlite,
 		config.Admin,
-		boundaries,
 		js,
 		logger,
 	)
 	if err != nil {
 		return server.Backend{}, err
 	}
+	adminBoundary := sqlitebackend.AdminBoundaryDefinition(config.Admin)
 	return server.Backend{
 		SaveEvents:        runtime.SaveEvents,
 		GetEvents:         runtime.GetEvents,
@@ -63,7 +59,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		SignalProvider:    runtime.SignalProvider,
 		ProvisionBoundary: runtime.ProvisionBoundary,
 		InstallBoundary:   runtime.InstallBoundary,
-		InitialBoundaries: boundaries,
-		LegacyBoundaries:  sqlitebackend.LegacyBoundaryDefinitions(boundaries),
+		BootstrapBoundary: &adminBoundary,
 	}, nil
 }

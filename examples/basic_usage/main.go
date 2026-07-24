@@ -2,17 +2,17 @@ package main
 
 import (
 	"context"
-	"github.com/google/uuid"
-	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-
 	"time"
 
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	c "github.com/OrisunLabs/Orisun/config"
+	embeddedpg "github.com/OrisunLabs/Orisun/embedded/postgres"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/logging"
 	"github.com/OrisunLabs/Orisun/orisun"
-	pg "github.com/OrisunLabs/Orisun/postgres"
+	"github.com/google/uuid"
+	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func main() {
@@ -40,45 +40,42 @@ func main() {
 	config.Postgres.User = "postgres"
 	config.Postgres.Password = "password@1"
 	config.Postgres.ListenEnabled = false
-	// This low-level example uses the legacy mapping as a migration/bootstrap
-	// source. Server and embedded applications can instead call CreateBoundary.
-	config.Postgres.Schemas = "example:public," + config.Admin.Boundary + ":admin"
-	saveEvents, getEvents, lockProvider, adminDB, eventPublishing, _ := pg.InitializePostgresDatabase(ctx, config.Postgres, config.Admin, jetStream, logger)
-	boundaries := pg.BoundaryNames(config.Postgres.GetSchemaMapping())
-
-	// Initialize EventStore
-	_ = orisun.InitializeEventStore(
-		ctx,
-		config,
-		boundaries,
-		saveEvents,
-		getEvents,
-		lockProvider,
-		adminDB,
-		jetStream,
-		logger,
-	)
-
-	// Start polling events from the event store and publish them to NATS jetstream
-	orisun.StartEventPolling(ctx, config, boundaries, lockProvider, getEvents, jetStream, eventPublishing, func(boundary string) orisun.EventSignal {
-		return orisun.NewPollingSignal(25 * time.Millisecond)
-	}, logger)
-
-	// Create Orisun server instance for our examples
-	orisunServer, err := orisun.NewOrisunServer(
-		ctx,
-		saveEvents,
-		getEvents,
-		lockProvider, jetStream,
-		boundaries,
-		logger,
-	)
+	store, err := embeddedpg.Start(ctx, config, logger, embeddedpg.WithJetStream(jetStream))
 	if err != nil {
-		return
+		logger.Fatalf("Failed to start embedded Orisun: %v", err)
 	}
+	defer store.Close(context.Background())
 
 	// Example 1: Save events to the event store
 	logger.Info("=== Saving Events Example ===")
+	boundary := "example"
+	if _, err := store.CreateBoundary(ctx, boundarymodel.Definition{
+		Name:        boundary,
+		Description: "Example events",
+		Placement: boundarymodel.Placement{
+			Backend:   "postgres",
+			Namespace: "public",
+		},
+	}); err != nil {
+		logger.Fatalf("Failed to create boundary: %v", err)
+	}
+	for {
+		created, err := store.GetBoundary(ctx, boundary)
+		if err != nil {
+			logger.Fatalf("Failed to read boundary: %v", err)
+		}
+		if created.Status == boundarymodel.StatusActive {
+			break
+		}
+		if created.Status == boundarymodel.StatusFailed {
+			logger.Fatalf("Failed to provision boundary: %s", created.LastError)
+		}
+		select {
+		case <-ctx.Done():
+			logger.Fatal(ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 
 	// Create sample events
 	events := []orisun.EventWithMapTags{
@@ -111,10 +108,9 @@ func main() {
 	}
 
 	// Save events to the event store
-	boundary := "example"
 	position := orisun.NotExistsPosition()
 	// Save events
-	newPosition, err := orisunServer.SaveEvents(
+	newPosition, err := store.SaveEvents(
 		ctx,
 		events,
 		boundary,
@@ -138,7 +134,7 @@ func main() {
 		Boundary:  boundary,
 	}
 
-	readEvents, err := orisunServer.GetEvents(ctx, getEventsReq)
+	readEvents, err := store.GetEvents(ctx, getEventsReq)
 	if err != nil {
 		logger.Fatalf("Failed to get events: %v", err)
 	}
@@ -159,7 +155,7 @@ func main() {
 	// Start subscription in a separate goroutine to not block the main function
 	go func() {
 		logger.Info("Starting subscription to all events...")
-		err := orisunServer.SubscribeToEvents(
+		err := store.SubscribeToEvents(
 			ctx,
 			coreeventstore.SubscribeRequest{
 				Boundary:       boundary,

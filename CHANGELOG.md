@@ -4,11 +4,46 @@
 
 ### Breaking Changes
 
+- Replaced `ORISUN_PG_SCHEMAS` with `ORISUN_PG_ADMIN_SCHEMA`. PostgreSQL now
+  bootstraps only the admin boundary; application boundary placements are
+  replayed exclusively from the event-backed catalog. Existing installations
+  from 0.7.x or earlier must not skip 0.8.0, which imports the complete legacy
+  mapping. Startup now rejects a pre-existing PostgreSQL admin store without
+  that catalog migration.
+- Removed the tuple-return backend initialization functions. Go callers must
+  use `InitializePostgresDatabaseRuntime`, `InitializeSqliteDatabaseRuntime`,
+  `InitializeSqliteDatabaseRuntimeWithLockProvider`, or
+  `InitializeFoundationDBRuntime`.
+- Removed `InitialBoundaries` and the startup boundary-list parameters from
+  backend and EventStore runtime APIs. Startup bootstraps only the configured
+  admin boundary; application boundaries start exclusively through catalog
+  replay.
+
+### Changed
+
+- Removed post-0.8 legacy boundary reconciliation. Fresh installations
+  bootstrap only the admin boundary; all application boundaries are installed
+  by replaying the durable catalog.
+- Removed bridge-only storage migrations for legacy event columns, PostgreSQL
+  logical positions and checkpoints, and pre-0.8 SQLite metadata layouts.
+  Current schema initialization and restore-safe position handling remain.
+- Removed rolling-upgrade compatibility for pre-0.8 literal JetStream lock
+  values. Current nodes accept only versioned, expiring lease records.
+
+### Migration Notes
+
+- Existing installations must run 0.8.0 and verify that every expected
+  boundary is `ACTIVE` before upgrading to this release.
+- After the 0.8.0 catalog is verified, replace the remaining PostgreSQL admin
+  mapping with `ORISUN_PG_ADMIN_SCHEMA=<admin-schema>`.
+
+## 0.8.0 - 2026-07-24
+
+### Breaking Changes
+
 - Removed `ORISUN_BOUNDARIES`. Application boundaries are now immutable,
   event-backed definitions in the admin catalog and can be created or imported
-  while the server is running. PostgreSQL keeps `ORISUN_PG_SCHEMAS` for the
-  required admin mapping and as a one-time legacy `boundary:schema` import
-  source.
+  while the server is running.
 - Embedded `SubscribeToEvents` now accepts an `eventstore.SubscribeRequest`
   and a synchronous `eventstore.EventHandler`. Embedded callers no longer
   receive generated `Event` messages through `MessageHandler`.
@@ -61,10 +96,6 @@
 - Update direct imports of server-module generated Go types from
   `orisun` to `orisun/grpcapi`. Embedded domain types remain in `orisun` and
   do not depend on generated messages.
-- After every PostgreSQL node is upgraded and the catalog is verified,
-  non-admin legacy mappings may be removed from `ORISUN_PG_SCHEMAS`; the admin
-  boundary mapping remains required.
-
 ## 0.6.1 - 2026-07-18
 
 ### Changed

@@ -1,6 +1,6 @@
 services:
   orisun:
-    image: orisunlabs/orisun:0.6.1-pg
+    image: orisunlabs/orisun:pg
     ports:
       - "8991:8991"
       - "5005:5005"
@@ -10,7 +10,7 @@ services:
       - ORISUN_PG_PASSWORD=password@1
       - ORISUN_PG_HOST=postgres
       - ORISUN_PG_PORT=5432
-      - ORISUN_PG_SCHEMAS=orders:public,orisun_admin:admin
+      - ORISUN_PG_ADMIN_SCHEMA=admin
       - ORISUN_ADMIN_BOUNDARY=orisun_admin
       - ORISUN_NATS_STORE_DIR=/var/lib/orisun/data
       - ORISUN_LOGGING_LEVEL=INFO

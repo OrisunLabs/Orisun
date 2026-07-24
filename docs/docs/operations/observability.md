@@ -28,7 +28,7 @@ Logs are structured and leveled. Set the level with `ORISUN_LOGGING_LEVEL` (`DEB
 Operationally useful log lines include:
 
 - effective `GOMAXPROCS`, `GOMEMLIMIT`, and `GOGC` at startup,
-- legacy boundary-catalog reconciliation totals,
+- admin boundary bootstrap and catalog replay,
 - boundary provisioning failures and independent retry attempts,
 - publisher boundary-lock acquisition and contention in clustered deployments,
 - publisher checkpoint progress and any publish errors.

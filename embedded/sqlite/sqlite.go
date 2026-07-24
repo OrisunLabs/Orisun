@@ -75,17 +75,10 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		return nil, err
 	}
 	js := natsRuntime.JetStream
-	boundaries, err := sqlitebackend.DiscoverBoundaryNames(config.Sqlite, config.Admin.Boundary)
-	if err != nil {
-		cancel()
-		natsRuntime.Close()
-		return nil, err
-	}
 	runtime, err := sqlitebackend.InitializeSqliteDatabaseRuntime(
 		runCtx,
 		config.Sqlite,
 		config.Admin,
-		boundaries,
 		js,
 		logger,
 	)
@@ -95,8 +88,13 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		return nil, err
 	}
 
-	store, err := orisun.NewOrisunServer(runCtx, runtime.SaveEvents, runtime.GetEvents, runtime.LockProvider, js, boundaries, logger)
+	store, err := orisun.NewOrisunServer(runCtx, runtime.SaveEvents, runtime.GetEvents, runtime.LockProvider, js, logger)
 	if err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
+	if err := store.EnsureBoundary(runCtx, config.Admin.Boundary); err != nil {
 		cancel()
 		natsRuntime.Close()
 		return nil, err
@@ -109,9 +107,14 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	boundaryEvents := eventstoreadapter.New(runtime.SaveEvents, runtime.GetEvents, store.SubscribeToEvents)
 
 	pollingManager := orisun.StartEventPolling(
-		runCtx, config, boundaries, runtime.LockProvider, runtime.GetEvents, js,
+		runCtx, config, runtime.LockProvider, runtime.GetEvents, js,
 		runtime.EventPublishing, runtime.SignalProvider, logger,
 	)
+	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
 	provisionBoundary := func(provisionCtx context.Context, definition boundarymodel.Definition) error {
 		return runtime.ProvisionBoundary(provisionCtx, definition)
 	}
@@ -134,9 +137,9 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		installBoundary,
 		store.ActivateBoundary,
 	)
-	reconciliation, err := createboundary.ReconcileLegacyBoundaries(
+	createdAdmin, err := createboundary.EnsureBootstrapBoundary(
 		runCtx,
-		sqlitebackend.LegacyBoundaryDefinitions(boundaries),
+		sqlitebackend.AdminBoundaryDefinition(config.Admin),
 		config.Admin.Boundary,
 		boundaryEvents,
 		boundaryEvents,
@@ -144,13 +147,9 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	if err != nil {
 		cancel()
 		natsRuntime.Close()
-		return nil, fmt.Errorf("migrate SQLite boundaries into catalog: %w", err)
+		return nil, fmt.Errorf("bootstrap admin boundary catalog: %w", err)
 	}
-	logger.Infof(
-		"Boundary catalog migration completed: created=%d existing=%d",
-		len(reconciliation.Created),
-		len(reconciliation.Existing),
-	)
+	logger.Infof("Admin boundary catalog bootstrap completed: created=%t", createdAdmin)
 	provisioningSubscriber := boundaryprovisioning.NewBoundaryProvisioningSubscriber(
 		config.Admin.Boundary,
 		boundaryEvents,

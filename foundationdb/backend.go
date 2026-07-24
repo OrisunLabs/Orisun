@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	common "github.com/OrisunLabs/Orisun/admin/slices/common"
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	config "github.com/OrisunLabs/Orisun/config"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
@@ -23,7 +22,6 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 const (
@@ -58,14 +56,12 @@ type Backend struct {
 	userCache     map[string]*eventstore.User
 }
 
-func InitializeFoundationDB(
+func InitializeFoundationDBRuntime(
 	ctx context.Context,
 	fdbCfg config.FoundationDBConfig,
 	adminCfg config.AdminConfig,
-	boundaries []string,
-	js jetstream.JetStream,
 	logger logging.Logger,
-) (eventstore.EventsSaver, eventstore.EventsRetriever, eventstore.LockProvider, common.DB, eventstore.EventPublishingTracker, func(string) eventstore.EventSignal, func(context.Context), error) {
+) (*DatabaseRuntime, error) {
 	if fdbCfg.APIVersion == 0 {
 		fdbCfg.APIVersion = defaultAPIVersion
 	}
@@ -77,12 +73,12 @@ func InitializeFoundationDB(
 		fdbCfg.TransactionTimeoutMs = 10000
 	}
 	if err := ensureAPIVersion(fdbCfg.APIVersion); err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, err
 	}
 
 	db, err := fdb.OpenDatabase(fdbCfg.ClusterFile)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, err
 	}
 
 	// Bound every transaction (including internal retries) so a partitioned or
@@ -91,13 +87,13 @@ func InitializeFoundationDB(
 	if fdbCfg.TransactionTimeoutMs > 0 {
 		if err := db.Options().SetTransactionTimeout(int64(fdbCfg.TransactionTimeoutMs)); err != nil {
 			db.Close()
-			return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("set transaction timeout: %w", err)
+			return nil, fmt.Errorf("set transaction timeout: %w", err)
 		}
 	}
 	if fdbCfg.TransactionRetryLimit > 0 {
 		if err := db.Options().SetTransactionRetryLimit(int64(fdbCfg.TransactionRetryLimit)); err != nil {
 			db.Close()
-			return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("set transaction retry limit: %w", err)
+			return nil, fmt.Errorf("set transaction retry limit: %w", err)
 		}
 	}
 
@@ -105,24 +101,21 @@ func InitializeFoundationDB(
 		db:            db,
 		root:          fdbCfg.Root,
 		adminBoundary: adminCfg.Boundary,
-		boundaries:    make(map[string]struct{}, len(boundaries)),
+		boundaries:    make(map[string]struct{}, 1),
 		logger:        logger,
 		userCache:     make(map[string]*eventstore.User),
-	}
-	for _, boundary := range boundaries {
-		backend.boundaries[boundary] = struct{}{}
 	}
 	backend.boundaries[adminCfg.Boundary] = struct{}{}
 	if err := backend.ensureBoundaryMarker(ctx, adminCfg.Boundary); err != nil {
 		db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("bootstrap admin boundary: %w", err)
+		return nil, fmt.Errorf("bootstrap admin boundary: %w", err)
 	}
 
 	// With criteria reads fail-closed, Orisun's own admin slices and the auth
 	// user projector cannot run until their criteria shapes are covered.
 	if err := backend.ensureSystemIndexes(ctx); err != nil {
 		db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("ensure system indexes: %w", err)
+		return nil, fmt.Errorf("ensure system indexes: %w", err)
 	}
 
 	// FoundationDB-native lease lock: durable and crash-failover capable, unlike
@@ -140,30 +133,11 @@ func InitializeFoundationDB(
 	closeFn := func(context.Context) {
 		db.Close()
 	}
-	return backend, backend, lockProvider, backend, backend, signalProvider, closeFn, nil
-}
-
-func InitializeFoundationDBRuntime(
-	ctx context.Context,
-	fdbCfg config.FoundationDBConfig,
-	adminCfg config.AdminConfig,
-	boundaries []string,
-	js jetstream.JetStream,
-	logger logging.Logger,
-) (*DatabaseRuntime, error) {
-	saveEvents, getEvents, lockProvider, adminDB, publishing, signalProvider, closeFn, err := InitializeFoundationDB(
-		ctx, fdbCfg, adminCfg, boundaries, js, logger,
-	)
-	if err != nil {
-		return nil, err
-	}
-	backend := saveEvents.(*Backend)
 	return &DatabaseRuntime{
-		SaveEvents: saveEvents, GetEvents: getEvents, LockProvider: lockProvider,
-		AdminDB: adminDB, EventPublishing: publishing, SignalProvider: signalProvider,
+		SaveEvents: backend, GetEvents: backend, LockProvider: lockProvider,
+		AdminDB: backend, EventPublishing: backend, SignalProvider: signalProvider,
 		ProvisionBoundary: backend.ProvisionBoundary,
 		InstallBoundary:   backend.InstallBoundary,
-		InitialBoundaries: backend.BoundaryNames(),
 		Close:             closeFn,
 	}, nil
 }
@@ -1343,17 +1317,6 @@ func (b *Backend) checkBoundary(boundary string) error {
 		return statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", boundary)
 	}
 	return nil
-}
-
-func (b *Backend) BoundaryNames() []string {
-	b.boundaryMu.RLock()
-	defer b.boundaryMu.RUnlock()
-	names := make([]string, 0, len(b.boundaries))
-	for name := range b.boundaries {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 func (b *Backend) ProvisionBoundary(ctx context.Context, definition boundarymodel.Definition) error {

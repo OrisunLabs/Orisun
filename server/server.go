@@ -74,18 +74,18 @@ func ensureJetStreamStreamIsProperlySetup(ctx context.Context, js jetstream.JetS
 }
 
 type Backend struct {
-	SaveEvents        orisun.EventsSaver
-	GetEvents         orisun.EventsRetriever
-	LockProvider      orisun.LockProvider
-	AdminDB           common.DB
-	EventPublishing   orisun.EventPublishingTracker
-	SignalProvider    func(string) orisun.EventSignal
-	ProvisionBoundary boundaryprovisioning.ProvisionBoundary
-	InstallBoundary   boundaryprovisioning.InstallBoundary
-	InitialBoundaries []string
-	LegacyBoundaries  []boundarymodel.Definition
-	Start             func(context.Context)
-	Close             func(context.Context)
+	SaveEvents            orisun.EventsSaver
+	GetEvents             orisun.EventsRetriever
+	LockProvider          orisun.LockProvider
+	AdminDB               common.DB
+	EventPublishing       orisun.EventPublishingTracker
+	SignalProvider        func(string) orisun.EventSignal
+	ProvisionBoundary     boundaryprovisioning.ProvisionBoundary
+	InstallBoundary       boundaryprovisioning.InstallBoundary
+	BootstrapBoundary     *boundarymodel.Definition
+	PreexistingAdminStore bool
+	Start                 func(context.Context)
+	Close                 func(context.Context)
 }
 
 type BackendInitializer func(context.Context, c.AppConfig, jetstream.JetStream, l.Logger) (Backend, error)
@@ -143,7 +143,6 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 	eventStore := orisun.InitializeEventStore(
 		ctx,
 		config,
-		backend.InitialBoundaries,
 		backend.SaveEvents,
 		backend.GetEvents,
 		backend.LockProvider,
@@ -161,11 +160,11 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 			return orisun.NewPollingSignal(1 * time.Second)
 		}
 	}
-	pollingManager := orisun.StartEventPolling(ctx, config, backend.InitialBoundaries, backend.LockProvider, backend.GetEvents, js, backend.EventPublishing, signalProvider, AppLogger)
-	provisionedBoundaries := make(map[string]struct{}, len(backend.InitialBoundaries))
-	for _, boundary := range backend.InitialBoundaries {
-		provisionedBoundaries[boundary] = struct{}{}
+	pollingManager := orisun.StartEventPolling(ctx, config, backend.LockProvider, backend.GetEvents, js, backend.EventPublishing, signalProvider, AppLogger)
+	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+		AppLogger.Fatalf("Failed to start admin boundary publisher: %v", err)
 	}
+	provisionedBoundaries := map[string]struct{}{config.Admin.Boundary: {}}
 	var provisionedBoundariesMu sync.Mutex
 	var eventCountProjectors *eventCountProjectionManager
 
@@ -175,6 +174,14 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 			backend.GetEvents,
 			eventStore.SubscribeToAllEvents,
 		)
+		if err := createboundary.RequireMigratedCatalog(
+			ctx,
+			backend.PreexistingAdminStore,
+			config.Admin.Boundary,
+			boundaryEvents,
+		); err != nil {
+			AppLogger.Fatalf("PostgreSQL catalog upgrade check failed: %v", err)
+		}
 		provisionPhysicalBoundary := func(provisionCtx context.Context, definition boundarymodel.Definition) error {
 			return backend.ProvisionBoundary(provisionCtx, definition)
 		}
@@ -223,24 +230,18 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 			runtimeHandler.Handle,
 			AppLogger,
 		)
-		// Legacy definitions run first so the elected controller observes them and
-		// existing activation events can be replayed into this local runtime.
-		if len(backend.LegacyBoundaries) > 0 {
-			result, reconcileErr := createboundary.ReconcileLegacyBoundaries(
+		if backend.BootstrapBoundary != nil {
+			created, bootstrapErr := createboundary.EnsureBootstrapBoundary(
 				ctx,
-				backend.LegacyBoundaries,
+				*backend.BootstrapBoundary,
 				config.Admin.Boundary,
 				boundaryEvents,
 				boundaryEvents,
 			)
-			if reconcileErr != nil {
-				AppLogger.Fatalf("Failed to migrate configured boundaries into the catalog: %v", reconcileErr)
+			if bootstrapErr != nil {
+				AppLogger.Fatalf("Failed to bootstrap the admin boundary catalog: %v", bootstrapErr)
 			}
-			AppLogger.Infof(
-				"Boundary catalog migration completed: created=%d existing=%d",
-				len(result.Created),
-				len(result.Existing),
-			)
+			AppLogger.Infof("Admin boundary catalog bootstrap completed: created=%t", created)
 		}
 		if err := runtimeSubscriber.Replay(ctx); err != nil {
 			AppLogger.Fatalf("Failed to replay boundary catalog into this runtime: %v", err)
@@ -260,7 +261,7 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 				AppLogger.Errorf("Boundary workers stopped: %v", err)
 			}
 		}()
-	} else if backend.ProvisionBoundary != nil || backend.InstallBoundary != nil || len(backend.LegacyBoundaries) > 0 {
+	} else if backend.ProvisionBoundary != nil || backend.InstallBoundary != nil || backend.BootstrapBoundary != nil {
 		AppLogger.Fatalf("Backend boundary provisioning requires both physical provisioner and local installer")
 	}
 

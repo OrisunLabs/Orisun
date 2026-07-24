@@ -1,16 +1,16 @@
-package postgres
+package sqlite
 
 import (
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	"github.com/OrisunLabs/Orisun/config"
 )
 
-func AdminBoundaryDefinition(postgresConfig config.PostgresDBConfig, adminConfig config.AdminConfig) boundarymodel.Definition {
+func AdminBoundaryDefinition(adminConfig config.AdminConfig) boundarymodel.Definition {
 	return boundarymodel.Definition{
 		Name: adminConfig.Boundary,
 		Placement: boundarymodel.Placement{
-			Backend:   "postgres",
-			Namespace: postgresConfig.AdminSchema,
+			Backend:   "sqlite",
+			Namespace: adminConfig.Boundary,
 		},
 	}
 }

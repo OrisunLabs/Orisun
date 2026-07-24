@@ -72,8 +72,6 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	}
 	js := natsRuntime.JetStream
 	database := pg.InitializePostgresDatabaseRuntime(runCtx, config.Postgres, config.Admin, js, logger)
-	mappings := config.Postgres.GetSchemaMapping()
-	initialBoundaries := pg.BoundaryNames(mappings)
 	saveEvents := database.SaveEvents
 	getEvents := database.GetEvents
 	lockProvider := database.LockProvider
@@ -81,8 +79,13 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	eventPublishing := database.EventPublishing
 	pgListener := database.Listener
 
-	store, err := orisun.NewOrisunServer(runCtx, saveEvents, getEvents, lockProvider, js, initialBoundaries, logger)
+	store, err := orisun.NewOrisunServer(runCtx, saveEvents, getEvents, lockProvider, js, logger)
 	if err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
+	if err := store.EnsureBoundary(runCtx, config.Admin.Boundary); err != nil {
 		cancel()
 		natsRuntime.Close()
 		return nil, err
@@ -93,6 +96,16 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		return nil, err
 	}
 	boundaryEvents := eventstoreadapter.New(saveEvents, getEvents, store.SubscribeToEvents)
+	if err := createboundary.RequireMigratedCatalog(
+		runCtx,
+		database.PreexistingAdminStore,
+		config.Admin.Boundary,
+		boundaryEvents,
+	); err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, fmt.Errorf("PostgreSQL catalog upgrade check failed: %w", err)
+	}
 
 	var signalProvider func(string) orisun.EventSignal
 	var stopListener context.CancelFunc
@@ -118,7 +131,12 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		}
 	}
 
-	pollingManager := orisun.StartEventPolling(runCtx, config, initialBoundaries, lockProvider, getEvents, js, eventPublishing, signalProvider, logger)
+	pollingManager := orisun.StartEventPolling(runCtx, config, lockProvider, getEvents, js, eventPublishing, signalProvider, logger)
+	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
 	provisionBoundary := func(provisionCtx context.Context, definition boundarymodel.Definition) error {
 		return database.ProvisionBoundary(provisionCtx, definition)
 	}
@@ -141,10 +159,9 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		installBoundary,
 		store.ActivateBoundary,
 	)
-	legacyDefinitions := pg.LegacyBoundaryDefinitions(mappings)
-	reconciliation, err := createboundary.ReconcileLegacyBoundaries(
+	createdAdmin, err := createboundary.EnsureBootstrapBoundary(
 		runCtx,
-		legacyDefinitions,
+		pg.AdminBoundaryDefinition(config.Postgres, config.Admin),
 		config.Admin.Boundary,
 		boundaryEvents,
 		boundaryEvents,
@@ -155,13 +172,9 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		if closePG != nil {
 			closePG(context.WithoutCancel(ctx))
 		}
-		return nil, fmt.Errorf("migrate configured boundaries into catalog: %w", err)
+		return nil, fmt.Errorf("bootstrap admin boundary catalog: %w", err)
 	}
-	logger.Infof(
-		"Boundary catalog migration completed: created=%d existing=%d",
-		len(reconciliation.Created),
-		len(reconciliation.Existing),
-	)
+	logger.Infof("Admin boundary catalog bootstrap completed: created=%t", createdAdmin)
 	provisioningSubscriber := boundaryprovisioning.NewBoundaryProvisioningSubscriber(
 		config.Admin.Boundary,
 		boundaryEvents,

@@ -162,10 +162,9 @@ and subscriber name. JetStream lock values carry a unique owner token and a
 renewable 15-second expiry. Acquisition, renewal, and release use KV revisions
 so a stale subscriber cannot renew or delete a successor's lock. Normal stream
 cancellation releases the lock immediately; an abandoned lock becomes
-reclaimable after its lease expires. Values written by older releases as the
-literal value `locked` remain non-expiring during a rolling upgrade and should
-only be removed after every node has been upgraded and the former owner is
-known to be stopped.
+reclaimable after its lease expires. Lock values must use the current versioned
+lease format; installations older than `0.8.0` must pass through that bridge
+release before joining a current cluster.
 
 The JetStream stream uses in-memory retention (bounded by `ORISUN_NATS_EVENT_STREAM_MAX_BYTES`, `_MAX_MSGS`, and `_MAX_AGE`). It is a live-delivery buffer, while the durable log remains the source of truth. A subscriber that falls behind the retention window does not lose events; it is simply served from the durable store by the catch-up phase. The age window must exceed the catch-up→live handover grace (about 10 seconds) so a transitioning subscriber does not land in a gap.
 

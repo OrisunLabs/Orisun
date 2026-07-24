@@ -136,14 +136,14 @@ type AdminConfig struct {
 
 // postgres
 type PostgresDBConfig struct {
-	User     string
-	Name     string
-	Password string
-	Host     string
-	Port     string
-	Schemas  string
-	SSLMode  string
-	Dialect  string
+	User        string
+	Name        string
+	Password    string
+	Host        string
+	Port        string
+	AdminSchema string
+	SSLMode     string
+	Dialect     string
 	// Write pool configuration (optimized for write operations)
 	WriteMaxOpenConns    int
 	WriteMaxIdleConns    int
@@ -174,36 +174,13 @@ type BoundaryToPostgresSchemaMapping struct {
 	Boundary string
 }
 
-func (p *PostgresDBConfig) GetSchemaMapping() map[string]BoundaryToPostgresSchemaMapping {
-	mappings, err := parsePostgresSchemaMappings(p.Schemas)
-	if err != nil {
-		panic(err)
+func (p PostgresDBConfig) BootstrapSchemaMapping(adminBoundary string) map[string]BoundaryToPostgresSchemaMapping {
+	return map[string]BoundaryToPostgresSchemaMapping{
+		adminBoundary: {
+			Boundary: adminBoundary,
+			Schema:   p.AdminSchema,
+		},
 	}
-	return mappings
-}
-
-func parsePostgresSchemaMappings(raw string) (map[string]BoundaryToPostgresSchemaMapping, error) {
-	entries := strings.Split(raw, ",")
-	mappings := make(map[string]BoundaryToPostgresSchemaMapping, len(entries))
-	for _, entry := range entries {
-		parts := strings.SplitN(entry, ":", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid PostgreSQL schema mapping %q (expected boundary:schema)", strings.TrimSpace(entry))
-		}
-		boundary := strings.TrimSpace(parts[0])
-		schema := strings.TrimSpace(parts[1])
-		if err := validateBoundaryName(boundary); err != nil {
-			return nil, fmt.Errorf("invalid boundary in PostgreSQL schema mapping %q: %w", strings.TrimSpace(entry), err)
-		}
-		if err := validateBoundaryName(schema); err != nil {
-			return nil, fmt.Errorf("invalid schema in PostgreSQL schema mapping %q: %w", strings.TrimSpace(entry), err)
-		}
-		if _, duplicate := mappings[boundary]; duplicate {
-			return nil, fmt.Errorf("PostgreSQL boundary %q is mapped more than once", boundary)
-		}
-		mappings[boundary] = BoundaryToPostgresSchemaMapping{Boundary: boundary, Schema: schema}
-	}
-	return mappings, nil
 }
 
 // nats
@@ -312,12 +289,8 @@ func validateConfig(config AppConfig) error {
 		return fmt.Errorf("invalid admin boundary name %q: %w", config.Admin.Boundary, err)
 	}
 	if config.BackendType() == "postgres" {
-		mappings, err := parsePostgresSchemaMappings(config.Postgres.Schemas)
-		if err != nil {
-			return err
-		}
-		if _, ok := mappings[config.Admin.Boundary]; !ok {
-			return fmt.Errorf("admin boundary %q is missing from ORISUN_PG_SCHEMAS", config.Admin.Boundary)
+		if err := validateBoundaryName(config.Postgres.AdminSchema); err != nil {
+			return fmt.Errorf("invalid ORISUN_PG_ADMIN_SCHEMA %q: %w", config.Postgres.AdminSchema, err)
 		}
 	}
 	return nil

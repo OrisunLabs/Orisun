@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -14,11 +13,6 @@ import (
 	"time"
 
 	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
-	"github.com/OrisunLabs/Orisun/config"
-	"github.com/OrisunLabs/Orisun/logging"
-	"github.com/OrisunLabs/Orisun/orisun"
-	pgbackend "github.com/OrisunLabs/Orisun/postgres"
-	sqlitebackend "github.com/OrisunLabs/Orisun/sqlite"
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -29,12 +23,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"zombiezen.com/go/sqlite/sqlitex"
 
 	pb "github.com/OrisunLabs/Orisun/orisun/grpcapi"
 )
-
-const defaultPostgresSchemas = "orisun_test_1:public,orisun_test_2:test2,orisun_admin:admin"
 
 type E2ETestSuite struct {
 	ctx               context.Context
@@ -54,7 +45,6 @@ type E2ETestSuite struct {
 	buildTags         string
 	fdbClusterFile    string
 	fdbRoot           string
-	postgresSchemas   string
 }
 
 func setupE2ETest(t *testing.T) *E2ETestSuite {
@@ -62,18 +52,19 @@ func setupE2ETest(t *testing.T) *E2ETestSuite {
 	suite.startBinary(t)
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
+	suite.createBoundary(t, "orisun_test_1", "postgres", "public")
+	suite.createBoundary(t, "orisun_test_2", "postgres", "test2")
 	return suite
 }
 
 func preparePostgresE2ETest(t *testing.T) *E2ETestSuite {
 	ctx := context.Background()
 	suite := &E2ETestSuite{
-		ctx:             ctx,
-		grpcPort:        "15005", // Use different port to avoid conflicts
-		adminPort:       "18991",
-		natsPort:        "14224",
-		backend:         "postgres",
-		postgresSchemas: defaultPostgresSchemas,
+		ctx:       ctx,
+		grpcPort:  "15005", // Use different port to avoid conflicts
+		adminPort: "18991",
+		natsPort:  "14224",
+		backend:   "postgres",
 	}
 
 	// Start PostgreSQL container
@@ -109,6 +100,8 @@ func setupSQLiteE2ETest(t *testing.T) *E2ETestSuite {
 	suite.startBinary(t)
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
+	suite.createBoundary(t, "orisun_test_1", "sqlite", "orisun_test_1")
+	suite.createBoundary(t, "orisun_test_2", "sqlite", "orisun_test_2")
 	return suite
 }
 
@@ -117,12 +110,6 @@ func prepareSQLiteE2ETest(t *testing.T) *E2ETestSuite {
 	tempDir := t.TempDir()
 	sqliteDir := filepath.Join(tempDir, "sqlite")
 	require.NoError(t, os.MkdirAll(sqliteDir, 0o755))
-	// Existing SQLite boundaries are now discovered from their event database
-	// files instead of a startup boundary list. An empty file is migrated when
-	// the backend opens it.
-	for _, boundary := range []string{"orisun_test_1", "orisun_test_2"} {
-		require.NoError(t, os.WriteFile(filepath.Join(sqliteDir, boundary+".db"), nil, 0o600))
-	}
 	suite := &E2ETestSuite{
 		ctx:          ctx,
 		grpcPort:     "15007",
@@ -192,7 +179,7 @@ func (s *E2ETestSuite) startBinary(t *testing.T) {
 		"ORISUN_PG_USER=postgres",
 		"ORISUN_PG_PASSWORD=postgres",
 		"ORISUN_PG_NAME=orisun",
-		fmt.Sprintf("ORISUN_PG_SCHEMAS=%s", s.postgresSchemas),
+		"ORISUN_PG_ADMIN_SCHEMA=admin",
 		fmt.Sprintf("ORISUN_GRPC_PORT=%s", s.grpcPort),
 		fmt.Sprintf("ORISUN_ADMIN_PORT=%s", s.adminPort),
 		"ORISUN_GRPC_ENABLE_REFLECTION=true",
@@ -257,6 +244,23 @@ func (s *E2ETestSuite) createGRPCClient(t *testing.T) {
 	require.NoError(t, err)
 	s.grpcConn = conn
 	s.eventStoreClient = pb.NewEventStoreClient(conn)
+}
+
+func (s *E2ETestSuite) createBoundary(t *testing.T, name, backend, namespace string) {
+	t.Helper()
+	ctx := createAuthenticatedContext("admin", "changeit")
+	adminClient := pb.NewAdminClient(s.grpcConn)
+	_, err := adminClient.CreateBoundary(ctx, &pb.CreateBoundaryRequest{
+		Name:      name,
+		Placement: &pb.BoundaryPlacementInput{Backend: backend, Namespace: namespace},
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		response, getErr := adminClient.GetBoundary(ctx, &pb.GetBoundaryRequest{Name: name})
+		return getErr == nil &&
+			response.Boundary != nil &&
+			response.Boundary.Status == pb.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE
+	}, 10*time.Second, 25*time.Millisecond)
 }
 
 // createAuthenticatedContext creates a context with Basic Auth headers
@@ -423,70 +427,65 @@ func TestE2E_SQLite_SaveAndGetEvents(t *testing.T) {
 	assert.Contains(t, getResp.Events[0].Data, "Hello SQLite")
 }
 
-func TestE2E_Postgres_MigratesLegacyBoundaryAndSurvivesRestart(t *testing.T) {
+func TestE2E_Postgres_CatalogBoundarySurvivesRestart(t *testing.T) {
 	const (
 		boundary = "orisun_test_1"
 		schema   = "public"
 	)
 	suite := preparePostgresE2ETest(t)
 	defer suite.teardown(t)
-	seedLegacyPostgresBoundary(t, suite, boundary, schema)
 
 	suite.startBinary(t)
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
+	suite.createBoundary(t, boundary, "postgres", schema)
 
 	ctx := createAuthenticatedContext("admin", "changeit")
-	beforeRestart := requireExistingActiveBoundary(t, suite, ctx, boundary, "postgres", schema)
+	beforeRestart := requireActiveBoundary(t, suite, ctx, boundary, "postgres", schema, false)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
-	requireBoundaryEventTypes(t, suite, ctx, boundary, "LegacyOrderOpened")
 
 	appendBoundaryEvent(t, suite, ctx, boundary, "OrderConfirmed", map[string]any{"orderId": "legacy-order-1"})
-	requireBoundaryEventTypes(t, suite, ctx, boundary, "LegacyOrderOpened", "OrderConfirmed")
+	requireBoundaryEventTypes(t, suite, ctx, boundary, "OrderConfirmed")
 
 	suite.stopBinary(t)
-	// The legacy mapping is intentionally removed. The event-backed catalog
-	// must now be sufficient to reinstall the physical/runtime registration.
-	suite.postgresSchemas = "orisun_admin:admin"
 	suite.startBinary(t)
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
 
-	afterRestart := requireExistingActiveBoundary(t, suite, ctx, boundary, "postgres", schema)
+	afterRestart := requireActiveBoundary(t, suite, ctx, boundary, "postgres", schema, false)
 	requireSamePosition(t, beforeRestart.DefinitionPosition, afterRestart.DefinitionPosition)
 	requireSamePosition(t, beforeRestart.StatusPosition, afterRestart.StatusPosition)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
-	requireBoundaryEventTypes(t, suite, ctx, boundary, "LegacyOrderOpened", "OrderConfirmed")
+	requireBoundaryEventTypes(t, suite, ctx, boundary, "OrderConfirmed")
 }
 
-func TestE2E_SQLite_MigratesLegacyBoundaryAndSurvivesRestart(t *testing.T) {
+func TestE2E_SQLite_CatalogBoundarySurvivesRestart(t *testing.T) {
 	const boundary = "orisun_test_1"
 	suite := prepareSQLiteE2ETest(t)
 	defer suite.teardown(t)
-	seedLegacySQLiteBoundary(t, suite, boundary)
 
 	suite.startBinary(t)
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
+	suite.createBoundary(t, boundary, "sqlite", boundary)
 
 	ctx := createAuthenticatedContext("admin", "changeit")
-	beforeRestart := requireExistingActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary)
+	beforeRestart := requireActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary, false)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
-	requireBoundaryEventTypes(t, suite, ctx, boundary, "LegacyOrderOpened")
 
 	appendBoundaryEvent(t, suite, ctx, boundary, "OrderConfirmed", map[string]any{"orderId": "legacy-order-1"})
-	requireBoundaryEventTypes(t, suite, ctx, boundary, "LegacyOrderOpened", "OrderConfirmed")
+	requireBoundaryEventTypes(t, suite, ctx, boundary, "OrderConfirmed")
 
 	suite.stopBinary(t)
 	suite.startBinary(t)
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
 
-	afterRestart := requireExistingActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary)
+	afterRestart := requireActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary, false)
 	requireSamePosition(t, beforeRestart.DefinitionPosition, afterRestart.DefinitionPosition)
 	requireSamePosition(t, beforeRestart.StatusPosition, afterRestart.StatusPosition)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
-	requireBoundaryEventTypes(t, suite, ctx, boundary, "LegacyOrderOpened", "OrderConfirmed")
+	requireBoundaryEventTypes(t, suite, ctx, boundary, "OrderConfirmed")
 }
 
 type boundaryCatalogEventCounts struct {
@@ -494,70 +493,14 @@ type boundaryCatalogEventCounts struct {
 	activated int
 }
 
-func seedLegacyPostgresBoundary(t *testing.T, suite *E2ETestSuite, boundary, schema string) {
-	t.Helper()
-	db, err := sql.Open("pgx", fmt.Sprintf(
-		"host=%s port=%s user=postgres password=postgres dbname=orisun sslmode=disable",
-		suite.postgresHost,
-		suite.postgresPort,
-	))
-	require.NoError(t, err)
-	defer db.Close()
-	require.NoError(t, db.PingContext(suite.ctx))
-	require.NoError(t, pgbackend.RunDbScripts(db, boundary, schema, false, suite.ctx))
-
-	logger, err := logging.ZapLogger("error")
-	require.NoError(t, err)
-	saver := pgbackend.NewPostgresSaveEvents(
-		suite.ctx,
-		db,
-		logger,
-		map[string]config.BoundaryToPostgresSchemaMapping{
-			boundary: {Boundary: boundary, Schema: schema},
-		},
-	)
-	prepared, err := orisun.PrepareEventsForSave([]orisun.EventWithMapTags{{
-		EventId:   uuid.NewString(),
-		EventType: "LegacyOrderOpened",
-		Data:      map[string]any{"orderId": "legacy-order-1"},
-		Metadata:  map[string]any{"source": "legacy-static-boundary"},
-	}})
-	require.NoError(t, err)
-	expected := orisun.NotExistsPosition()
-	_, _, err = saver.SavePrepared(suite.ctx, prepared, boundary, &expected, nil)
-	require.NoError(t, err)
-}
-
-func seedLegacySQLiteBoundary(t *testing.T, suite *E2ETestSuite, boundary string) {
-	t.Helper()
-	pools, err := sqlitebackend.OpenBoundaryPools(suite.ctx, suite.sqliteDir, boundary, "orisun_admin")
-	require.NoError(t, err)
-	defer pools.Close()
-
-	conn, err := pools.Write.Take(suite.ctx)
-	require.NoError(t, err)
-	defer pools.Write.Put(conn)
-	require.NoError(t, sqlitex.Execute(conn,
-		`INSERT INTO orisun_es_event (transaction_id, global_id, event_id, data, metadata)
-		 VALUES (?, ?, ?, ?, ?)`,
-		&sqlitex.ExecOptions{Args: []any{
-			int64(1),
-			int64(1),
-			uuid.NewString(),
-			`{"eventType":"LegacyOrderOpened","orderId":"legacy-order-1"}`,
-			`{"source":"legacy-static-boundary"}`,
-		}},
-	))
-	require.NoError(t, sqlitex.Execute(conn, "UPDATE orisun_es_seq SET next_id = 2 WHERE id = 1", nil))
-}
-
-func requireExistingActiveBoundary(
+func requireActiveBoundary(
 	t *testing.T,
 	suite *E2ETestSuite,
 	ctx context.Context,
 	boundary,
 	backend,
 	namespace string,
+	existedBeforeCatalog bool,
 ) *pb.BoundaryInfo {
 	t.Helper()
 	adminClient := pb.NewAdminClient(suite.grpcConn)
@@ -571,7 +514,7 @@ func requireExistingActiveBoundary(
 		return info.Status == pb.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE
 	}, 10*time.Second, 25*time.Millisecond)
 	require.Equal(t, boundary, info.Name)
-	require.True(t, info.ExistedBeforeCatalog)
+	require.Equal(t, existedBeforeCatalog, info.ExistedBeforeCatalog)
 	require.Equal(t, backend, info.Placement.Backend)
 	require.Equal(t, namespace, info.Placement.Namespace)
 	require.NotNil(t, info.DefinitionPosition)

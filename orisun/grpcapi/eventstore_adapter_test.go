@@ -84,10 +84,9 @@ func TestEventStoreAdapterTranslatesStatusAtGRPCBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logger: %v", err)
 	}
-	boundaries := []string{}
 	eventStore := orisun.NewEventStoreServer(
-		context.Background(), nil, codedErrorSaver{}, nil, nil, nil,
-		&boundaries, orisun.EventStreamConfig{}, logger,
+		nil, codedErrorSaver{}, nil, nil, nil,
+		orisun.EventStreamConfig{}, logger,
 	)
 
 	_, err = AdaptEventStore(eventStore).SaveEvents(context.Background(), &SaveEventsRequest{
@@ -110,10 +109,9 @@ func TestEventStoreAdapterMapsSaveRequestAndResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	saver := &mappingSaver{}
-	boundaries := []string{}
 	store := orisun.NewEventStoreServer(
-		t.Context(), nil, saver, nil, nil, nil,
-		&boundaries, orisun.EventStreamConfig{}, logger,
+		nil, saver, nil, nil, nil,
+		orisun.EventStreamConfig{}, logger,
 	)
 	response, err := AdaptEventStore(store).SaveEvents(t.Context(), &SaveEventsRequest{
 		Boundary: "orders",
@@ -147,10 +145,9 @@ func TestEventStoreAdapterMapsReadAndLatestResponses(t *testing.T) {
 	}
 	created := time.Date(2026, time.July, 23, 10, 0, 0, 123, time.UTC)
 	retriever := &mappingRetriever{created: created}
-	boundaries := []string{}
 	store := orisun.NewEventStoreServer(
-		t.Context(), nil, nil, retriever, nil, nil,
-		&boundaries, orisun.EventStreamConfig{}, logger,
+		nil, nil, retriever, nil, nil,
+		orisun.EventStreamConfig{}, logger,
 	)
 	adapter := AdaptEventStore(store)
 

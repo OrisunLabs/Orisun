@@ -104,6 +104,9 @@ func setupClusterTest(t *testing.T) *ClusterTestSuite {
 		suite.waitForGRPCServer(t, i)
 		suite.createGRPCClient(t, i)
 	}
+	for i := range 3 {
+		suite.createPostgresBoundary(t, fmt.Sprintf("orisun_test_%d", i+1), []string{"public", "test2", "test3"}[i])
+	}
 
 	return suite
 }
@@ -154,7 +157,7 @@ func (s *ClusterTestSuite) startBinary(t *testing.T, nodeIndex int) {
 		"ORISUN_PG_USER=postgres",
 		"ORISUN_PG_PASSWORD=postgres",
 		"ORISUN_PG_NAME=orisun",
-		"ORISUN_PG_SCHEMAS=orisun_test_1:public,orisun_test_2:test2,orisun_test_3:test3,orisun_admin:admin",
+		"ORISUN_PG_ADMIN_SCHEMA=admin",
 		fmt.Sprintf("ORISUN_GRPC_PORT=%s", node.grpcPort),
 		fmt.Sprintf("ORISUN_ADMIN_PORT=%s", node.adminPort),
 		"ORISUN_GRPC_ENABLE_REFLECTION=true",
@@ -224,6 +227,23 @@ func (s *ClusterTestSuite) createGRPCClient(t *testing.T, nodeIndex int) {
 	require.NoError(t, err)
 	node.conn = conn
 	node.client = pb.NewEventStoreClient(conn)
+}
+
+func (s *ClusterTestSuite) createPostgresBoundary(t *testing.T, name, schema string) {
+	t.Helper()
+	ctx := createAuthenticatedContext("admin", "changeit")
+	adminClient := pb.NewAdminClient(s.nodes[0].conn)
+	_, err := adminClient.CreateBoundary(ctx, &pb.CreateBoundaryRequest{
+		Name:      name,
+		Placement: &pb.BoundaryPlacementInput{Backend: "postgres", Namespace: schema},
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		response, getErr := adminClient.GetBoundary(ctx, &pb.GetBoundaryRequest{Name: name})
+		return getErr == nil &&
+			response.Boundary != nil &&
+			response.Boundary.Status == pb.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE
+	}, 15*time.Second, 50*time.Millisecond)
 }
 
 func (s *ClusterTestSuite) teardown(t *testing.T) {

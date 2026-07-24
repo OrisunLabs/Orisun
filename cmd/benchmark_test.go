@@ -113,6 +113,7 @@ func setupBenchmark(b *testing.B) *BenchmarkSetup {
 		setup.startBinary(b)
 		setup.waitForGRPCServer(b)
 		setup.createGRPCClient(b)
+		setup.createBenchmarkBoundaries(b)
 		return setup
 	}
 
@@ -189,6 +190,7 @@ func setupBenchmark(b *testing.B) *BenchmarkSetup {
 
 	// Create gRPC client
 	setup.createGRPCClient(b)
+	setup.createBenchmarkBoundaries(b)
 
 	return setup
 }
@@ -249,7 +251,7 @@ func (s *BenchmarkSetup) startBinary(b *testing.B) {
 			"ORISUN_PG_USER=postgres",
 			"ORISUN_PG_PASSWORD=postgres",
 			"ORISUN_PG_NAME=orisun",
-			"ORISUN_PG_SCHEMAS=benchmark_test:public,benchmark_admin:admin,subscribe_boundary:public",
+			"ORISUN_PG_ADMIN_SCHEMA=admin",
 			"ORISUN_PG_WRITE_MAX_OPEN_CONNS=200",
 			"ORISUN_PG_WRITE_MAX_IDLE_CONNS=20",
 			"ORISUN_PG_READ_MAX_OPEN_CONNS=10",
@@ -312,6 +314,28 @@ func (s *BenchmarkSetup) createGRPCClient(b *testing.B) {
 
 	// Wait for admin user to be created by the projector.
 	s.authenticateGRPCClient(b, s.client)
+}
+
+func (s *BenchmarkSetup) createBenchmarkBoundaries(b *testing.B) {
+	b.Helper()
+	adminClient := grpcapi.NewAdminClient(s.conn)
+	for _, name := range []string{"benchmark_test", "subscribe_boundary"} {
+		namespace := "public"
+		if s.backend == "sqlite" {
+			namespace = name
+		}
+		_, err := adminClient.CreateBoundary(s.authContext(), &grpcapi.CreateBoundaryRequest{
+			Name:      name,
+			Placement: &grpcapi.BoundaryPlacementInput{Backend: s.backend, Namespace: namespace},
+		})
+		require.NoError(b, err)
+		require.Eventually(b, func() bool {
+			response, getErr := adminClient.GetBoundary(s.authContext(), &grpcapi.GetBoundaryRequest{Name: name})
+			return getErr == nil &&
+				response.Boundary != nil &&
+				response.Boundary.Status == grpcapi.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE
+		}, 10*time.Second, 25*time.Millisecond)
+	}
 }
 
 func (s *BenchmarkSetup) createGRPCEventStoreClient(b *testing.B, captureAuthToken bool) (*grpc.ClientConn, grpcapi.EventStoreClient) {

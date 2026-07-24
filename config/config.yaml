@@ -51,7 +51,7 @@ postgres:
   port: ${ORISUN_PG_PORT:5434}
   # The admin mapping bootstraps the event-backed boundary catalog. Additional
   # mappings are treated as existing physical boundaries and imported into it.
-  schemas: ${ORISUN_PG_SCHEMAS:`orisun_admin:admin`}
+  adminSchema: ${ORISUN_PG_ADMIN_SCHEMA:admin}
   sslmode: ${ORISUN_PG_SSLMODE:disable}
   # Values: postgres (default) or yugabyte. Yugabyte uses an Orisun committed
   # watermark instead of PostgreSQL xid snapshot visibility.

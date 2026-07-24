@@ -35,17 +35,17 @@ func main() {
 
 func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.JetStream, logger l.Logger) (server.Backend, error) {
 	runtime := pg.InitializePostgresDatabaseRuntime(ctx, config.Postgres, config.Admin, js, logger)
-	mappings := config.Postgres.GetSchemaMapping()
+	adminBoundary := pg.AdminBoundaryDefinition(config.Postgres, config.Admin)
 	backend := server.Backend{
-		SaveEvents:        runtime.SaveEvents,
-		GetEvents:         runtime.GetEvents,
-		LockProvider:      runtime.LockProvider,
-		AdminDB:           runtime.AdminDB,
-		EventPublishing:   runtime.EventPublishing,
-		ProvisionBoundary: runtime.ProvisionBoundary,
-		InstallBoundary:   runtime.InstallBoundary,
-		InitialBoundaries: pg.BoundaryNames(mappings),
-		LegacyBoundaries:  pg.LegacyBoundaryDefinitions(mappings),
+		SaveEvents:            runtime.SaveEvents,
+		GetEvents:             runtime.GetEvents,
+		LockProvider:          runtime.LockProvider,
+		AdminDB:               runtime.AdminDB,
+		EventPublishing:       runtime.EventPublishing,
+		ProvisionBoundary:     runtime.ProvisionBoundary,
+		InstallBoundary:       runtime.InstallBoundary,
+		BootstrapBoundary:     &adminBoundary,
+		PreexistingAdminStore: runtime.PreexistingAdminStore,
 	}
 	if runtime.Listener == nil {
 		return backend, nil

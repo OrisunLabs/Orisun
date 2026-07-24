@@ -55,6 +55,20 @@ func newTestPoolsWithMetadata(t *testing.T) (map[string]*BoundaryPools, map[stri
 	}
 }
 
+func tableExists(conn *sqlite.Conn, tableName string) (bool, error) {
+	found := false
+	err := sqlitex.Execute(conn,
+		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+		&sqlitex.ExecOptions{
+			Args: []any{tableName},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				found = true
+				return nil
+			},
+		})
+	return found, err
+}
+
 func mustEvent(t *testing.T, eventType string, data, meta map[string]any) eventstore.EventWithMapTags {
 	t.Helper()
 	return eventstore.EventWithMapTags{
@@ -202,94 +216,6 @@ func TestSave_AddsEventTypeToData(t *testing.T) {
 	}
 	if data["order_id"] != "order-1" {
 		t.Fatalf("expected original data to be preserved, got %v", data["order_id"])
-	}
-
-	conn, err := pools["test"].Read.Take(ctx)
-	if err != nil {
-		t.Fatalf("take read conn: %v", err)
-	}
-	defer pools["test"].Read.Put(conn)
-	hasEventTypeColumn, err := tableHasColumn(conn, "orisun_es_event", "event_type")
-	if err != nil {
-		t.Fatalf("inspect event table: %v", err)
-	}
-	if hasEventTypeColumn {
-		t.Fatal("event_type storage column should not exist")
-	}
-}
-
-func TestMigration_DropsEventTypeColumnAfterBackfill(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-
-	conn, err := sqlite.OpenConn(dbPath, sqlite.OpenReadWrite|sqlite.OpenCreate)
-	if err != nil {
-		t.Fatalf("open legacy db: %v", err)
-	}
-	if err := sqlitex.ExecuteScript(conn, `
-CREATE TABLE orisun_es_event (
-    transaction_id INTEGER NOT NULL,
-    global_id      INTEGER PRIMARY KEY,
-    event_id       TEXT    NOT NULL,
-    event_type     TEXT    NOT NULL CHECK (event_type <> ''),
-    data           TEXT    NOT NULL CHECK (json_valid(data)),
-    metadata       TEXT,
-    date_created   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE TABLE orisun_es_seq (
-    id      INTEGER PRIMARY KEY CHECK (id = 1),
-    next_id INTEGER NOT NULL DEFAULT 2
-);
-INSERT INTO orisun_es_seq (id, next_id) VALUES (1, 2);
-INSERT INTO orisun_es_event (transaction_id, global_id, event_id, event_type, data, metadata)
-VALUES (1, 1, 'event-1', 'MigratedEvent', '{"eventType":"stale","k":"v"}', '{}');
-`, nil); err != nil {
-		conn.Close()
-		t.Fatalf("seed legacy db: %v", err)
-	}
-	conn.Close()
-
-	bp, err := OpenBoundaryPools(context.Background(), dir, "test", "test")
-	if err != nil {
-		t.Fatalf("open migrated pools: %v", err)
-	}
-	defer bp.Close()
-
-	readConn, err := bp.Read.Take(context.Background())
-	if err != nil {
-		t.Fatalf("take read conn: %v", err)
-	}
-	hasEventTypeColumn, err := tableHasColumn(readConn, "orisun_es_event", "event_type")
-	bp.Read.Put(readConn)
-	if err != nil {
-		t.Fatalf("inspect event table: %v", err)
-	}
-	if hasEventTypeColumn {
-		t.Fatal("event_type storage column should be dropped")
-	}
-
-	logger, _ := logging.ZapLogger("error")
-	getter := NewSqliteGetEvents(map[string]*BoundaryPools{"test": bp}, logger)
-	resp, err := getter.GetBatch(context.Background(), &eventstore.GetEventsRequest{
-		Boundary:  "test",
-		Direction: eventstore.Direction_ASC,
-		Count:     10,
-	})
-	if err != nil {
-		t.Fatalf("get migrated event: %v", err)
-	}
-	if len(resp) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(resp))
-	}
-	if resp[0].EventType != "MigratedEvent" {
-		t.Fatalf("expected EventType from migrated data, got %q", resp[0].EventType)
-	}
-	var data map[string]any
-	if err := json.Unmarshal([]byte(resp[0].Data), &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
-	}
-	if data["eventType"] != "MigratedEvent" {
-		t.Fatalf("expected migrated data.eventType, got %v", data["eventType"])
 	}
 }
 
@@ -697,122 +623,6 @@ func TestSqliteMetadataDBIsPerBoundary(t *testing.T) {
 	assertBoundaryCount("test", "other", 0)
 	assertBoundaryCount("other", "other", 1)
 	assertBoundaryCount("other", "test", 0)
-}
-
-func TestMigrateLegacyMetadataCopiesBoundaryAndAdminState(t *testing.T) {
-	dir := t.TempDir()
-	ctx := context.Background()
-	bp, err := OpenBoundaryPools(ctx, dir, "test", "test")
-	if err != nil {
-		t.Fatalf("open boundary pool: %v", err)
-	}
-	defer bp.Close()
-	pools := map[string]*BoundaryPools{"test": bp}
-
-	conn, err := bp.Write.Take(ctx)
-	if err != nil {
-		t.Fatalf("take boundary conn: %v", err)
-	}
-	legacyDDL := `
-CREATE TABLE orisun_last_published_event_position (
-    boundary TEXT PRIMARY KEY,
-    transaction_id INTEGER NOT NULL,
-    global_id INTEGER NOT NULL,
-    date_created TEXT NOT NULL,
-    date_updated TEXT NOT NULL
-);
-INSERT INTO orisun_last_published_event_position VALUES ('test', 10, 9, 'created', 'updated');
-
-CREATE TABLE events_count (
-    id TEXT PRIMARY KEY,
-    event_count TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-INSERT INTO events_count VALUES ('event-count-id', '123', 'created', 'updated');
-
-CREATE TABLE projector_checkpoint (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    commit_position INTEGER NOT NULL,
-    prepare_position INTEGER NOT NULL
-);
-INSERT INTO projector_checkpoint VALUES ('checkpoint-id', 'projector-a', 7, 6);
-
-CREATE TABLE users (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    roles TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-INSERT INTO users VALUES ('user-id', 'User Name', 'legacy-user', 'hash', 'ADMIN,OPERATIONS', 'created', 'updated');
-
-CREATE TABLE users_count (
-    id TEXT PRIMARY KEY,
-    user_count INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-INSERT INTO users_count VALUES ('users-count-id', 3, 'created', 'updated');
-`
-	if err := sqlitex.ExecuteScript(conn, legacyDDL, nil); err != nil {
-		bp.Write.Put(conn)
-		t.Fatalf("create legacy metadata: %v", err)
-	}
-	bp.Write.Put(conn)
-
-	metadataPool, err := OpenMetadataPoolsWithConfig(ctx, config.SqliteConfig{Dir: dir}, "test")
-	if err != nil {
-		t.Fatalf("open metadata pool: %v", err)
-	}
-	defer metadataPool.Close()
-	metadataPools := map[string]*BoundaryPools{"test": metadataPool}
-	if err := migrateLegacyMetadata(ctx, metadataPools, pools, "test", config.SqliteConfig{Dir: dir}); err != nil {
-		t.Fatalf("migrate legacy metadata: %v", err)
-	}
-
-	logger, _ := logging.ZapLogger("error")
-	publishing := NewSqliteEventPublishingWithMetadata(metadataPools, logger)
-	pos, err := publishing.GetLastPublishedEventPosition(ctx, "test")
-	if err != nil {
-		t.Fatalf("get migrated publish position: %v", err)
-	}
-	if pos.CommitPosition != 10 || pos.PreparePosition != 9 {
-		t.Fatalf("unexpected publish position: (%d, %d)", pos.CommitPosition, pos.PreparePosition)
-	}
-
-	admin := NewSqliteAdminDBWithMetadata(pools, metadataPools, "test", logger)
-	projectorPos, err := admin.GetProjectorLastPosition("projector-a")
-	if err != nil {
-		t.Fatalf("get migrated projector position: %v", err)
-	}
-	if projectorPos.CommitPosition != 7 || projectorPos.PreparePosition != 6 {
-		t.Fatalf("unexpected projector position: %+v", projectorPos)
-	}
-	user, err := admin.GetUserByUsername("legacy-user")
-	if err != nil {
-		t.Fatalf("get migrated user: %v", err)
-	}
-	if user.Id != "user-id" || len(user.Roles) != 2 {
-		t.Fatalf("unexpected migrated user: %+v", user)
-	}
-	userCount, err := admin.GetUsersCount()
-	if err != nil {
-		t.Fatalf("get migrated user count: %v", err)
-	}
-	if userCount != 3 {
-		t.Fatalf("unexpected user count: %d", userCount)
-	}
-	eventCount, err := admin.GetEventsCount("test")
-	if err != nil {
-		t.Fatalf("get migrated event count: %v", err)
-	}
-	if eventCount != 123 {
-		t.Fatalf("unexpected event count: %d", eventCount)
-	}
 }
 
 func TestCreateDropBoundaryIndex_MetadataAndTypedCriteria(t *testing.T) {

@@ -72,7 +72,7 @@ test_arch() {
         -e ORISUN_PG_USER=postgres \
         -e ORISUN_PG_PASSWORD=postgres \
         -e ORISUN_PG_NAME=orisun \
-        -e ORISUN_PG_SCHEMAS="test:public,test_admin:admin" \
+        -e ORISUN_PG_ADMIN_SCHEMA=admin \
         -e ORISUN_ADMIN_BOUNDARY=test_admin \
         --platform $ARCH_PLATFORM \
         ${TAG} > "$log_file" 2>&1 &

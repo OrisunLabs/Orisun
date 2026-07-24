@@ -3,6 +3,7 @@ package orisun
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -171,16 +172,18 @@ func TestJetStreamLockExpiredLeaseCanBeReclaimed(t *testing.T) {
 	lease.Release()
 }
 
-func TestJetStreamLockLegacyValueIsNotReclaimed(t *testing.T) {
+func TestJetStreamLockRejectsUnsupportedValueFormat(t *testing.T) {
 	bucket := testLockBucket(t)
 	config := testJetStreamLockConfig()
 	provider := newJetStreamLockProvider(bucket, lockTestLogger{}, config)
 
-	if _, err := bucket.Create(context.Background(), "subscription", []byte("locked")); err != nil {
-		t.Fatalf("seed legacy lock: %v", err)
+	if _, err := bucket.Create(context.Background(), "subscription", []byte(`{"version":0}`)); err != nil {
+		t.Fatalf("seed unsupported lock: %v", err)
 	}
 	if _, err := provider.AcquireLock(context.Background(), "subscription"); err == nil {
-		t.Fatal("legacy lock was unsafely reclaimed")
+		t.Fatal("unsupported lock value was accepted")
+	} else if !strings.Contains(err.Error(), "unsupported value format") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

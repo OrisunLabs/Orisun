@@ -37,8 +37,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		ctx,
 		config.FoundationDB,
 		config.Admin,
-		[]string{config.Admin.Boundary},
-		js,
 		logger,
 	)
 	if err != nil {
@@ -53,7 +51,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		SignalProvider:    runtime.SignalProvider,
 		ProvisionBoundary: runtime.ProvisionBoundary,
 		InstallBoundary:   runtime.InstallBoundary,
-		InitialBoundaries: runtime.InitialBoundaries,
 		Close:             runtime.Close,
 	}, nil
 }

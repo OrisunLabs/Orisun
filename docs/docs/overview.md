@@ -39,7 +39,7 @@ SQLite is the fastest local loop. Event log, admin state, indexes, publisher che
 2. Start it with the [SQLite binary example](/docs/getting-started#run-sqlite-from-a-binary).
 3. Verify gRPC with [Verify the API](/docs/getting-started#verify-the-api).
 4. Define the application log with
-   [Create the SQLite boundary](/docs/getting-started#create-the-sqlite-boundary)
+   [Create the application boundary](/docs/getting-started#create-the-application-boundary)
    and wait for it to become active.
 5. Save an event with [Save your first event](/docs/getting-started#save-your-first-event).
 

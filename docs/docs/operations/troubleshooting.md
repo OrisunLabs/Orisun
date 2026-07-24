@@ -53,10 +53,11 @@ grpcurl -H "$AUTH" \
 - Do not call create again for a failed definition. Its immutable name
   already exists and the server is retrying it independently.
 
-For a legacy PostgreSQL-compatible boundary, including YugabyteDB, make sure
-`ORISUN_PG_SCHEMAS` includes its `boundary:schema` mapping on the first startup
-that migrates it into the catalog. A mismatch between this mapping and an
-existing catalog placement fails startup rather than remapping stored data.
+If startup reports that an existing PostgreSQL admin store has no boundary
+catalog, the installation skipped the required 0.8.0 bridge. Start 0.8.0 with
+the complete legacy `ORISUN_PG_SCHEMAS` mapping, verify every boundary is
+`ACTIVE`, then upgrade again using `ORISUN_PG_ADMIN_SCHEMA`. Do not try to
+recreate catalog entries manually.
 
 For SQLite, verify both `{boundary}.db` and `{boundary}_metadata.db` are in
 `ORISUN_SQLITE_DIR` before registration. FoundationDB does not discover legacy

@@ -15,6 +15,14 @@ beta and is excluded from this automatic migration.
 Use this guide for a direct upgrade from 0.7.0. Test the complete procedure
 against a recent production backup before upgrading production.
 
+:::danger Mandatory bridge release
+Never skip 0.8.0 when upgrading an existing installation from 0.7.x or
+earlier. Version 0.8.0 is the release that converts legacy PostgreSQL schema
+mappings and SQLite boundary discovery into the durable catalog used by later
+versions. Later PostgreSQL releases refuse to start against a pre-existing
+admin event store that has no 0.8.0 catalog marker.
+:::
+
 ## What changes in 0.8.0
 
 | Area | 0.7.0 | 0.8.0 |
@@ -81,6 +89,12 @@ The mapping for `ORISUN_ADMIN_BOUNDARY` is always required. After all nodes run
 
 ```bash
 ORISUN_PG_SCHEMAS=orisun_admin:admin
+```
+
+When subsequently upgrading beyond 0.8.0, replace that remaining mapping with:
+
+```bash
+ORISUN_PG_ADMIN_SCHEMA=admin
 ```
 
 Do not reduce this setting while any 0.7.0 node remains. Those nodes still use

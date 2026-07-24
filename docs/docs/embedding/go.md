@@ -250,11 +250,15 @@ if err != nil {
 use(boundaries, boundary)
 ```
 
-At startup, embedded PostgreSQL and SQLite stores migrate legacy physical
-boundaries into this same catalog before replaying all definitions into the
-local runtime. PostgreSQL uses `ORISUN_PG_SCHEMAS`, and SQLite discovers
-boundary files. FoundationDB is beta and only installs definitions replayed
-from its catalog.
+At startup, embedded stores replay catalog definitions into the local runtime.
+PostgreSQL uses `ORISUN_PG_ADMIN_SCHEMA` only to locate the admin boundary;
+application schema placements come from the catalog. SQLite and FoundationDB
+also install application boundaries only from catalog definitions.
+
+An existing PostgreSQL installation from before 0.8.0 must run 0.8.0 first
+with its complete `ORISUN_PG_SCHEMAS` mapping. That bridge release imports the
+legacy physical boundaries before a later embedded version stops accepting the
+mapping list.
 
 ## Reading events in-process
 

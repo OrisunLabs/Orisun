@@ -246,7 +246,7 @@ func (cb *ConcurrentBenchmark) startServer(b *testing.B, enableBatching bool) er
 	os.Setenv("ORISUN_PG_USER", "postgres")
 	os.Setenv("ORISUN_PG_PASSWORD", "postgres")
 	os.Setenv("ORISUN_PG_NAME", "orisun_test")
-	os.Setenv("ORISUN_PG_SCHEMAS", fmt.Sprintf("%s:public,%s:admin", testBoundary, adminBoundary))
+	os.Setenv("ORISUN_PG_ADMIN_SCHEMA", "admin")
 	os.Setenv("ORISUN_ADMIN_BOUNDARY", adminBoundary)
 	os.Setenv("ORISUN_NATS_PORT", "14225")
 	os.Setenv("ORISUN_GRPC_PORT", benchmarkPort)
