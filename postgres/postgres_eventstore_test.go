@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/goccy/go-json"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -583,6 +585,33 @@ func TestYugabyteDialectUsesCommittedWatermark(t *testing.T) {
 	requirePosition(t, visible[0], 1, 0)
 }
 
+func newYugabyteNotifyListenerWithRetry(
+	ctx context.Context,
+	connStr string,
+	mapping map[string]config.BoundaryToPostgresSchemaMapping,
+	logger logging.Logger,
+) (*PGNotifyListener, error) {
+	for {
+		listener, err := NewPGNotifyListener(ctx, connStr, mapping, logger)
+		if err == nil {
+			return listener, nil
+		}
+
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) ||
+			pgErr.Code != "55000" ||
+			!strings.Contains(pgErr.Message, "creating internal objects for LISTEN/NOTIFY") {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("Yugabyte LISTEN/NOTIFY did not become ready: %w", err)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
 func TestYugabyteContainerDialectSaveGetAndNotify(t *testing.T) {
 	container, err := setupYugabyteTestContainer(t)
 	require.NoError(t, err)
@@ -607,7 +636,9 @@ func TestYugabyteContainerDialectSaveGetAndNotify(t *testing.T) {
 		container.host,
 		container.port,
 	)
-	listener, err := NewPGNotifyListener(t.Context(), connStr, mapping, logger)
+	listenerInitCtx, cancelListenerInit := context.WithTimeout(t.Context(), 30*time.Second)
+	listener, err := newYugabyteNotifyListenerWithRetry(listenerInitCtx, connStr, mapping, logger)
+	cancelListenerInit()
 	require.NoError(t, err)
 	listenerCtx, cancelListener := context.WithCancel(t.Context())
 	go listener.Start(listenerCtx)
