@@ -281,15 +281,12 @@ func BenchmarkSqlite_EventStoreBurst10000(b *testing.B) {
 		saver, getter, _, teardown := setupBenchmarkPools(b)
 		logger, err := logging.ZapLogger("warn")
 		require.NoError(b, err)
-		boundaries := []string{benchBoundary}
 		server := orisun.NewEventStoreServer(
-			context.Background(),
 			benchFakeJetStream{},
 			saver,
 			getter,
 			nil,
 			nil,
-			&boundaries,
 			orisun.EventStreamConfig{},
 			logger,
 		)
@@ -355,15 +352,12 @@ func BenchmarkSqlite_GRPCEventStoreBurst10000(b *testing.B) {
 		saver, getter, _, teardown := setupBenchmarkPools(b)
 		logger, err := logging.ZapLogger("warn")
 		require.NoError(b, err)
-		boundaries := []string{benchBoundary}
 		eventStore := orisun.NewEventStoreServer(
-			context.Background(),
 			benchFakeJetStream{},
 			saver,
 			getter,
 			nil,
 			nil,
-			&boundaries,
 			orisun.EventStreamConfig{},
 			logger,
 		)
@@ -467,15 +461,12 @@ func newBenchmarkEventStoreServer(b *testing.B, saver *SqliteSaveEvents, getter 
 	b.Helper()
 	logger, err := logging.ZapLogger("warn")
 	require.NoError(b, err)
-	boundaries := []string{benchBoundary}
 	domain := orisun.NewEventStoreServer(
-		context.Background(),
 		benchFakeJetStream{},
 		saver,
 		getter,
 		nil,
 		nil,
-		&boundaries,
 		orisun.EventStreamConfig{},
 		logger,
 	)
@@ -708,10 +699,9 @@ func startBenchmarkPollingPublisher(
 	require.NoError(b, err)
 	cfg := config.AppConfig{}
 	cfg.PollingPublisher.BatchSize = 1000
-	orisun.StartEventPolling(
+	manager := orisun.StartEventPolling(
 		ctx,
 		cfg,
-		[]string{benchBoundary},
 		benchNoopLockProvider{},
 		getter,
 		benchFakeJetStream{},
@@ -719,6 +709,7 @@ func startBenchmarkPollingPublisher(
 		signalProvider,
 		logger,
 	)
+	require.NoError(b, manager.StartBoundary(benchBoundary))
 }
 
 func BenchmarkSqlite_GRPCTransportWithPublisherBurst10000(b *testing.B) {

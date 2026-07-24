@@ -10,12 +10,25 @@
   from 0.7.x or earlier must not skip 0.8.0, which imports the complete legacy
   mapping. Startup now rejects a pre-existing PostgreSQL admin store without
   that catalog migration.
+- Removed the tuple-return backend initialization functions. Go callers must
+  use `InitializePostgresDatabaseRuntime`, `InitializeSqliteDatabaseRuntime`,
+  `InitializeSqliteDatabaseRuntimeWithLockProvider`, or
+  `InitializeFoundationDBRuntime`.
+- Removed `InitialBoundaries` and the startup boundary-list parameters from
+  backend and EventStore runtime APIs. Startup bootstraps only the configured
+  admin boundary; application boundaries start exclusively through catalog
+  replay.
 
 ### Changed
 
 - Removed post-0.8 legacy boundary reconciliation. Fresh installations
   bootstrap only the admin boundary; all application boundaries are installed
   by replaying the durable catalog.
+- Removed bridge-only storage migrations for legacy event columns, PostgreSQL
+  logical positions and checkpoints, and pre-0.8 SQLite metadata layouts.
+  Current schema initialization and restore-safe position handling remain.
+- Removed rolling-upgrade compatibility for pre-0.8 literal JetStream lock
+  values. Current nodes accept only versioned, expiring lease records.
 
 ### Migration Notes
 

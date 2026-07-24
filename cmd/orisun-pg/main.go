@@ -44,7 +44,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		EventPublishing:       runtime.EventPublishing,
 		ProvisionBoundary:     runtime.ProvisionBoundary,
 		InstallBoundary:       runtime.InstallBoundary,
-		InitialBoundaries:     []string{config.Admin.Boundary},
 		BootstrapBoundary:     &adminBoundary,
 		PreexistingAdminStore: runtime.PreexistingAdminStore,
 	}

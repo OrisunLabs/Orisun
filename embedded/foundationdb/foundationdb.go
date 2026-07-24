@@ -75,8 +75,6 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		runCtx,
 		config.FoundationDB,
 		config.Admin,
-		[]string{config.Admin.Boundary},
-		js,
 		logger,
 	)
 	if err != nil {
@@ -87,9 +85,17 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 
 	store, err := orisun.NewOrisunServer(
 		runCtx, runtime.SaveEvents, runtime.GetEvents, runtime.LockProvider,
-		js, runtime.InitialBoundaries, logger,
+		js, logger,
 	)
 	if err != nil {
+		cancel()
+		natsRuntime.Close()
+		if runtime.Close != nil {
+			runtime.Close(context.WithoutCancel(ctx))
+		}
+		return nil, err
+	}
+	if err := store.EnsureBoundary(runCtx, config.Admin.Boundary); err != nil {
 		cancel()
 		natsRuntime.Close()
 		if runtime.Close != nil {
@@ -108,9 +114,17 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	boundaryEvents := eventstoreadapter.New(runtime.SaveEvents, runtime.GetEvents, store.SubscribeToEvents)
 
 	pollingManager := orisun.StartEventPolling(
-		runCtx, config, runtime.InitialBoundaries, runtime.LockProvider,
+		runCtx, config, runtime.LockProvider,
 		runtime.GetEvents, js, runtime.EventPublishing, runtime.SignalProvider, logger,
 	)
+	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+		cancel()
+		natsRuntime.Close()
+		if runtime.Close != nil {
+			runtime.Close(context.WithoutCancel(ctx))
+		}
+		return nil, err
+	}
 	provisionBoundary := func(provisionCtx context.Context, definition boundarymodel.Definition) error {
 		return runtime.ProvisionBoundary(provisionCtx, definition)
 	}

@@ -26,8 +26,6 @@ type BoundaryPools struct {
 	indexes  *sqliteIndexRegistry
 }
 
-const legacySharedSqliteMetadataDBName = "_orisun_metadata"
-
 // OpenBoundaryPools opens write+read pools for one boundary at {dir}/{boundary}.db.
 // Migrations are applied on the first connection drawn from the write pool.
 // adminBoundary is retained for API compatibility; admin metadata now lives in

@@ -11,12 +11,10 @@ import (
 )
 
 func TestInitializeFoundationDBStubRequiresBuildTag(t *testing.T) {
-	_, _, _, _, _, _, _, err := InitializeFoundationDB(
+	_, err := InitializeFoundationDBRuntime(
 		context.Background(),
 		config.FoundationDBConfig{},
 		config.AdminConfig{},
-		nil,
-		nil,
 		nil,
 	)
 	if err == nil {

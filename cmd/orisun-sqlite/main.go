@@ -39,12 +39,10 @@ func main() {
 }
 
 func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.JetStream, logger l.Logger) (server.Backend, error) {
-	boundaries := []string{config.Admin.Boundary}
 	runtime, err := sqlitebackend.InitializeSqliteDatabaseRuntime(
 		ctx,
 		config.Sqlite,
 		config.Admin,
-		boundaries,
 		js,
 		logger,
 	)
@@ -61,7 +59,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		SignalProvider:    runtime.SignalProvider,
 		ProvisionBoundary: runtime.ProvisionBoundary,
 		InstallBoundary:   runtime.InstallBoundary,
-		InitialBoundaries: boundaries,
 		BootstrapBoundary: &adminBoundary,
 	}, nil
 }

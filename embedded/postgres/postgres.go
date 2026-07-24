@@ -72,7 +72,6 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	}
 	js := natsRuntime.JetStream
 	database := pg.InitializePostgresDatabaseRuntime(runCtx, config.Postgres, config.Admin, js, logger)
-	initialBoundaries := []string{config.Admin.Boundary}
 	saveEvents := database.SaveEvents
 	getEvents := database.GetEvents
 	lockProvider := database.LockProvider
@@ -80,8 +79,13 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	eventPublishing := database.EventPublishing
 	pgListener := database.Listener
 
-	store, err := orisun.NewOrisunServer(runCtx, saveEvents, getEvents, lockProvider, js, initialBoundaries, logger)
+	store, err := orisun.NewOrisunServer(runCtx, saveEvents, getEvents, lockProvider, js, logger)
 	if err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
+	if err := store.EnsureBoundary(runCtx, config.Admin.Boundary); err != nil {
 		cancel()
 		natsRuntime.Close()
 		return nil, err
@@ -127,7 +131,12 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		}
 	}
 
-	pollingManager := orisun.StartEventPolling(runCtx, config, initialBoundaries, lockProvider, getEvents, js, eventPublishing, signalProvider, logger)
+	pollingManager := orisun.StartEventPolling(runCtx, config, lockProvider, getEvents, js, eventPublishing, signalProvider, logger)
+	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
 	provisionBoundary := func(provisionCtx context.Context, definition boundarymodel.Definition) error {
 		return database.ProvisionBoundary(provisionCtx, definition)
 	}

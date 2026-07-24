@@ -59,9 +59,7 @@ type jetStreamLockValue struct {
 }
 
 // JetStreamLockProvider implements a renewable, revision-fenced distributed
-// lock using NATS JetStream KV. Legacy values written as the literal "locked"
-// are intentionally treated as non-expiring so rolling upgrades cannot steal a
-// lock from an older server.
+// lock using NATS JetStream KV.
 type JetStreamLockProvider struct {
 	bucket  lockKeyValue
 	ownerID string
@@ -116,9 +114,8 @@ func (p *JetStreamLockProvider) Lock(ctx context.Context, lockName string) error
 	return err
 }
 
-// AcquireLock acquires a renewable, token-fenced lease. An expired structured
-// lease may be replaced with a revision-guarded update; legacy locks are never
-// automatically replaced.
+// AcquireLock acquires a renewable, token-fenced lease. An expired lease may be
+// replaced with a revision-guarded update.
 func (p *JetStreamLockProvider) AcquireLock(ctx context.Context, lockName string) (LockLease, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -156,16 +153,17 @@ func (p *JetStreamLockProvider) AcquireLock(ctx context.Context, lockName string
 			}
 			return nil, fmt.Errorf("read existing lock %s: %w", lockID, getErr)
 		}
-		current, structured := decodeJetStreamLockValue(entry.Value())
-		if structured && current.ExpiresUnixNano <= now.UnixNano() {
+		current, valid := decodeJetStreamLockValue(entry.Value())
+		if !valid {
+			return nil, fmt.Errorf("lock %s has an unsupported value format", lockID)
+		}
+		if current.ExpiresUnixNano <= now.UnixNano() {
 			revision, err = p.bucket.Update(ctx, lockID, encoded, entry.Revision())
 			if err == nil {
 				p.logger.Infof("Reclaimed expired lock: %s", lockID)
 				return p.startLease(ctx, lockID, token, revision, value.ExpiresUnixNano), nil
 			}
 			p.logger.Warnf("Failed to reclaim expired lock %s: %v", lockID, err)
-		} else if !structured {
-			p.logger.Warnf("Lock %s uses the legacy non-expiring format", lockID)
 		}
 
 		if attempt+1 < p.config.maxRetries {
@@ -304,8 +302,8 @@ func (p *JetStreamLockProvider) releaseRemote(lease *jetStreamLockLeaseHandle) {
 			}
 			p.logger.Warnf("Failed to inspect lock %s before release: %v", lease.name, err)
 		} else {
-			value, structured := decodeJetStreamLockValue(entry.Value())
-			if !structured || value.OwnerID != p.ownerID || value.Token != lease.token {
+			value, valid := decodeJetStreamLockValue(entry.Value())
+			if !valid || value.OwnerID != p.ownerID || value.Token != lease.token {
 				cancel()
 				p.logger.Infof("Lock %s is no longer owned; skipping release", lease.name)
 				return

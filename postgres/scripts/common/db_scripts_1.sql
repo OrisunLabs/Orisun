@@ -1,6 +1,6 @@
 -- Initialize Boundary Tables Function
 --
--- Creates or upgrades the PostgreSQL objects used by one logical boundary in a
+-- Creates or maintains the PostgreSQL objects used by one logical boundary in a
 -- caller-supplied schema. Boundaries are mapped to schemas by Go configuration;
 -- the boundary name is used only as the table/sequence prefix inside that schema.
 --
@@ -15,12 +15,9 @@
 --   <boundary>_events_count
 --   <boundary>_projector_checkpoint
 --
--- Existing rows may be migrated from old PostgreSQL-XID positions to Orisun
--- logical positions. transaction_id is the logical commit position used by
--- clients, projectors, and publishing checkpoints; pg_xact_id is only an
--- internal visibility marker for current-cluster in-flight transaction checks.
--- Existing rows with a legacy event_type column are backfilled into
--- data.eventType before the redundant storage column is dropped.
+-- transaction_id is the logical commit position used by clients, projectors,
+-- and publishing checkpoints. pg_xact_id is only an internal visibility marker
+-- for current-cluster in-flight transaction checks.
 
 CREATE OR REPLACE FUNCTION initialize_boundary_tables(
     boundary_name TEXT,
@@ -59,30 +56,6 @@ BEGIN
                    schema_name, boundary_name || '_orisun_es_event_global_id_seq',
                    schema_name, boundary_name || '_orisun_es_event', 'global_id');
 
-    -- Existing installations used PostgreSQL's internal xid8 as transaction_id.
-    -- Keep that only as an internal visibility marker; Orisun positions must be
-    -- logical, durable event-store positions that survive major version upgrades
-    -- and dump/restore operations where PostgreSQL XIDs can restart.
-    EXECUTE format('ALTER TABLE %I.%I ADD COLUMN IF NOT EXISTS pg_xact_id BIGINT',
-                   schema_name, boundary_name || '_orisun_es_event');
-
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = schema_name
-          AND table_name = boundary_name || '_orisun_es_event'
-          AND column_name = 'event_type'
-    ) THEN
-        EXECUTE format('
-            UPDATE %I.%I
-            SET data = jsonb_set(COALESCE(data, ''{}''::jsonb), ''{eventType}'', to_jsonb(event_type), true)
-            WHERE data->>''eventType'' IS DISTINCT FROM event_type',
-                       schema_name, boundary_name || '_orisun_es_event');
-
-        EXECUTE format('ALTER TABLE %I.%I DROP COLUMN event_type',
-                       schema_name, boundary_name || '_orisun_es_event');
-    END IF;
-
     -- pg_xact_id is current-cluster-only. After dump/restore or a major upgrade
     -- into a fresh cluster, the new cluster's xid8 can restart below values
     -- stored by the old cluster. Those stale values must not be used as a
@@ -93,20 +66,6 @@ BEGIN
         SET pg_xact_id = NULL
         WHERE pg_xact_id IS NOT NULL
           AND pg_xact_id >= pg_current_xact_id()::TEXT::BIGINT',
-                   schema_name, boundary_name || '_orisun_es_event');
-
-    EXECUTE format('
-        WITH remapped AS (
-            SELECT global_id,
-                   MAX(global_id) OVER (PARTITION BY transaction_id) + 1 AS logical_transaction_id
-            FROM %I.%I
-        )
-        UPDATE %I.%I e
-        SET transaction_id = remapped.logical_transaction_id
-        FROM remapped
-        WHERE e.global_id = remapped.global_id
-          AND e.transaction_id <> remapped.logical_transaction_id',
-                   schema_name, boundary_name || '_orisun_es_event',
                    schema_name, boundary_name || '_orisun_es_event');
 
     EXECUTE format('SELECT setval(%L::regclass, (SELECT COALESCE(MAX(global_id) + 1, 0) FROM %I.%I), false)',
@@ -132,17 +91,6 @@ BEGIN
         date_updated   TIMESTAMPTZ DEFAULT NOW() NOT NULL
     )', schema_name, boundary_name || '_orisun_last_published_event_position');
 
-    EXECUTE format('
-        UPDATE %I.%I p
-        SET transaction_id = e.transaction_id
-        FROM %I.%I e
-        WHERE p.boundary = %L
-          AND p.global_id = e.global_id
-          AND p.transaction_id <> e.transaction_id',
-                   schema_name, boundary_name || '_orisun_last_published_event_position',
-                   schema_name, boundary_name || '_orisun_es_event',
-                   boundary_name);
-
     -- Create the admin event-count cache table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         id          VARCHAR(255) PRIMARY KEY,
@@ -159,14 +107,6 @@ BEGIN
         prepare_position BIGINT NOT NULL
     )', schema_name, boundary_name || '_projector_checkpoint');
 
-    EXECUTE format('
-        UPDATE %I.%I c
-        SET commit_position = e.transaction_id
-        FROM %I.%I e
-        WHERE c.prepare_position = e.global_id
-          AND c.commit_position <> e.transaction_id',
-                   schema_name, boundary_name || '_projector_checkpoint',
-                   schema_name, boundary_name || '_orisun_es_event');
 END;
 $$ LANGUAGE plpgsql;
 

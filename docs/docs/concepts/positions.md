@@ -24,7 +24,12 @@ In Orisun `0.3.1` and later, PostgreSQL `transaction_id` is an Orisun logical co
 
 This matters during PostgreSQL major upgrades and restore workflows. PostgreSQL internal transaction IDs are assigned by a cluster-local counter. A `pg_upgrade` path may preserve enough cluster state for continuity, but dump/restore, logical replication moves, and some managed-service migrations can create a fresh cluster with lower internal transaction IDs. Orisun positions must remain valid across those workflows, so public positions use logical event-store ordering instead.
 
-When an older PostgreSQL-backed Orisun database starts on `0.3.1` or later, startup migrations remap legacy `transaction_id` values to logical commit positions and update publisher and projector checkpoints that point at stored events. Existing `pg_xact_id` values from a previous cluster are treated as disposable visibility metadata and cleared when they are detected as stale.
+The `0.8.0` bridge release includes the migrations that remap older
+`transaction_id` values to logical commit positions and update publisher and
+projector checkpoints that point at stored events. Installations older than
+`0.8.0` must run that release before upgrading further. Current releases still
+treat `pg_xact_id` values from a previous cluster as disposable visibility
+metadata and clear them when detected as stale.
 
 ## Empty and beginning positions
 

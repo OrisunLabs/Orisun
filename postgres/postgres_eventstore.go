@@ -795,19 +795,6 @@ type DatabaseRuntime struct {
 	PreexistingAdminStore bool
 }
 
-// InitializePostgresDatabase preserves the original tuple API for callers
-// that do not yet need dynamic boundary provisioning.
-func InitializePostgresDatabase(
-	ctx context.Context,
-	postgresDBConfig config.PostgresDBConfig,
-	adminConfig config.AdminConfig,
-	js jetstream.JetStream,
-	logger logging.Logger,
-) (eventstore.EventsSaver, eventstore.EventsRetriever, eventstore.LockProvider, common.DB, eventstore.EventPublishingTracker, *PGNotifyListener) {
-	runtime := InitializePostgresDatabaseRuntime(ctx, postgresDBConfig, adminConfig, js, logger)
-	return runtime.SaveEvents, runtime.GetEvents, runtime.LockProvider, runtime.AdminDB, runtime.EventPublishing, runtime.Listener
-}
-
 func InitializePostgresDatabaseRuntime(
 	ctx context.Context,
 	postgresDBConfig config.PostgresDBConfig,

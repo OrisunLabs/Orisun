@@ -30,7 +30,6 @@ func NewOrisunServer(
 	getEvents EventsRetriever,
 	lockProvider LockProvider,
 	js jetstream.JetStream,
-	boundaryNames []string,
 	logger logging.Logger,
 ) (*OrisunServer, error) {
 
@@ -44,13 +43,11 @@ func NewOrisunServer(
 
 	// Initialize event store
 	eventStore := NewEventStoreServer(
-		ctx,
 		js,
 		saveEvents,
 		getEvents,
 		lockProvider,
 		nil,
-		&boundaryNames,
 		EventStreamConfig{},
 		logger,
 	)

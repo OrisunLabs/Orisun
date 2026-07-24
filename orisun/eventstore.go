@@ -112,13 +112,11 @@ type EventStreamConfig struct {
 }
 
 func NewEventStoreServer(
-	ctx context.Context,
 	js jetstream.JetStream,
 	saveEventsFn EventsSaver,
 	getEventsFn EventsRetriever,
 	lockProvider LockProvider,
 	indexManager BoundaryIndexManager,
-	boundaries *[]string,
 	streamCfg EventStreamConfig,
 	logger logging.Logger,
 ) *EventStore {
@@ -141,11 +139,6 @@ func NewEventStoreServer(
 		logger:           logger,
 		streamConfig:     streamCfg,
 		activeBoundaries: make(map[string]struct{}),
-	}
-	for _, boundary := range *boundaries {
-		if err := store.EnsureBoundary(ctx, boundary); err != nil {
-			logger.Fatalf("failed to initialize boundary stream %s: %v", boundary, err)
-		}
 	}
 	return store
 }
@@ -980,7 +973,6 @@ func GetEventNatsMessageId(preparePosition int64, commitPosition int64) string {
 func InitializeEventStore(
 	ctx context.Context,
 	config c.AppConfig,
-	initialBoundaries []string,
 	saveEvents EventsSaver,
 	getEvents EventsRetriever,
 	lockProvider LockProvider,
@@ -990,13 +982,11 @@ func InitializeEventStore(
 
 	logger.Info("Initializing EventStore")
 	eventStore := NewEventStoreServer(
-		ctx,
 		js,
 		saveEvents,
 		getEvents,
 		lockProvider,
 		indexManager,
-		&initialBoundaries,
 		EventStreamConfig{
 			MaxBytes: config.Nats.EventStreamMaxBytes,
 			MaxMsgs:  config.Nats.EventStreamMaxMsgs,
@@ -1004,6 +994,9 @@ func InitializeEventStore(
 		},
 		logger,
 	)
+	if err := eventStore.EnsureBoundary(ctx, config.Admin.Boundary); err != nil {
+		logger.Fatalf("failed to initialize admin boundary stream %s: %v", config.Admin.Boundary, err)
+	}
 	logger.Info("EventStore initialized")
 
 	return eventStore
@@ -1075,7 +1068,6 @@ type EventPollingManager struct {
 func StartEventPolling(
 	ctx context.Context,
 	config c.AppConfig,
-	initialBoundaries []string,
 	lockProvider LockProvider,
 	getEvents EventsRetriever,
 	js jetstream.JetStream,
@@ -1092,9 +1084,6 @@ func StartEventPolling(
 		signalProvider:         signalProvider,
 		logger:                 logger,
 		running:                make(map[string]struct{}),
-	}
-	for _, name := range initialBoundaries {
-		_ = manager.StartBoundary(name)
 	}
 	return manager
 }

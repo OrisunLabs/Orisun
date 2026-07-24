@@ -26,7 +26,6 @@ func TestSqliteBoundaryProvisionerMakesBoundaryAvailableToRuntime(t *testing.T) 
 		ctx,
 		config.SqliteConfig{Dir: dir, Synchronous: "FULL"},
 		config.AdminConfig{Boundary: "admin"},
-		[]string{"admin"},
 		provisioningTestLock{},
 		logger,
 	)

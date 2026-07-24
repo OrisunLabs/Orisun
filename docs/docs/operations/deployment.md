@@ -158,25 +158,26 @@ Persist the NATS store directory for durable JetStream state. PostgreSQL remains
 
 ## PostgreSQL Major Upgrades
 
-Orisun `0.3.1` changes PostgreSQL event positions so public `commit_position` values are Orisun logical positions instead of PostgreSQL internal transaction IDs. This is a breaking storage migration for PostgreSQL-backed deployments.
+Current Orisun releases store public `commit_position` values as logical
+event-store positions. PostgreSQL's internal transaction ID is retained only as
+disposable `pg_xact_id` visibility metadata.
 
 Recommended upgrade sequence:
 
 1. Stop all Orisun nodes cleanly.
 2. Back up PostgreSQL and the NATS store directory.
-3. Upgrade PostgreSQL using your platform's normal process. If you are still running an Orisun version before `0.3.1`, prefer PostgreSQL `pg_upgrade` over dump/restore because older Orisun versions exposed PostgreSQL internal transaction IDs as public positions.
-4. Start one Orisun `0.3.1` node first.
-5. Wait for database migrations to complete for every catalogued boundary.
+3. If the Orisun installation is older than `0.8.0`, upgrade to `0.8.0` and
+   verify it before upgrading PostgreSQL or moving to a newer Orisun release.
+4. Upgrade PostgreSQL using your platform's normal process.
+5. Start one Orisun node first and wait for every catalogued boundary to
+   initialize.
 6. Confirm publishers/projectors are healthy, then start the rest of the Orisun nodes.
 
-During the first `0.3.1` startup, Orisun:
-
-- adds internal `pg_xact_id` metadata to event tables,
-- remaps legacy `transaction_id` values to logical Orisun commit positions,
-- updates publisher checkpoints and projector checkpoints that point at stored events,
-- clears stale current-cluster-only `pg_xact_id` values when detected.
-
-After this migration, future PostgreSQL major upgrades no longer need to preserve PostgreSQL transaction IDs for Orisun correctness. PostgreSQL internal transaction IDs remain useful only for current-cluster stable-prefix reads.
+Current releases clear stale `pg_xact_id` values when a restored database or
+new cluster has restarted its transaction-ID range. PostgreSQL transaction IDs
+therefore do not need to be preserved for Orisun correctness. The older event
+shape, logical-position, and checkpoint migrations are intentionally confined
+to the required `0.8.0` bridge release.
 
 ## Clustered PostgreSQL
 

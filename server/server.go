@@ -82,7 +82,6 @@ type Backend struct {
 	SignalProvider        func(string) orisun.EventSignal
 	ProvisionBoundary     boundaryprovisioning.ProvisionBoundary
 	InstallBoundary       boundaryprovisioning.InstallBoundary
-	InitialBoundaries     []string
 	BootstrapBoundary     *boundarymodel.Definition
 	PreexistingAdminStore bool
 	Start                 func(context.Context)
@@ -144,7 +143,6 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 	eventStore := orisun.InitializeEventStore(
 		ctx,
 		config,
-		backend.InitialBoundaries,
 		backend.SaveEvents,
 		backend.GetEvents,
 		backend.LockProvider,
@@ -162,11 +160,11 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 			return orisun.NewPollingSignal(1 * time.Second)
 		}
 	}
-	pollingManager := orisun.StartEventPolling(ctx, config, backend.InitialBoundaries, backend.LockProvider, backend.GetEvents, js, backend.EventPublishing, signalProvider, AppLogger)
-	provisionedBoundaries := make(map[string]struct{}, len(backend.InitialBoundaries))
-	for _, boundary := range backend.InitialBoundaries {
-		provisionedBoundaries[boundary] = struct{}{}
+	pollingManager := orisun.StartEventPolling(ctx, config, backend.LockProvider, backend.GetEvents, js, backend.EventPublishing, signalProvider, AppLogger)
+	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+		AppLogger.Fatalf("Failed to start admin boundary publisher: %v", err)
 	}
+	provisionedBoundaries := map[string]struct{}{config.Admin.Boundary: {}}
 	var provisionedBoundariesMu sync.Mutex
 	var eventCountProjectors *eventCountProjectionManager
 

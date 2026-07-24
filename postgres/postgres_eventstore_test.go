@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	common "github.com/OrisunLabs/Orisun/admin/slices/common"
 	config "github.com/OrisunLabs/Orisun/config"
 	logging "github.com/OrisunLabs/Orisun/logging"
 	"github.com/OrisunLabs/Orisun/orisun"
+	"github.com/goccy/go-json"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -329,7 +329,7 @@ func TestSaveAndGetEvents(t *testing.T) {
 	assert.Equal(t, eventId.String(), fromBeginning[0].EventId)
 }
 
-func TestRunDbScripts_NormalizesLegacyPostgresTransactionIDs(t *testing.T) {
+func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	container, err := setupTestContainer(t)
 	require.NoError(t, err)
 	defer func() {
@@ -343,36 +343,16 @@ func TestRunDbScripts_NormalizesLegacyPostgresTransactionIDs(t *testing.T) {
 	defer db.Close()
 
 	_, err = db.Exec(`
-		ALTER TABLE public.test_boundary_orisun_es_event
-		ADD COLUMN event_type TEXT NOT NULL DEFAULT 'LegacyEvent' CHECK (event_type <> '')
-	`)
-	require.NoError(t, err)
-
-	_, err = db.Exec(`
 		INSERT INTO public.test_boundary_orisun_es_event
-			(transaction_id, global_id, event_id, event_type, data, metadata)
+			(transaction_id, global_id, event_id, data, metadata)
 		VALUES
-			(900000, 0, $1, 'LegacyEvent', '{"key":"first"}', '{}'),
-			(900000, 1, $2, 'LegacyEvent', '{"key":"second"}', '{}'),
-			(900001, 2, $3, 'LegacyEvent', '{"key":"third"}', '{}')
+			(2, 0, $1, '{"eventType":"CurrentEvent","key":"first"}', '{}'),
+			(2, 1, $2, '{"eventType":"CurrentEvent","key":"second"}', '{}'),
+			(3, 2, $3, '{"eventType":"CurrentEvent","key":"third"}', '{}')
 	`, uuid.NewString(), uuid.NewString(), uuid.NewString())
 	require.NoError(t, err)
 
 	_, err = db.Exec(`SELECT setval('public.test_boundary_orisun_es_event_global_id_seq', 2, true)`)
-	require.NoError(t, err)
-
-	_, err = db.Exec(`
-		INSERT INTO public.test_boundary_orisun_last_published_event_position
-			(boundary, transaction_id, global_id)
-		VALUES ('test_boundary', 900001, 2)
-	`)
-	require.NoError(t, err)
-
-	_, err = db.Exec(`
-		INSERT INTO public.test_boundary_projector_checkpoint
-			(id, name, commit_position, prepare_position)
-		VALUES ('checkpoint-id', 'checkpoint-name', 900000, 1)
-	`)
 	require.NoError(t, err)
 
 	require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, context.Background()))
@@ -432,7 +412,7 @@ func TestRunDbScripts_NormalizesLegacyPostgresTransactionIDs(t *testing.T) {
 	err = db.QueryRow(`
 		SELECT COUNT(*)
 		FROM public.test_boundary_orisun_es_event
-		WHERE data->>'eventType' IS DISTINCT FROM 'LegacyEvent'
+		WHERE data->>'eventType' IS DISTINCT FROM 'CurrentEvent'
 	`).Scan(&rowsMissingEventType)
 	require.NoError(t, err)
 	require.Equal(t, 0, rowsMissingEventType)
@@ -453,24 +433,6 @@ func TestRunDbScripts_NormalizesLegacyPostgresTransactionIDs(t *testing.T) {
 	`).Scan(&stalePGXactIDCount)
 	require.NoError(t, err)
 	require.Equal(t, 0, stalePGXactIDCount)
-
-	var lastPublishedTransactionID int64
-	err = db.QueryRow(`
-		SELECT transaction_id
-		FROM public.test_boundary_orisun_last_published_event_position
-		WHERE boundary = 'test_boundary'
-	`).Scan(&lastPublishedTransactionID)
-	require.NoError(t, err)
-	require.Equal(t, int64(3), lastPublishedTransactionID)
-
-	var checkpointCommitPosition int64
-	err = db.QueryRow(`
-		SELECT commit_position
-		FROM public.test_boundary_projector_checkpoint
-		WHERE name = 'checkpoint-name'
-	`).Scan(&checkpointCommitPosition)
-	require.NoError(t, err)
-	require.Equal(t, int64(2), checkpointCommitPosition)
 
 	logger, err := logging.ZapLogger("debug")
 	require.NoError(t, err)

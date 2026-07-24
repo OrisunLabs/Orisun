@@ -44,7 +44,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 			EventPublishing:       runtime.EventPublishing,
 			ProvisionBoundary:     runtime.ProvisionBoundary,
 			InstallBoundary:       runtime.InstallBoundary,
-			InitialBoundaries:     []string{config.Admin.Boundary},
 			BootstrapBoundary:     &adminBoundary,
 			PreexistingAdminStore: runtime.PreexistingAdminStore,
 		}
@@ -69,12 +68,10 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		}
 		return backend, nil
 	case "sqlite":
-		boundaries := []string{config.Admin.Boundary}
 		runtime, err := sqlitebackend.InitializeSqliteDatabaseRuntime(
 			ctx,
 			config.Sqlite,
 			config.Admin,
-			boundaries,
 			js,
 			logger,
 		)
@@ -91,7 +88,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 			SignalProvider:    runtime.SignalProvider,
 			ProvisionBoundary: runtime.ProvisionBoundary,
 			InstallBoundary:   runtime.InstallBoundary,
-			InitialBoundaries: boundaries,
 			BootstrapBoundary: &adminBoundary,
 		}, nil
 	case "foundationdb":
@@ -99,8 +95,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 			ctx,
 			config.FoundationDB,
 			config.Admin,
-			[]string{config.Admin.Boundary},
-			js,
 			logger,
 		)
 		if err != nil {
@@ -115,7 +109,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 			SignalProvider:    runtime.SignalProvider,
 			ProvisionBoundary: runtime.ProvisionBoundary,
 			InstallBoundary:   runtime.InstallBoundary,
-			InitialBoundaries: runtime.InitialBoundaries,
 			Close:             runtime.Close,
 		}, nil
 	default:

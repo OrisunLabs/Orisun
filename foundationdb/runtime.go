@@ -17,6 +17,5 @@ type DatabaseRuntime struct {
 	SignalProvider    func(string) orisun.EventSignal
 	ProvisionBoundary func(context.Context, boundarymodel.Definition) error
 	InstallBoundary   func(context.Context, boundarymodel.Definition) error
-	InitialBoundaries []string
 	Close             func(context.Context)
 }
