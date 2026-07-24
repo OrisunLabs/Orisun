@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-07-24
+
+### Fixed
+
+- Stabilized the YugabyteDB LISTEN/NOTIFY integration test by retrying only
+  Yugabyte's transient SQLSTATE `55000` response while its notification
+  internals finish initializing. Other listener errors still fail immediately.
+
+### Changed
+
+- Release publication now verifies successful CI for the exact tagged `main`
+  commit instead of running the full test suite a second time. Manual release
+  reruns also build from the resolved tag commit.
+- Updated GitHub Release publishing to the Node 24-compatible
+  `softprops/action-gh-release` v3 action.
+
+### Release Notes
+
+- This release carries forward all 0.9.0 breaking changes, behavior changes,
+  and migration notes below.
+
 ## 0.9.0 - 2026-07-24
 
 ### Breaking Changes
