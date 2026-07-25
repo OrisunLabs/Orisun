@@ -52,6 +52,15 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/docs',
           editUrl: 'https://github.com/OrisunLabs/Orisun/tree/main/docs/',
+          // The newest cut version serves at /docs; in-progress docs for the
+          // next release live at /docs/next with an "unreleased" banner.
+          lastVersion: '0.9.1',
+          versions: {
+            current: {
+              label: 'Next 🚧',
+              banner: 'unreleased',
+            },
+          },
         },
         blog: false,
         theme: {
@@ -92,6 +101,7 @@ const config: Config = {
         {to: '/docs/concepts', label: 'Concepts', position: 'left'},
         {to: '/docs/api', label: 'API', position: 'left'},
         {to: '/docs/operations', label: 'Operations', position: 'left'},
+        {type: 'docsVersionDropdown', position: 'right'},
         {href: 'https://github.com/OrisunLabs/Orisun/releases', label: 'Releases', position: 'right'},
         {href: 'https://hub.docker.com/repository/docker/orisunlabs/orisun', label: 'Docker', position: 'right'},
         {href: 'https://github.com/OrisunLabs/Orisun', label: 'GitHub', position: 'right'},
