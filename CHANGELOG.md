@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.9.3 - 2026-07-25
+
+### Fixed
+
+- PostgreSQL and YugabyteDB ordering indexes no longer include unbounded event
+  `data` or `metadata`. Existing payload-bearing Orisun-managed indexes are
+  detected and replaced during boundary initialization, preventing valid event
+  writes from failing when a B-tree entry exceeds PostgreSQL's tuple-size limit.
+- PostgreSQL concurrent index creation now verifies `pg_index.indisvalid`
+  before reporting `READY`. Failed builds and retries automatically remove
+  invalid physical indexes while leaving metadata `BUILDING` for a clean retry.
+
 ### Changed
 
 - Admin RPCs now enforce the existing role model. Boundary and user
@@ -35,9 +47,15 @@
   payload bytes, durable commit-attempt latency, and CCC conflicts by boundary
   and bounded criterion shape without exporting criterion values or raw error
   messages.
-- PostgreSQL concurrent index creation now verifies `pg_index.indisvalid`
-  before reporting `READY`. Failed builds and retries automatically remove
-  invalid physical indexes while leaving metadata `BUILDING` for a clean retry.
+
+### Release Notes
+
+- PostgreSQL and YugabyteDB installations automatically rebuild the two legacy
+  payload-bearing ordering indexes for each active catalog boundary on first
+  startup. No manual repair SQL is required. Startup can take longer while large
+  indexes are rebuilt.
+- This release carries forward the 0.9.0 breaking changes and migration
+  requirements documented below.
 
 ## 0.9.2 - 2026-07-25
 
