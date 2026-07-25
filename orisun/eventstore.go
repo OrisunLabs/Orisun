@@ -381,6 +381,57 @@ func (s *EventStore) DropIndex(ctx context.Context, req *DropIndexRequest) error
 	return nil
 }
 
+func (s *EventStore) ListIndexes(ctx context.Context, req *ListIndexesRequest) (*ListIndexesResponse, error) {
+	if err := authorizeRequest(ctx, []Role{RoleAdmin, RoleOperations}); err != nil {
+		return nil, err
+	}
+	if s.indexManager == nil {
+		return nil, statuscode.Errorf(statuscode.Unimplemented, "index management is not configured")
+	}
+	if req == nil || req.Boundary == "" {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "boundary is required")
+	}
+	if err := s.RequireBoundaryActive(req.Boundary); err != nil {
+		return nil, err
+	}
+	indexes, err := s.indexManager.ListBoundaryIndexes(ctx, req.Boundary)
+	if err != nil {
+		if code, _, ok := statuscode.FromError(err); ok && code != statuscode.Unknown {
+			return nil, err
+		}
+		return nil, statuscode.Errorf(statuscode.Internal, "failed to list indexes: %v", err)
+	}
+	result := make([]*BoundaryIndex, len(indexes))
+	for i := range indexes {
+		index := indexes[i]
+		result[i] = &index
+	}
+	return &ListIndexesResponse{Indexes: result}, nil
+}
+
+func (s *EventStore) GetIndex(ctx context.Context, req *GetIndexRequest) (*GetIndexResponse, error) {
+	if err := authorizeRequest(ctx, []Role{RoleAdmin, RoleOperations}); err != nil {
+		return nil, err
+	}
+	if s.indexManager == nil {
+		return nil, statuscode.Errorf(statuscode.Unimplemented, "index management is not configured")
+	}
+	if req == nil || req.Boundary == "" || req.Name == "" {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "boundary and name are required")
+	}
+	if err := s.RequireBoundaryActive(req.Boundary); err != nil {
+		return nil, err
+	}
+	index, err := s.indexManager.GetBoundaryIndex(ctx, req.Boundary, req.Name)
+	if err != nil {
+		if code, _, ok := statuscode.FromError(err); ok && code != statuscode.Unknown {
+			return nil, err
+		}
+		return nil, statuscode.Errorf(statuscode.Internal, "failed to get index: %v", err)
+	}
+	return &GetIndexResponse{Index: index}, nil
+}
+
 func (s *EventStore) SaveEvents(ctx context.Context, req *SaveEventsRequest) (resp *WriteResult, err error) {
 	if s.logger.IsDebugEnabled() {
 		s.logger.Debugf("SaveEvents called with req: %v", req)

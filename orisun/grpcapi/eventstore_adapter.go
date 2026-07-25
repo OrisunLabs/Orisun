@@ -129,6 +129,26 @@ func (a *EventStoreAdapter) DropIndex(ctx context.Context, req *DropIndexRequest
 	return &DropIndexResponse{}, nil
 }
 
+func (a *EventStoreAdapter) ListIndexes(ctx context.Context, req *ListIndexesRequest) (*ListIndexesResponse, error) {
+	response, err := a.eventStore.ListIndexes(ctx, listIndexesRequestFromProto(req))
+	if err != nil {
+		return nil, grpcstatus.FromError(err)
+	}
+	indexes := make([]*IndexDefinition, len(response.Indexes))
+	for i, index := range response.Indexes {
+		indexes[i] = indexDefinitionToProto(index)
+	}
+	return &ListIndexesResponse{Indexes: indexes}, nil
+}
+
+func (a *EventStoreAdapter) GetIndex(ctx context.Context, req *GetIndexRequest) (*GetIndexResponse, error) {
+	response, err := a.eventStore.GetIndex(ctx, getIndexRequestFromProto(req))
+	if err != nil {
+		return nil, grpcstatus.FromError(err)
+	}
+	return &GetIndexResponse{Index: indexDefinitionToProto(response.Index)}, nil
+}
+
 func saveEventsRequestFromProto(req *SaveEventsRequest) *orisun.SaveEventsRequest {
 	if req == nil {
 		return nil
@@ -268,6 +288,65 @@ func dropIndexRequestFromProto(req *DropIndexRequest) *orisun.DropIndexRequest {
 		return nil
 	}
 	return &orisun.DropIndexRequest{Boundary: req.Boundary, Name: req.Name}
+}
+
+func listIndexesRequestFromProto(req *ListIndexesRequest) *orisun.ListIndexesRequest {
+	if req == nil {
+		return nil
+	}
+	return &orisun.ListIndexesRequest{Boundary: req.Boundary}
+}
+
+func getIndexRequestFromProto(req *GetIndexRequest) *orisun.GetIndexRequest {
+	if req == nil {
+		return nil
+	}
+	return &orisun.GetIndexRequest{Boundary: req.Boundary, Name: req.Name}
+}
+
+func indexDefinitionToProto(index *orisun.BoundaryIndex) *IndexDefinition {
+	if index == nil {
+		return nil
+	}
+	fields := make([]*IndexField, len(index.Fields))
+	for i, field := range index.Fields {
+		valueType := ValueType_TEXT
+		switch field.ValueType {
+		case "numeric":
+			valueType = ValueType_NUMERIC
+		case "boolean":
+			valueType = ValueType_BOOLEAN
+		case "timestamptz":
+			valueType = ValueType_TIMESTAMPTZ
+		}
+		fields[i] = &IndexField{JsonKey: field.JsonKey, ValueType: valueType}
+	}
+	conditions := make([]*IndexCondition, len(index.Conditions))
+	for i, condition := range index.Conditions {
+		conditions[i] = &IndexCondition{
+			Key:      condition.Key,
+			Operator: condition.Operator,
+			Value:    condition.Value,
+		}
+	}
+	combinator := ConditionCombinator_AND
+	if index.Combinator == orisun.IndexCombinatorOR {
+		combinator = ConditionCombinator_OR
+	}
+	state := IndexState_INDEX_STATE_UNSPECIFIED
+	switch index.State {
+	case orisun.BoundaryIndexStateBuilding:
+		state = IndexState_INDEX_STATE_BUILDING
+	case orisun.BoundaryIndexStateReady:
+		state = IndexState_INDEX_STATE_READY
+	}
+	return &IndexDefinition{
+		Name:                index.Name,
+		Fields:              fields,
+		Conditions:          conditions,
+		ConditionCombinator: combinator,
+		State:               state,
+	}
 }
 
 func domainPositionFromProto(position *Position) *orisun.Position {

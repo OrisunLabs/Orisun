@@ -703,6 +703,9 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 	if len(fields) == 0 {
 		return fmt.Errorf("at least one field is required")
 	}
+	if combinator == "" {
+		combinator = eventstore.IndexCombinatorAND
+	}
 
 	// Build index expression list
 	exprs := make([]string, len(fields))
@@ -726,9 +729,6 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		validOps := map[string]bool{"=": true, ">": true, "<": true, ">=": true, "<=": true}
 		validCombinators := map[string]bool{eventstore.IndexCombinatorAND: true, eventstore.IndexCombinatorOR: true}
 
-		if combinator == "" {
-			combinator = eventstore.IndexCombinatorAND
-		}
 		if !validCombinators[combinator] {
 			return fmt.Errorf("invalid combinator %q: must be AND or OR", combinator)
 		}
@@ -746,6 +746,39 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 	indexName := pq.QuoteIdentifier(boundary + "_" + name + "_idx")
 	tableName := pq.QuoteIdentifier(boundary + "_orisun_es_event")
 	schemaName := pq.QuoteIdentifier(schema)
+	metadataTable := pq.QuoteIdentifier(boundary + "_orisun_boundary_index_metadata")
+
+	fieldsJSON, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("encode index fields: %w", err)
+	}
+	conditionsJSON, err := json.Marshal(conditions)
+	if err != nil {
+		return fmt.Errorf("encode index conditions: %w", err)
+	}
+	upsertMetadata := fmt.Sprintf(
+		`INSERT INTO %s.%s (name, fields, conditions, combinator, state, date_created, date_updated)
+		 VALUES ($1, $2::jsonb, $3::jsonb, $4, $5, NOW(), NOW())
+		 ON CONFLICT (name) DO UPDATE SET
+		   fields = EXCLUDED.fields,
+		   conditions = EXCLUDED.conditions,
+		   combinator = EXCLUDED.combinator,
+		   state = EXCLUDED.state,
+		   date_updated = NOW()`,
+		schemaName,
+		metadataTable,
+	)
+	if _, err := db.db.ExecContext(
+		ctx,
+		upsertMetadata,
+		name,
+		string(fieldsJSON),
+		string(conditionsJSON),
+		combinator,
+		eventstore.BoundaryIndexStateBuilding,
+	); err != nil {
+		return fmt.Errorf("persist building index metadata: %w", err)
+	}
 
 	ddl := fmt.Sprintf(
 		"CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s.%s USING btree (%s)%s",
@@ -756,8 +789,18 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		whereClause,
 	)
 
-	_, err := db.db.ExecContext(ctx, ddl)
-	return err
+	if _, err := db.db.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	markReady := fmt.Sprintf(
+		"UPDATE %s.%s SET state = $2, date_updated = NOW() WHERE name = $1",
+		schemaName,
+		metadataTable,
+	)
+	if _, err := db.db.ExecContext(ctx, markReady, name, eventstore.BoundaryIndexStateReady); err != nil {
+		return fmt.Errorf("mark index metadata ready: %w", err)
+	}
+	return nil
 }
 
 func (db *PostgresAdminDB) DropBoundaryIndex(
@@ -776,10 +819,94 @@ func (db *PostgresAdminDB) DropBoundaryIndex(
 
 	indexName := pq.QuoteIdentifier(boundary + "_" + name + "_idx")
 	schemaName := pq.QuoteIdentifier(schema)
+	metadataTable := pq.QuoteIdentifier(boundary + "_orisun_boundary_index_metadata")
 
 	ddl := fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s.%s", schemaName, indexName)
-	_, err := db.db.ExecContext(ctx, ddl)
+	if _, err := db.db.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	deleteMetadata := fmt.Sprintf("DELETE FROM %s.%s WHERE name = $1", schemaName, metadataTable)
+	_, err := db.db.ExecContext(ctx, deleteMetadata, name)
 	return err
+}
+
+func (db *PostgresAdminDB) ListBoundaryIndexes(ctx context.Context, boundary string) ([]eventstore.BoundaryIndex, error) {
+	entry, ok := db.registry.lookup(boundary)
+	if !ok {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", boundary)
+	}
+	table := pq.QuoteIdentifier(boundary + "_orisun_boundary_index_metadata")
+	query := fmt.Sprintf(
+		"SELECT name, fields, conditions, combinator, state FROM %s.%s ORDER BY name",
+		pq.QuoteIdentifier(entry.mapping.Schema),
+		table,
+	)
+	rows, err := db.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	indexes := make([]eventstore.BoundaryIndex, 0)
+	for rows.Next() {
+		index, err := scanPostgresBoundaryIndex(rows)
+		if err != nil {
+			return nil, err
+		}
+		indexes = append(indexes, index)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return indexes, nil
+}
+
+func (db *PostgresAdminDB) GetBoundaryIndex(ctx context.Context, boundary, name string) (*eventstore.BoundaryIndex, error) {
+	entry, ok := db.registry.lookup(boundary)
+	if !ok {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", boundary)
+	}
+	if err := validateBoundaryName(name); err != nil {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "invalid index name %s: %v", name, err)
+	}
+	query := fmt.Sprintf(
+		"SELECT name, fields, conditions, combinator, state FROM %s.%s WHERE name = $1",
+		pq.QuoteIdentifier(entry.mapping.Schema),
+		pq.QuoteIdentifier(boundary+"_orisun_boundary_index_metadata"),
+	)
+	index, err := scanPostgresBoundaryIndex(db.db.QueryRowContext(ctx, query, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, statuscode.Errorf(statuscode.NotFound, "index %q does not exist in boundary %q", name, boundary)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &index, nil
+}
+
+type postgresIndexScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanPostgresBoundaryIndex(row postgresIndexScanner) (eventstore.BoundaryIndex, error) {
+	var (
+		index          eventstore.BoundaryIndex
+		fieldsJSON     []byte
+		conditionsJSON []byte
+	)
+	if err := row.Scan(&index.Name, &fieldsJSON, &conditionsJSON, &index.Combinator, &index.State); err != nil {
+		return eventstore.BoundaryIndex{}, err
+	}
+	if err := json.Unmarshal(fieldsJSON, &index.Fields); err != nil {
+		return eventstore.BoundaryIndex{}, fmt.Errorf("decode index %s fields: %w", index.Name, err)
+	}
+	if err := json.Unmarshal(conditionsJSON, &index.Conditions); err != nil {
+		return eventstore.BoundaryIndex{}, fmt.Errorf("decode index %s conditions: %w", index.Name, err)
+	}
+	if index.State == "" {
+		index.State = eventstore.BoundaryIndexStateReady
+	}
+	return index, nil
 }
 
 type DatabaseRuntime struct {

@@ -86,6 +86,32 @@ grpcurl -H "$AUTH" \
   localhost:5005 orisun.EventStore/DropIndex
 ```
 
+## Inspect Indexes
+
+Use `ListIndexes` for a boundary-wide inventory and `GetIndex` for one logical
+name:
+
+```bash
+grpcurl -H "$AUTH" -d '{"boundary":"orders"}' \
+  localhost:5005 orisun.EventStore/ListIndexes
+
+grpcurl -H "$AUTH" \
+  -d '{"boundary":"orders","name":"customer_id"}' \
+  localhost:5005 orisun.EventStore/GetIndex
+```
+
+Each definition includes its fields, conditions, combinator, and state.
+`BUILDING` means the index is registered but its backfill has not completed;
+`READY` means it can be used. FoundationDB exposes its live backfill state.
+Synchronous PostgreSQL and SQLite creation normally returns only after the
+index is ready.
+
+The inventory contains indexes managed through Orisun's index API. It does not
+attempt to parse arbitrary database-native indexes. After upgrading an existing
+PostgreSQL installation, recreate an existing logical definition with
+`CreateIndex` to adopt it into the inventory; the physical `IF NOT EXISTS`
+creation remains idempotent.
+
 ## Backend Behavior
 
 PostgreSQL uses JSONB expression indexes. SQLite uses JSON expression indexes.

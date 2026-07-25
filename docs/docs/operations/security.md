@@ -53,6 +53,8 @@ Role values are validated and compared exactly. A user-creation request with
 | `EventStore/SaveEvents` | Yes | `ADMIN` or `OPERATIONS` |
 | `EventStore/CreateIndex` | Yes | `ADMIN` |
 | `EventStore/DropIndex` | Yes | `ADMIN` |
+| `EventStore/ListIndexes` | Yes | `ADMIN` or `OPERATIONS` |
+| `EventStore/GetIndex` | Yes | `ADMIN` or `OPERATIONS` |
 | `EventStore/GetEvents` | Yes | Any authenticated user |
 | `EventStore/GetLatestByCriteria` | Yes | Any authenticated user |
 | `EventStore/CatchUpSubscribeToEvents` | Yes | Any authenticated user |

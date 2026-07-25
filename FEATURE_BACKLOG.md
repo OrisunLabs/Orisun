@@ -104,18 +104,18 @@ continuous dependency diagnostics.
 
 ### 7. Complete index lifecycle management
 
-Add:
+`ListIndexes` and `GetIndex` now expose Orisun-managed definitions and their
+`BUILDING` or `READY` state across PostgreSQL, SQLite, and FoundationDB.
 
-- `ListIndexes`,
-- `GetIndex`,
+Still add:
+
 - `CreateIndexAsync`,
 - `RebuildIndex`,
 - `ExplainCriteria`,
 - index states such as `BUILDING`, `READY`, `FAILED`, and `DROPPING`,
 - rows-scanned and backfill-position progress.
 
-The FoundationDB guide tells operators to wait for an index to report ready,
-but no public RPC reports readiness. See
+FoundationDB operators can now inspect readiness through the public API. See
 [FoundationDB operations](docs/docs/operations/foundationdb.md#indexes-and-query-shape).
 
 `ExplainCriteria` should report the selected index, scan risk, and missing-index

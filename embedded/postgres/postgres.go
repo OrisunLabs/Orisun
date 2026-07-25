@@ -270,6 +270,20 @@ func (s *Store) DropBoundaryIndex(ctx context.Context, boundary, name string) er
 	return s.indexManager.DropBoundaryIndex(ctx, boundary, name)
 }
 
+func (s *Store) ListBoundaryIndexes(ctx context.Context, boundary string) ([]orisun.BoundaryIndex, error) {
+	if err := s.RequireBoundaryActive(boundary); err != nil {
+		return nil, err
+	}
+	return s.indexManager.ListBoundaryIndexes(ctx, boundary)
+}
+
+func (s *Store) GetBoundaryIndex(ctx context.Context, boundary, name string) (*orisun.BoundaryIndex, error) {
+	if err := s.RequireBoundaryActive(boundary); err != nil {
+		return nil, err
+	}
+	return s.indexManager.GetBoundaryIndex(ctx, boundary, name)
+}
+
 func (s *Store) NATSConnection() *natsgo.Conn {
 	if s == nil || s.natsRuntime == nil {
 		return nil

@@ -16,6 +16,8 @@ The EventStore service owns event operations:
 - `GetServerInfo`
 - `CreateIndex`
 - `DropIndex`
+- `ListIndexes`
+- `GetIndex`
 
 ## Connect and authenticate
 
@@ -1039,6 +1041,54 @@ EOF
 </Tabs>
 
 `value_type` is `TEXT`, `NUMERIC`, `BOOLEAN`, or `TIMESTAMPTZ`. Add `conditions` for a partial index. Each condition `operator` must be one of `=`, `>`, `<`, `>=`, or `<=`. See [Indexing](../concepts/indexing) for composite and partial index examples.
+
+## ListIndexes and GetIndex
+
+Both calls return Orisun-managed index definitions, including fields, partial
+conditions, the condition combinator, and `BUILDING` or `READY` state.
+`GetIndex` returns `NOT_FOUND` when the logical name is not registered.
+
+<Tabs groupId="client-lang">
+  <TabItem value="go" label="Go" default>
+
+```go
+list, err := client.ListIndexes(ctx, "orders")
+one, err := client.GetIndex(ctx, "orders", "customer_id")
+```
+
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
+```typescript
+const list = await client.listIndexes('orders');
+const one = await client.getIndex('orders', 'customer_id');
+```
+
+  </TabItem>
+  <TabItem value="java" label="Java">
+
+```java
+Eventstore.ListIndexesResponse list = client.listIndexes("orders");
+Eventstore.GetIndexResponse one = client.getIndex("orders", "customer_id");
+```
+
+  </TabItem>
+  <TabItem value="grpcurl" label="grpcurl">
+
+```bash
+grpcurl -H "$AUTH" -d '{"boundary":"orders"}' \
+  localhost:5005 orisun.EventStore/ListIndexes
+
+grpcurl -H "$AUTH" \
+  -d '{"boundary":"orders","name":"customer_id"}' \
+  localhost:5005 orisun.EventStore/GetIndex
+```
+
+  </TabItem>
+</Tabs>
+
+`ADMIN` and `OPERATIONS` users can inspect indexes. Creating and dropping
+indexes remains restricted to `ADMIN`.
 
 ## DropIndex
 

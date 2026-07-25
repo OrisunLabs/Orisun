@@ -53,6 +53,39 @@ type mappingRetriever struct {
 	created time.Time
 }
 
+type mappingIndexManager struct {
+	indexes []orisun.BoundaryIndex
+}
+
+func (*mappingIndexManager) CreateBoundaryIndex(
+	context.Context,
+	string,
+	string,
+	[]orisun.BoundaryIndexField,
+	[]orisun.BoundaryIndexCondition,
+	string,
+) error {
+	return nil
+}
+
+func (*mappingIndexManager) DropBoundaryIndex(context.Context, string, string) error {
+	return nil
+}
+
+func (m *mappingIndexManager) ListBoundaryIndexes(context.Context, string) ([]orisun.BoundaryIndex, error) {
+	return m.indexes, nil
+}
+
+func (m *mappingIndexManager) GetBoundaryIndex(_ context.Context, _ string, name string) (*orisun.BoundaryIndex, error) {
+	for i := range m.indexes {
+		if m.indexes[i].Name == name {
+			index := m.indexes[i]
+			return &index, nil
+		}
+	}
+	return nil, statuscode.New(statuscode.NotFound, "index not found")
+}
+
 func (r *mappingRetriever) GetBatch(_ context.Context, request *orisun.GetEventsRequest) (orisun.ReadEventBatch, error) {
 	r.request = request
 	return orisun.ReadEventBatch{{
@@ -228,5 +261,55 @@ func TestEventStoreAdapterReturnsServerInfoCopy(t *testing.T) {
 	}
 	if again.Capabilities[0] != ServerCapability_SERVER_CAPABILITY_COMMAND_CONTEXT_CONSISTENCY {
 		t.Fatal("GetServerInfo returned mutable adapter state")
+	}
+}
+
+func TestEventStoreAdapterMapsIndexInventory(t *testing.T) {
+	logger, err := logging.ZapLogger("error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &mappingIndexManager{indexes: []orisun.BoundaryIndex{{
+		Name: "account",
+		Fields: []orisun.BoundaryIndexField{{
+			JsonKey:   "account_id",
+			ValueType: "text",
+		}},
+		Conditions: []orisun.BoundaryIndexCondition{{
+			Key:      "active",
+			Operator: "=",
+			Value:    "true",
+		}},
+		Combinator: orisun.IndexCombinatorOR,
+		State:      orisun.BoundaryIndexStateBuilding,
+	}}}
+	store := orisun.NewEventStoreServer(
+		nil, nil, nil, nil, manager,
+		orisun.EventStreamConfig{}, logger,
+	)
+	adapter := AdaptEventStore(store)
+
+	list, err := adapter.ListIndexes(t.Context(), &ListIndexesRequest{Boundary: "orders"})
+	if err != nil {
+		t.Fatalf("ListIndexes() error = %v", err)
+	}
+	if len(list.Indexes) != 1 ||
+		list.Indexes[0].Fields[0].JsonKey != "account_id" ||
+		list.Indexes[0].ConditionCombinator != ConditionCombinator_OR ||
+		list.Indexes[0].State != IndexState_INDEX_STATE_BUILDING {
+		t.Fatalf("ListIndexes() = %#v", list)
+	}
+
+	get, err := adapter.GetIndex(t.Context(), &GetIndexRequest{Boundary: "orders", Name: "account"})
+	if err != nil {
+		t.Fatalf("GetIndex() error = %v", err)
+	}
+	if get.Index.Name != "account" || get.Index.Conditions[0].Key != "active" {
+		t.Fatalf("GetIndex() = %#v", get)
+	}
+
+	_, err = adapter.GetIndex(t.Context(), &GetIndexRequest{Boundary: "orders", Name: "missing"})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("GetIndex(missing) code = %v, want NotFound", status.Code(err))
 	}
 }

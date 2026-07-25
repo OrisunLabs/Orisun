@@ -27,6 +27,8 @@ const (
 	EventStore_GetServerInfo_FullMethodName            = "/orisun.EventStore/GetServerInfo"
 	EventStore_CreateIndex_FullMethodName              = "/orisun.EventStore/CreateIndex"
 	EventStore_DropIndex_FullMethodName                = "/orisun.EventStore/DropIndex"
+	EventStore_ListIndexes_FullMethodName              = "/orisun.EventStore/ListIndexes"
+	EventStore_GetIndex_FullMethodName                 = "/orisun.EventStore/GetIndex"
 )
 
 // EventStoreClient is the client API for EventStore service.
@@ -41,6 +43,8 @@ type EventStoreClient interface {
 	GetServerInfo(ctx context.Context, in *GetServerInfoRequest, opts ...grpc.CallOption) (*GetServerInfoResponse, error)
 	CreateIndex(ctx context.Context, in *CreateIndexRequest, opts ...grpc.CallOption) (*CreateIndexResponse, error)
 	DropIndex(ctx context.Context, in *DropIndexRequest, opts ...grpc.CallOption) (*DropIndexResponse, error)
+	ListIndexes(ctx context.Context, in *ListIndexesRequest, opts ...grpc.CallOption) (*ListIndexesResponse, error)
+	GetIndex(ctx context.Context, in *GetIndexRequest, opts ...grpc.CallOption) (*GetIndexResponse, error)
 }
 
 type eventStoreClient struct {
@@ -140,6 +144,26 @@ func (c *eventStoreClient) DropIndex(ctx context.Context, in *DropIndexRequest, 
 	return out, nil
 }
 
+func (c *eventStoreClient) ListIndexes(ctx context.Context, in *ListIndexesRequest, opts ...grpc.CallOption) (*ListIndexesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListIndexesResponse)
+	err := c.cc.Invoke(ctx, EventStore_ListIndexes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *eventStoreClient) GetIndex(ctx context.Context, in *GetIndexRequest, opts ...grpc.CallOption) (*GetIndexResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetIndexResponse)
+	err := c.cc.Invoke(ctx, EventStore_GetIndex_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EventStoreServer is the server API for EventStore service.
 // All implementations must embed UnimplementedEventStoreServer
 // for forward compatibility.
@@ -152,6 +176,8 @@ type EventStoreServer interface {
 	GetServerInfo(context.Context, *GetServerInfoRequest) (*GetServerInfoResponse, error)
 	CreateIndex(context.Context, *CreateIndexRequest) (*CreateIndexResponse, error)
 	DropIndex(context.Context, *DropIndexRequest) (*DropIndexResponse, error)
+	ListIndexes(context.Context, *ListIndexesRequest) (*ListIndexesResponse, error)
+	GetIndex(context.Context, *GetIndexRequest) (*GetIndexResponse, error)
 	mustEmbedUnimplementedEventStoreServer()
 }
 
@@ -185,6 +211,12 @@ func (UnimplementedEventStoreServer) CreateIndex(context.Context, *CreateIndexRe
 }
 func (UnimplementedEventStoreServer) DropIndex(context.Context, *DropIndexRequest) (*DropIndexResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DropIndex not implemented")
+}
+func (UnimplementedEventStoreServer) ListIndexes(context.Context, *ListIndexesRequest) (*ListIndexesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListIndexes not implemented")
+}
+func (UnimplementedEventStoreServer) GetIndex(context.Context, *GetIndexRequest) (*GetIndexResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetIndex not implemented")
 }
 func (UnimplementedEventStoreServer) mustEmbedUnimplementedEventStoreServer() {}
 func (UnimplementedEventStoreServer) testEmbeddedByValue()                    {}
@@ -344,6 +376,42 @@ func _EventStore_DropIndex_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EventStore_ListIndexes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListIndexesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EventStoreServer).ListIndexes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EventStore_ListIndexes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EventStoreServer).ListIndexes(ctx, req.(*ListIndexesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EventStore_GetIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EventStoreServer).GetIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EventStore_GetIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EventStoreServer).GetIndex(ctx, req.(*GetIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // EventStore_ServiceDesc is the grpc.ServiceDesc for EventStore service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -378,6 +446,14 @@ var EventStore_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DropIndex",
 			Handler:    _EventStore_DropIndex_Handler,
+		},
+		{
+			MethodName: "ListIndexes",
+			Handler:    _EventStore_ListIndexes_Handler,
+		},
+		{
+			MethodName: "GetIndex",
+			Handler:    _EventStore_GetIndex_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

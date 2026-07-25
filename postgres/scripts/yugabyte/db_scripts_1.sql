@@ -80,6 +80,17 @@ BEGIN
             'CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC) INCLUDE (pg_xact_id, event_id, data, metadata, date_created)',
             boundary_name || '_idx_event_order_visibility_covering', schema_name, boundary_name || '_orisun_es_event');
 
+    -- Persist definitions for indexes created through Orisun's index API.
+    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
+        name         TEXT PRIMARY KEY,
+        fields       JSONB NOT NULL,
+        conditions   JSONB NOT NULL DEFAULT ''[]''::JSONB,
+        combinator   TEXT NOT NULL DEFAULT ''AND'',
+        state        TEXT NOT NULL DEFAULT ''ready'',
+        date_created TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+        date_updated TIMESTAMPTZ DEFAULT NOW() NOT NULL
+    )', schema_name, boundary_name || '_orisun_boundary_index_metadata');
+
     -- Create the per-boundary NATS publisher checkpoint table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         boundary       TEXT PRIMARY KEY,

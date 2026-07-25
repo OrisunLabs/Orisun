@@ -20,6 +20,9 @@
 - `EventStore/GetServerInfo` now reports build metadata, storage backend,
   per-process node identity, and typed server capabilities. Official Go, Node,
   and Java clients expose the call.
+- `EventStore/ListIndexes` and `EventStore/GetIndex` now report Orisun-managed
+  index definitions and `BUILDING` or `READY` state across all storage
+  backends. Official Go, Node, and Java clients expose both calls.
 
 ## 0.9.2 - 2026-07-25
 

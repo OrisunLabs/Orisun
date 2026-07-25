@@ -14,6 +14,7 @@ import (
 
 	common "github.com/OrisunLabs/Orisun/admin/slices/common"
 	config "github.com/OrisunLabs/Orisun/config"
+	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	logging "github.com/OrisunLabs/Orisun/logging"
 	"github.com/OrisunLabs/Orisun/orisun"
 	"github.com/goccy/go-json"
@@ -1557,9 +1558,23 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, indexExists("test_boundary_user_id_idx"), "index should exist after creation")
 
+		indexes, err := adminDB.ListBoundaryIndexes(ctx, "test_boundary")
+		require.NoError(t, err)
+		require.Len(t, indexes, 1)
+		assert.Equal(t, "user_id", indexes[0].Name)
+		assert.Equal(t, orisun.BoundaryIndexStateReady, indexes[0].State)
+		require.Len(t, indexes[0].Fields, 1)
+		assert.Equal(t, "user_id", indexes[0].Fields[0].JsonKey)
+
+		index, err := adminDB.GetBoundaryIndex(ctx, "test_boundary", "user_id")
+		require.NoError(t, err)
+		assert.Equal(t, common.CombinatorAND, index.Combinator)
+
 		err = adminDB.DropBoundaryIndex(ctx, "test_boundary", "user_id")
 		require.NoError(t, err)
 		assert.False(t, indexExists("test_boundary_user_id_idx"), "index should be gone after drop")
+		_, err = adminDB.GetBoundaryIndex(ctx, "test_boundary", "user_id")
+		assert.Equal(t, statuscode.NotFound, statuscode.CodeOf(err))
 	})
 
 	t.Run("composite index", func(t *testing.T) {
