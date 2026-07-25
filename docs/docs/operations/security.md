@@ -57,6 +57,7 @@ Role values are validated and compared exactly. A user-creation request with
 | `EventStore/GetLatestByCriteria` | Yes | Any authenticated user |
 | `EventStore/CatchUpSubscribeToEvents` | Yes | Any authenticated user |
 | `EventStore/Ping` | Yes | Any authenticated user |
+| `EventStore/GetServerInfo` | Yes | Any authenticated user |
 | `Admin/CreateBoundary` | Yes | `ADMIN` |
 | `Admin/ListBoundaries` | Yes | `ADMIN` or `OPERATIONS` |
 | `Admin/GetBoundary` | Yes | `ADMIN` or `OPERATIONS` |

@@ -17,10 +17,33 @@ import (
 type EventStoreAdapter struct {
 	UnimplementedEventStoreServer
 	eventStore *orisun.EventStore
+	serverInfo ServerRuntimeInfo
+}
+
+type ServerRuntimeInfo struct {
+	Version      string
+	GitCommit    string
+	BuildTime    string
+	Backend      StorageBackend
+	NodeID       string
+	Capabilities []ServerCapability
 }
 
 func AdaptEventStore(eventStore *orisun.EventStore) *EventStoreAdapter {
-	return &EventStoreAdapter{eventStore: eventStore}
+	version, buildTime, gitCommit := orisun.GetBuildInfo()
+	return AdaptEventStoreWithServerInfo(eventStore, ServerRuntimeInfo{
+		Version:   version,
+		GitCommit: gitCommit,
+		BuildTime: buildTime,
+	})
+}
+
+func AdaptEventStoreWithServerInfo(eventStore *orisun.EventStore, info ServerRuntimeInfo) *EventStoreAdapter {
+	info.Capabilities = append([]ServerCapability(nil), info.Capabilities...)
+	return &EventStoreAdapter{
+		eventStore: eventStore,
+		serverInfo: info,
+	}
 }
 
 func (a *EventStoreAdapter) SaveEvents(ctx context.Context, req *SaveEventsRequest) (*WriteResult, error) {
@@ -79,6 +102,17 @@ func (a *EventStoreAdapter) Ping(ctx context.Context, _ *PingRequest) (*PingResp
 		return nil, grpcstatus.FromError(err)
 	}
 	return &PingResponse{}, nil
+}
+
+func (a *EventStoreAdapter) GetServerInfo(context.Context, *GetServerInfoRequest) (*GetServerInfoResponse, error) {
+	return &GetServerInfoResponse{
+		Version:      a.serverInfo.Version,
+		GitCommit:    a.serverInfo.GitCommit,
+		BuildTime:    a.serverInfo.BuildTime,
+		Backend:      a.serverInfo.Backend,
+		NodeId:       a.serverInfo.NodeID,
+		Capabilities: append([]ServerCapability(nil), a.serverInfo.Capabilities...),
+	}, nil
 }
 
 func (a *EventStoreAdapter) CreateIndex(ctx context.Context, req *CreateIndexRequest) (*CreateIndexResponse, error) {

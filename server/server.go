@@ -22,6 +22,7 @@ import (
 	"github.com/OrisunLabs/Orisun/orisun"
 	"github.com/OrisunLabs/Orisun/orisun/grpcapi"
 	"github.com/goccy/go-json"
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 	_ "go.uber.org/automaxprocs" // auto-set GOMAXPROCS from cgroup CPU limit
 	"golang.org/x/sync/errgroup"
@@ -820,7 +821,10 @@ func startGRPCServer(
 	)
 
 	grpcServer := grpc.NewServer(serverOpts...)
-	grpcapi.RegisterEventStoreServer(grpcServer, grpcapi.AdaptEventStore(eventStore))
+	grpcapi.RegisterEventStoreServer(
+		grpcServer,
+		grpcapi.AdaptEventStoreWithServerInfo(eventStore, newServerRuntimeInfo(config)),
+	)
 	healthServer := newGRPCHealthServer()
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 
@@ -860,5 +864,36 @@ func startGRPCServer(
 	logger.Infof("gRPC server listening on port %s (TLS: %v)", config.Grpc.Port, config.Grpc.TLS.Enabled)
 	if err := grpcServer.Serve(lis); err != nil {
 		logger.Fatalf("Failed to serve: %v", err)
+	}
+}
+
+func newServerRuntimeInfo(config c.AppConfig) grpcapi.ServerRuntimeInfo {
+	version, buildTime, gitCommit := orisun.GetBuildInfo()
+	return grpcapi.ServerRuntimeInfo{
+		Version:   version,
+		GitCommit: gitCommit,
+		BuildTime: buildTime,
+		Backend:   grpcStorageBackend(config.BackendType()),
+		NodeID:    uuid.NewString(),
+		Capabilities: []grpcapi.ServerCapability{
+			grpcapi.ServerCapability_SERVER_CAPABILITY_COMMAND_CONTEXT_CONSISTENCY,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_CATCH_UP_SUBSCRIPTIONS,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_INDEX_MANAGEMENT,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_BOUNDARY_CATALOG,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_GRPC_HEALTH,
+		},
+	}
+}
+
+func grpcStorageBackend(backend string) grpcapi.StorageBackend {
+	switch backend {
+	case "postgres":
+		return grpcapi.StorageBackend_STORAGE_BACKEND_POSTGRES
+	case "sqlite":
+		return grpcapi.StorageBackend_STORAGE_BACKEND_SQLITE
+	case "foundationdb":
+		return grpcapi.StorageBackend_STORAGE_BACKEND_FOUNDATIONDB
+	default:
+		return grpcapi.StorageBackend_STORAGE_BACKEND_UNSPECIFIED
 	}
 }

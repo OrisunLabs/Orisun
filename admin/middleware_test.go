@@ -78,6 +78,7 @@ func TestOnlyStandardHealthMethodsAreUnauthenticated(t *testing.T) {
 		healthpb.Health_List_FullMethodName:                         true,
 		healthpb.Health_Watch_FullMethodName:                        true,
 		"/orisun.EventStore/Ping":                                   false,
+		"/orisun.EventStore/GetServerInfo":                          false,
 		"/orisun.Admin/ListUsers":                                   false,
 		"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo": false,
 	}

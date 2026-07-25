@@ -1,6 +1,6 @@
 ---
 title: EventStore API
-description: Save, query, subscribe, ping, and manage indexes.
+description: Save, query, subscribe, inspect the server, and manage indexes.
 ---
 
 import Tabs from '@theme/Tabs';
@@ -13,6 +13,7 @@ The EventStore service owns event operations:
 - `GetLatestByCriteria`
 - `CatchUpSubscribeToEvents`
 - `Ping`
+- `GetServerInfo`
 - `CreateIndex`
 - `DropIndex`
 
@@ -914,6 +915,67 @@ grpcurl -H "$AUTH" -d '{}' localhost:5005 orisun.EventStore/Ping
 
   </TabItem>
 </Tabs>
+
+## GetServerInfo
+
+`GetServerInfo` returns information about the node that handles the call. It is
+authenticated but does not require a particular role.
+
+<Tabs groupId="client-lang">
+  <TabItem value="go" label="Go" default>
+
+```go
+info, err := client.GetServerInfo(ctx)
+if err != nil {
+	return err
+}
+log.Printf("node=%s version=%s backend=%s",
+	info.NodeId, info.Version, info.Backend)
+```
+
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
+```typescript
+const info = await client.getServerInfo();
+console.log(info.nodeId, info.version, info.backend, info.capabilities);
+```
+
+  </TabItem>
+  <TabItem value="java" label="Java">
+
+```java
+Eventstore.GetServerInfoResponse info = client.getServerInfo();
+System.out.printf("node=%s version=%s backend=%s%n",
+    info.getNodeId(), info.getVersion(), info.getBackend());
+```
+
+  </TabItem>
+  <TabItem value="grpcurl" label="grpcurl">
+
+```bash
+grpcurl -H "$AUTH" -d '{}' \
+  localhost:5005 orisun.EventStore/GetServerInfo
+```
+
+  </TabItem>
+</Tabs>
+
+The response contains:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | Orisun release version embedded at build time. Local development builds report `dev`. |
+| `git_commit` | Source commit embedded at build time, or `unknown`. |
+| `build_time` | Build timestamp embedded by the release build, or `unknown`. |
+| `backend` | `STORAGE_BACKEND_POSTGRES`, `STORAGE_BACKEND_SQLITE`, or `STORAGE_BACKEND_FOUNDATIONDB`. |
+| `node_id` | UUID for this running server process. It changes when the process restarts. |
+| `capabilities` | Typed features supported by the connected server. |
+
+Capabilities currently report Command Context Consistency, catch-up
+subscriptions, index management, the boundary catalog, and standard gRPC
+health. Clients should check for the capability they need instead of inferring
+support from the version string.
 
 ## CreateIndex
 

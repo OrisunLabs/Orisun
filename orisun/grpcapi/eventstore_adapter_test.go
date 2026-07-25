@@ -186,3 +186,47 @@ func TestEventStoreAdapterMapsReadAndLatestResponses(t *testing.T) {
 		t.Fatalf("mapped latest = %#v, query = %#v", latest, retriever.latest)
 	}
 }
+
+func TestEventStoreAdapterReturnsServerInfoCopy(t *testing.T) {
+	t.Parallel()
+
+	info := ServerRuntimeInfo{
+		Version:   "0.10.0",
+		GitCommit: "abc123",
+		BuildTime: "2026-07-25T12:00:00Z",
+		Backend:   StorageBackend_STORAGE_BACKEND_SQLITE,
+		NodeID:    "node-1",
+		Capabilities: []ServerCapability{
+			ServerCapability_SERVER_CAPABILITY_COMMAND_CONTEXT_CONSISTENCY,
+			ServerCapability_SERVER_CAPABILITY_GRPC_HEALTH,
+		},
+	}
+	adapter := AdaptEventStoreWithServerInfo(nil, info)
+	info.Capabilities[0] = ServerCapability_SERVER_CAPABILITY_UNSPECIFIED
+
+	response, err := adapter.GetServerInfo(t.Context(), &GetServerInfoRequest{})
+	if err != nil {
+		t.Fatalf("GetServerInfo() returned an error: %v", err)
+	}
+	if response.Version != "0.10.0" ||
+		response.GitCommit != "abc123" ||
+		response.BuildTime != "2026-07-25T12:00:00Z" ||
+		response.Backend != StorageBackend_STORAGE_BACKEND_SQLITE ||
+		response.NodeId != "node-1" {
+		t.Fatalf("GetServerInfo() = %#v", response)
+	}
+	if len(response.Capabilities) != 2 ||
+		response.Capabilities[0] != ServerCapability_SERVER_CAPABILITY_COMMAND_CONTEXT_CONSISTENCY ||
+		response.Capabilities[1] != ServerCapability_SERVER_CAPABILITY_GRPC_HEALTH {
+		t.Fatalf("GetServerInfo() capabilities = %v", response.Capabilities)
+	}
+
+	response.Capabilities[0] = ServerCapability_SERVER_CAPABILITY_UNSPECIFIED
+	again, err := adapter.GetServerInfo(t.Context(), &GetServerInfoRequest{})
+	if err != nil {
+		t.Fatalf("second GetServerInfo() returned an error: %v", err)
+	}
+	if again.Capabilities[0] != ServerCapability_SERVER_CAPABILITY_COMMAND_CONTEXT_CONSISTENCY {
+		t.Fatal("GetServerInfo returned mutable adapter state")
+	}
+}

@@ -17,6 +17,9 @@
 - The server now exposes unauthenticated standard gRPC health for the overall
   node, EventStore, and Admin services, with startup and context-cancellation
   readiness transitions.
+- `EventStore/GetServerInfo` now reports build metadata, storage backend,
+  per-process node identity, and typed server capabilities. Official Go, Node,
+  and Java clients expose the call.
 
 ## 0.9.2 - 2026-07-25
 

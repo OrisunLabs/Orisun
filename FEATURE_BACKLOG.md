@@ -90,11 +90,12 @@ Use standard RPC, database, and messaging conventions where possible:
 ### 6. Health, readiness, and server information APIs
 
 Standard unauthenticated gRPC health now reports startup readiness for the
-server, EventStore, and Admin services. Extend it with:
+server, EventStore, and Admin services. Authenticated `GetServerInfo` reports
+version, commit, build time, backend, runtime node ID, and typed capabilities.
+Extend this with:
 
 - readiness based on admin catalog replay, active boundaries, backend health,
   and NATS health,
-- `GetServerInfo` returning version, commit, backend, capabilities, and node ID,
 - cluster and node health,
 - current publisher ownership.
 
