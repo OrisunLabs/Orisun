@@ -1606,6 +1606,49 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 		return true, valid
 	}
 
+	t.Run("catalog installation upgrades the boundary before registration", func(t *testing.T) {
+		// Simulate a boundary created by a version before index metadata was
+		// introduced. Catalog replay must run the current initializer before
+		// exposing the boundary to SQL adapters.
+		_, err := db.ExecContext(
+			ctx,
+			"DROP TABLE public.test_boundary_orisun_boundary_index_metadata",
+		)
+		require.NoError(t, err)
+
+		registry := NewBoundaryRegistry(nil)
+		provisioner := NewPostgresBoundaryProvisioner(db, registry, "postgres")
+		definition := orisun.BoundaryDefinition{
+			Name: "test_boundary",
+			Placement: orisun.BoundaryPlacement{
+				Backend:   "postgres",
+				Namespace: "public",
+			},
+		}
+		require.NoError(t, provisioner.InstallBoundary(ctx, definition))
+
+		entry, found := registry.lookup("test_boundary")
+		require.True(t, found)
+		require.Equal(t, "public", entry.mapping.Schema)
+
+		upgradedAdminDB := NewPostgresAdminDBWithRegistry(
+			db,
+			logger,
+			"public",
+			"test_boundary",
+			registry,
+		)
+		require.NoError(t, upgradedAdminDB.CreateBoundaryIndex(
+			ctx,
+			"test_boundary",
+			"after_upgrade",
+			[]common.IndexField{{JsonKey: "user_id", ValueType: "text"}},
+			nil,
+			"",
+		))
+		require.NoError(t, upgradedAdminDB.DropBoundaryIndex(ctx, "test_boundary", "after_upgrade"))
+	})
+
 	t.Run("single field text index", func(t *testing.T) {
 		err := adminDB.CreateBoundaryIndex(ctx, "test_boundary", "user_id", []common.IndexField{
 			{JsonKey: "user_id", ValueType: "text"},

@@ -75,7 +75,7 @@ func TestBoundaryRegistryRegisterValidatesIdentifiers(t *testing.T) {
 	}
 }
 
-func TestPostgresBoundaryProvisionerSeparatesMigrationFromLocalRegistration(t *testing.T) {
+func TestPostgresBoundaryProvisionerMigratesBeforeLocalRegistration(t *testing.T) {
 	registry := NewBoundaryRegistry(nil)
 	var calls atomic.Int32
 	provisioner := newPostgresBoundaryProvisioner(registry, func(_ context.Context, boundary, schema string) error {
@@ -105,8 +105,14 @@ func TestPostgresBoundaryProvisionerSeparatesMigrationFromLocalRegistration(t *t
 	if err := provisioner.InstallBoundary(t.Context(), definition); err != nil {
 		t.Fatalf("InstallBoundary() error = %v", err)
 	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("migration calls after installation = %d, want 1", got)
+	}
 	if err := provisioner.InstallBoundary(t.Context(), definition); err != nil {
 		t.Fatalf("idempotent InstallBoundary() error = %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("migration calls after duplicate installation = %d, want 1", got)
 	}
 	if entry, found := registry.lookup("sales"); !found || entry.mapping.Schema != "tenant_data" {
 		t.Fatalf("registered entry = %#v, found = %v", entry, found)
@@ -130,6 +136,26 @@ func TestPostgresBoundaryProvisionerDoesNotRegisterFailedMigration(t *testing.T)
 	}
 	if _, found := registry.lookup("sales"); found {
 		t.Fatal("failed migration registered boundary")
+	}
+}
+
+func TestPostgresBoundaryInstallerDoesNotRegisterFailedMigration(t *testing.T) {
+	registry := NewBoundaryRegistry(nil)
+	wantErr := errors.New("migration failed")
+	provisioner := newPostgresBoundaryProvisioner(registry, func(context.Context, string, string) error {
+		return wantErr
+	})
+	definition := orisun.BoundaryDefinition{
+		Name:      "sales",
+		Placement: orisun.BoundaryPlacement{Backend: "postgres", Namespace: "tenant_data"},
+	}
+
+	err := provisioner.InstallBoundary(t.Context(), definition)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("InstallBoundary() error = %v, want wrapping %v", err, wantErr)
+	}
+	if _, found := registry.lookup("sales"); found {
+		t.Fatal("failed installation registered boundary")
 	}
 }
 
@@ -161,8 +187,8 @@ func TestPostgresBoundaryInstallerHandlesConcurrentDuplicateDeliveries(t *testin
 			t.Errorf("InstallBoundary() error = %v", err)
 		}
 	}
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("local installation unexpectedly ran migration %d times", got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("migration calls = %d, want 1", got)
 	}
 	if _, found := registry.lookup("sales"); !found {
 		t.Fatal("concurrent local installation did not register boundary")
