@@ -53,6 +53,7 @@ type AppConfig struct {
 	Auth struct {
 		AdminUsername string
 		AdminPassword string
+		SessionTTL    time.Duration
 	}
 
 	Admin AdminConfig
@@ -292,6 +293,9 @@ func validateConfig(config AppConfig) error {
 		if err := validateBoundaryName(config.Postgres.AdminSchema); err != nil {
 			return fmt.Errorf("invalid ORISUN_PG_ADMIN_SCHEMA %q: %w", config.Postgres.AdminSchema, err)
 		}
+	}
+	if config.Auth.SessionTTL <= 0 {
+		return fmt.Errorf("ORISUN_AUTH_SESSION_TTL must be greater than zero, got %s", config.Auth.SessionTTL)
 	}
 	return nil
 }

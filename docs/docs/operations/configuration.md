@@ -123,6 +123,7 @@ with `existed_before_catalog: true`.
 | `ORISUN_ADMIN_PORT` | `8991` | Admin HTTP port. |
 | `ORISUN_ADMIN_USERNAME` | `admin` | Bootstrap admin username. |
 | `ORISUN_ADMIN_PASSWORD` | `changeit` | Bootstrap admin password. |
+| `ORISUN_AUTH_SESSION_TTL` | `24h` | Inactivity timeout for `x-auth-token` sessions. Successful token use renews the deadline. Must be greater than zero. |
 | `ORISUN_LOGGING_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
 | `ORISUN_POLLING_PUBLISHER_BATCH_SIZE` | `1000` | Max events drained per publisher read batch. |
 
@@ -193,9 +194,9 @@ Orisun uses separate PostgreSQL-compatible pools for writes, reads, and admin wo
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ORISUN_OTEL_ENABLED` | `true` | Enable OpenTelemetry tracing. |
+| `ORISUN_OTEL_ENABLED` | `true` | Enable OpenTelemetry traces and metrics. |
 | `ORISUN_OTEL_ENDPOINT` | `localhost:4317` | OTLP gRPC endpoint. |
-| `ORISUN_OTEL_SERVICE_NAME` | `orisun` | Service name attached to exported traces. |
+| `ORISUN_OTEL_SERVICE_NAME` | `orisun` | Service name attached to exported telemetry. |
 | `ORISUN_PPROF_ENABLED` | `false` | Enable pprof. |
 | `ORISUN_PPROF_PORT` | `6060` | pprof port. |
 

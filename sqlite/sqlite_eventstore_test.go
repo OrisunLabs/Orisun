@@ -696,6 +696,23 @@ func TestCreateDropBoundaryIndex_MetadataAndTypedCriteria(t *testing.T) {
 	if got := metadataCount("amount"); got != 1 {
 		t.Fatalf("expected one metadata row, got %d", got)
 	}
+	indexes, err := admin.ListBoundaryIndexes(ctx, "test")
+	if err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
+	if len(indexes) != 1 || indexes[0].Name != "amount" ||
+		indexes[0].State != eventstore.BoundaryIndexStateReady ||
+		len(indexes[0].Fields) != 1 ||
+		indexes[0].Fields[0].ValueType != "numeric" {
+		t.Fatalf("unexpected index inventory: %#v", indexes)
+	}
+	index, err := admin.GetBoundaryIndex(ctx, "test", "amount")
+	if err != nil {
+		t.Fatalf("get index: %v", err)
+	}
+	if index.Name != "amount" || index.Combinator != eventstore.IndexCombinatorAND {
+		t.Fatalf("unexpected index definition: %#v", index)
+	}
 
 	sql, err := buildCriteriaSQLForBoundary([]map[string]any{{"amount": "45"}}, pool.indexes, "test")
 	if err != nil {
@@ -737,6 +754,9 @@ func TestCreateDropBoundaryIndex_MetadataAndTypedCriteria(t *testing.T) {
 	}
 	if got := metadataCount("amount"); got != 0 {
 		t.Fatalf("expected no metadata rows, got %d", got)
+	}
+	if _, err := admin.GetBoundaryIndex(ctx, "test", "amount"); statuscode.CodeOf(err) != statuscode.NotFound {
+		t.Fatalf("get dropped index error = %v, want NotFound", err)
 	}
 
 	sql, err = buildCriteriaSQLForBoundary([]map[string]any{{"amount": "45"}}, pool.indexes, "test")

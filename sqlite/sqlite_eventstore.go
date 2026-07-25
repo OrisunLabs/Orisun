@@ -1257,6 +1257,102 @@ func (a *SqliteAdminDB) DropBoundaryIndex(ctx context.Context, boundary, name st
 	return nil
 }
 
+func (a *SqliteAdminDB) ListBoundaryIndexes(ctx context.Context, boundary string) ([]eventstore.BoundaryIndex, error) {
+	pool, ok := a.registry.eventPool(boundary)
+	if !ok {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", boundary)
+	}
+	conn, err := pool.Read.Take(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer pool.Read.Put(conn)
+
+	indexes := make([]eventstore.BoundaryIndex, 0)
+	err = sqlitex.Execute(conn,
+		`SELECT name, fields, conditions, combinator
+		 FROM orisun_boundary_index_metadata
+		 ORDER BY name`,
+		&sqlitex.ExecOptions{
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				index, err := sqliteBoundaryIndexFromRow(
+					stmt.ColumnText(0),
+					stmt.ColumnText(1),
+					stmt.ColumnText(2),
+					stmt.ColumnText(3),
+				)
+				if err != nil {
+					return err
+				}
+				indexes = append(indexes, index)
+				return nil
+			},
+		})
+	if err != nil {
+		return nil, err
+	}
+	return indexes, nil
+}
+
+func (a *SqliteAdminDB) GetBoundaryIndex(ctx context.Context, boundary, name string) (*eventstore.BoundaryIndex, error) {
+	pool, ok := a.registry.eventPool(boundary)
+	if !ok {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", boundary)
+	}
+	if err := validateIdentifier(name); err != nil {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "invalid index name %s: %v", name, err)
+	}
+	conn, err := pool.Read.Take(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer pool.Read.Put(conn)
+
+	var result *eventstore.BoundaryIndex
+	err = sqlitex.Execute(conn,
+		`SELECT name, fields, conditions, combinator
+		 FROM orisun_boundary_index_metadata
+		 WHERE name = ?`,
+		&sqlitex.ExecOptions{
+			Args: []any{name},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				index, err := sqliteBoundaryIndexFromRow(
+					stmt.ColumnText(0),
+					stmt.ColumnText(1),
+					stmt.ColumnText(2),
+					stmt.ColumnText(3),
+				)
+				if err != nil {
+					return err
+				}
+				result = &index
+				return nil
+			},
+		})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, statuscode.Errorf(statuscode.NotFound, "index %q does not exist in boundary %q", name, boundary)
+	}
+	return result, nil
+}
+
+func sqliteBoundaryIndexFromRow(name, fieldsJSON, conditionsJSON, combinator string) (eventstore.BoundaryIndex, error) {
+	index := eventstore.BoundaryIndex{
+		Name:       name,
+		Combinator: combinator,
+		State:      eventstore.BoundaryIndexStateReady,
+	}
+	if err := json.Unmarshal([]byte(fieldsJSON), &index.Fields); err != nil {
+		return eventstore.BoundaryIndex{}, fmt.Errorf("decode index %s fields: %w", name, err)
+	}
+	if err := json.Unmarshal([]byte(conditionsJSON), &index.Conditions); err != nil {
+		return eventstore.BoundaryIndex{}, fmt.Errorf("decode index %s conditions: %w", name, err)
+	}
+	return index, nil
+}
+
 // buildIndexConditionPredicate renders one partial-index condition with the comparison
 // typed to the field's declared value type. json_extract returns SQLite numbers for JSON
 // numbers, and in SQLite any number sorts before any text — so an untyped text literal

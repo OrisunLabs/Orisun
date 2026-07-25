@@ -81,6 +81,21 @@ func TestFoundationDBSaveGetCCCAndIndexes(t *testing.T) {
 	}, nil, eventstore.IndexCombinatorAND); err != nil {
 		t.Fatalf("CreateBoundaryIndex returned error: %v", err)
 	}
+	indexes, err := backend.ListBoundaryIndexes(ctx, "test")
+	if err != nil {
+		t.Fatalf("ListBoundaryIndexes returned error: %v", err)
+	}
+	if len(indexes) != 1 || indexes[0].Name != "customer_id" ||
+		indexes[0].State != eventstore.BoundaryIndexStateReady {
+		t.Fatalf("unexpected index inventory: %#v", indexes)
+	}
+	index, err := backend.GetBoundaryIndex(ctx, "test", "customer_id")
+	if err != nil {
+		t.Fatalf("GetBoundaryIndex returned error: %v", err)
+	}
+	if len(index.Fields) != 1 || index.Fields[0].JsonKey != "customer_id" {
+		t.Fatalf("unexpected index definition: %#v", index)
+	}
 	indexed, err := backend.GetBatch(ctx, &eventstore.GetEventsRequest{
 		Boundary:  "test",
 		Count:     10,

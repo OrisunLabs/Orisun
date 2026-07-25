@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -29,6 +30,10 @@ func UnaryPerformanceInterceptor() grpc.UnaryServerInterceptor {
 
 func UnaryAuthInterceptor(auth *Authenticator, logger l.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if isUnauthenticatedMethod(info.FullMethod) {
+			return handler(ctx, req)
+		}
+
 		user, token, err := authenticate(ctx, auth, logger)
 		if err != nil {
 			return nil, err
@@ -42,7 +47,7 @@ func UnaryAuthInterceptor(auth *Authenticator, logger l.Logger) grpc.UnaryServer
 		}
 
 		if auth.logger.IsDebugEnabled() {
-			auth.logger.Debugf("Authenticated user %s for method %s with token %s", user.Username, info.FullMethod, token)
+			auth.logger.Debugf("Authenticated user %s for method %s", user.Username, info.FullMethod)
 		}
 		return handler(withUserCtx, req)
 	}
@@ -50,6 +55,10 @@ func UnaryAuthInterceptor(auth *Authenticator, logger l.Logger) grpc.UnaryServer
 
 func StreamAuthInterceptor(auth *Authenticator, logger l.Logger) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if isUnauthenticatedMethod(info.FullMethod) {
+			return handler(srv, ss)
+		}
+
 		user, token, err := authenticate(ss.Context(), auth, logger)
 		if err != nil {
 			return err
@@ -69,6 +78,17 @@ func StreamAuthInterceptor(auth *Authenticator, logger l.Logger) grpc.StreamServ
 
 const tokenHeaderName = "x-auth-token"
 
+func isUnauthenticatedMethod(fullMethod string) bool {
+	switch fullMethod {
+	case healthpb.Health_Check_FullMethodName,
+		healthpb.Health_List_FullMethodName,
+		healthpb.Health_Watch_FullMethodName:
+		return true
+	default:
+		return false
+	}
+}
+
 func authenticate(ctx context.Context, auth *Authenticator, logger l.Logger) (orisun.User, string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -78,9 +98,6 @@ func authenticate(ctx context.Context, auth *Authenticator, logger l.Logger) (or
 	// get token if present in header
 	token := md.Get(tokenHeaderName)
 	if len(token) > 0 {
-		if logger.IsDebugEnabled() {
-			logger.Debugf("Token is %v", token)
-		}
 		user, err := auth.ValidateToken(ctx, token[len(token)-1])
 		if err == nil {
 			return *user, token[len(token)-1], nil

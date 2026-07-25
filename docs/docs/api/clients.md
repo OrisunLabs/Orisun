@@ -386,7 +386,11 @@ No install beyond the `grpcurl` binary. See the [Tutorial](../tutorial) for the 
 
 ## Authenticating from a client
 
-Every call needs credentials. The typed clients take a username and password at construction and reuse the session token the server returns on later calls, so you only supply Basic credentials once.
+Every call needs credentials. The typed clients take a username and password at
+construction and reuse the session token the server returns on later calls, so
+you only supply Basic credentials once. After changing that user's password,
+construct a new client with the new password because the server revokes the
+cached session and the existing client retains its original Basic credentials.
 
 With `grpcurl`, send HTTP Basic in the `authorization` metadata header:
 

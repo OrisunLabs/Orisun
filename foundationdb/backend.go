@@ -1006,6 +1006,80 @@ func (b *Backend) DropBoundaryIndex(ctx context.Context, boundary, name string) 
 	return err
 }
 
+func (b *Backend) ListBoundaryIndexes(ctx context.Context, boundary string) ([]eventstore.BoundaryIndex, error) {
+	if err := contextStatusErr(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.checkBoundary(boundary); err != nil {
+		return nil, err
+	}
+	result, err := b.db.ReadTransact(func(rt fdb.ReadTransaction) (interface{}, error) {
+		if err := contextStatusErr(ctx); err != nil {
+			return nil, err
+		}
+		definitions, err := b.loadIndexes(rt, boundary)
+		if err != nil {
+			return nil, err
+		}
+		indexes := make([]eventstore.BoundaryIndex, len(definitions))
+		for i, definition := range definitions {
+			indexes[i] = boundaryIndexFromFoundationDB(definition)
+		}
+		sort.Slice(indexes, func(i, j int) bool {
+			return indexes[i].Name < indexes[j].Name
+		})
+		return indexes, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]eventstore.BoundaryIndex), nil
+}
+
+func (b *Backend) GetBoundaryIndex(ctx context.Context, boundary, name string) (*eventstore.BoundaryIndex, error) {
+	if err := contextStatusErr(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.checkBoundary(boundary); err != nil {
+		return nil, err
+	}
+	if err := validateIdentifier(name); err != nil {
+		return nil, statuscode.Errorf(statuscode.InvalidArgument, "invalid index name %s: %v", name, err)
+	}
+	result, err := b.db.ReadTransact(func(rt fdb.ReadTransaction) (interface{}, error) {
+		if err := contextStatusErr(ctx); err != nil {
+			return nil, err
+		}
+		raw := rt.Get(b.indexMetaKey(boundary, name)).MustGet()
+		if raw == nil {
+			return nil, statuscode.Errorf(statuscode.NotFound, "index %q does not exist in boundary %q", name, boundary)
+		}
+		var definition indexDefinition
+		if err := json.Unmarshal(raw, &definition); err != nil {
+			return nil, err
+		}
+		if definition.State == "" {
+			definition.State = indexStateReady
+		}
+		return boundaryIndexFromFoundationDB(definition), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	index := result.(eventstore.BoundaryIndex)
+	return &index, nil
+}
+
+func boundaryIndexFromFoundationDB(definition indexDefinition) eventstore.BoundaryIndex {
+	return eventstore.BoundaryIndex{
+		Name:       definition.Name,
+		Fields:     definition.Fields,
+		Conditions: definition.Conditions,
+		Combinator: definition.Combinator,
+		State:      definition.State,
+	}
+}
+
 func (b *Backend) getUser(key fdb.Key, notFound string) (eventstore.User, error) {
 	result, err := b.db.ReadTransact(func(rt fdb.ReadTransaction) (interface{}, error) {
 		raw := rt.Get(key).MustGet()

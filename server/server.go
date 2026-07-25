@@ -22,6 +22,7 @@ import (
 	"github.com/OrisunLabs/Orisun/orisun"
 	"github.com/OrisunLabs/Orisun/orisun/grpcapi"
 	"github.com/goccy/go-json"
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 	_ "go.uber.org/automaxprocs" // auto-set GOMAXPROCS from cgroup CPU limit
 	"golang.org/x/sync/errgroup"
@@ -29,6 +30,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
@@ -357,13 +359,6 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		AppLogger,
 	)
 
-	startAuthUserProjector(
-		ctx,
-		config.Admin.Boundary,
-		eventStore.SubscribeToAllEvents,
-		AppLogger,
-	)
-
 	// Create default user
 	err = createDefaultUser(
 		ctx,
@@ -381,6 +376,15 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		AppLogger,
 		config.Admin.Boundary,
 		backend.AdminDB.GetUserByUsername,
+		config.Auth.SessionTTL,
+	)
+
+	startAuthUserProjector(
+		ctx,
+		config.Admin.Boundary,
+		eventStore.SubscribeToAllEvents,
+		authenticator,
+		AppLogger,
 	)
 
 	// Start gRPC server
@@ -392,6 +396,7 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		backend.AdminDB,
 		backend.SaveEvents,
 		backend.GetEvents,
+		natsRuntime.HealthCheck,
 		AppLogger,
 	)
 }
@@ -469,6 +474,7 @@ func startAuthUserProjector(
 	ctx context.Context,
 	adminBoundary string,
 	subscribeToEvents common.SubscribeToEventStoreType,
+	authenticator *admin.Authenticator,
 	logger l.Logger) {
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
@@ -476,6 +482,7 @@ func startAuthUserProjector(
 			logger,
 			subscribeToEvents,
 			adminBoundary,
+			authenticator.RevokeUserSessions,
 		)
 		backoff := orisun.Backoff{Base: 100 * time.Millisecond, Max: 5 * time.Second}
 		for {
@@ -742,6 +749,7 @@ func startGRPCServer(
 	adminDB common.DB,
 	boundarySaver orisun.EventsSaver,
 	boundaryReader orisun.EventsRetriever,
+	natsHealthCheck func(context.Context) error,
 	logger l.Logger,
 ) {
 	// Initialize OpenTelemetry
@@ -752,11 +760,14 @@ func startGRPCServer(
 			serviceName = "orisun"
 		}
 		var err error
-		otelShutdown, err = admin.InitTracerWithContext(ctx, serviceName, config.OpenTelemetry.Endpoint, logger)
+		otelShutdown, err = admin.InitTelemetryWithContext(ctx, serviceName, config.OpenTelemetry.Endpoint, logger)
 		if err != nil {
 			logger.Errorf("Failed to initialize OpenTelemetry: %v", err)
 		}
 		if otelShutdown != nil {
+			if err := eventStore.EnableOpenTelemetryMetrics(); err != nil {
+				logger.Errorf("Failed to initialize event-store metrics: %v", err)
+			}
 			defer func() {
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				defer shutdownCancel()
@@ -785,12 +796,14 @@ func startGRPCServer(
 	// Add interceptors and other options
 	serverOpts = append(serverOpts,
 		grpc.ChainUnaryInterceptor(
+			admin.UnaryMetricsInterceptor(),
 			compressionUnaryInterceptor(),
 			admin.UnaryTracingInterceptor(logger),
 			admin.UnaryAuthInterceptor(authenticator, logger),
 			recoveryInterceptor(logger),
 		),
 		grpc.ChainStreamInterceptor(
+			admin.StreamMetricsInterceptor(),
 			compressionStreamInterceptor(),
 			admin.StreamTracingInterceptor(logger),
 			admin.StreamAuthInterceptor(authenticator, logger),
@@ -815,7 +828,12 @@ func startGRPCServer(
 	)
 
 	grpcServer := grpc.NewServer(serverOpts...)
-	grpcapi.RegisterEventStoreServer(grpcServer, grpcapi.AdaptEventStore(eventStore))
+	grpcapi.RegisterEventStoreServer(
+		grpcServer,
+		grpcapi.AdaptEventStoreWithServerInfo(eventStore, newServerRuntimeInfo(config)),
+	)
+	healthServer := newGRPCHealthServer()
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
 
 	// Register Admin service
 	grpcAdminServer := admin.NewGRPCAdminServerWithDependencies(
@@ -844,8 +862,81 @@ func startGRPCServer(
 		logger.Fatalf("Failed to listen: %v", err)
 	}
 
+	healthProbes := []grpcHealthProbe{
+		{
+			name:  "JetStream",
+			check: natsHealthCheck,
+		},
+		{
+			name: "durable storage",
+			check: func(probeCtx context.Context) error {
+				_, err := adminDB.GetUsersCount(probeCtx)
+				return err
+			},
+		},
+	}
+	initialHealthErr := refreshGRPCHealth(
+		ctx,
+		healthServer,
+		grpcHealthProbeTimeout,
+		healthProbes...,
+	)
+	if initialHealthErr != nil {
+		logger.Warnf("gRPC readiness dependencies are unavailable: %v", initialHealthErr)
+	}
+	go monitorGRPCHealth(
+		ctx,
+		healthServer,
+		grpcHealthProbeInterval,
+		grpcHealthProbeTimeout,
+		initialHealthErr,
+		func(healthErr error) {
+			if healthErr != nil {
+				logger.Warnf("gRPC readiness changed to NOT_SERVING: %v", healthErr)
+				return
+			}
+			logger.Infof("gRPC readiness recovered to SERVING")
+		},
+		healthProbes...,
+	)
+	go func() {
+		<-ctx.Done()
+		healthServer.Shutdown()
+	}()
+
 	logger.Infof("gRPC server listening on port %s (TLS: %v)", config.Grpc.Port, config.Grpc.TLS.Enabled)
 	if err := grpcServer.Serve(lis); err != nil {
 		logger.Fatalf("Failed to serve: %v", err)
+	}
+}
+
+func newServerRuntimeInfo(config c.AppConfig) grpcapi.ServerRuntimeInfo {
+	version, buildTime, gitCommit := orisun.GetBuildInfo()
+	return grpcapi.ServerRuntimeInfo{
+		Version:   version,
+		GitCommit: gitCommit,
+		BuildTime: buildTime,
+		Backend:   grpcStorageBackend(config.BackendType()),
+		NodeID:    uuid.NewString(),
+		Capabilities: []grpcapi.ServerCapability{
+			grpcapi.ServerCapability_SERVER_CAPABILITY_COMMAND_CONTEXT_CONSISTENCY,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_CATCH_UP_SUBSCRIPTIONS,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_INDEX_MANAGEMENT,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_BOUNDARY_CATALOG,
+			grpcapi.ServerCapability_SERVER_CAPABILITY_GRPC_HEALTH,
+		},
+	}
+}
+
+func grpcStorageBackend(backend string) grpcapi.StorageBackend {
+	switch backend {
+	case "postgres":
+		return grpcapi.StorageBackend_STORAGE_BACKEND_POSTGRES
+	case "sqlite":
+		return grpcapi.StorageBackend_STORAGE_BACKEND_SQLITE
+	case "foundationdb":
+		return grpcapi.StorageBackend_STORAGE_BACKEND_FOUNDATIONDB
+	default:
+		return grpcapi.StorageBackend_STORAGE_BACKEND_UNSPECIFIED
 	}
 }

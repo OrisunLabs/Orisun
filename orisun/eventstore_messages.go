@@ -147,3 +147,20 @@ type DropIndexRequest struct {
 	Boundary string
 	Name     string
 }
+
+type ListIndexesRequest struct {
+	Boundary string
+}
+
+type ListIndexesResponse struct {
+	Indexes []*BoundaryIndex
+}
+
+type GetIndexRequest struct {
+	Boundary string
+	Name     string
+}
+
+type GetIndexResponse struct {
+	Index *BoundaryIndex
+}

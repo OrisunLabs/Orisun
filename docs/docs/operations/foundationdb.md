@@ -87,7 +87,8 @@ FoundationDB criteria reads and consistency checks require ready covering indexe
 Before using a criterion in production traffic:
 
 1. Create the boundary index through `EventStore/CreateIndex`.
-2. Wait for the index to report ready.
+2. Poll `EventStore/GetIndex` (or inspect `ListIndexes`) until its state is
+   `INDEX_STATE_READY`.
 3. Deploy writers that use that criterion for CCC checks.
 
 This keeps conflict ranges narrow: commands that touch different indexed subsets can commit concurrently.

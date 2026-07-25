@@ -72,8 +72,13 @@ func (c *OrisunServer) SaveEvents(ctx context.Context, events []EventWithMapTags
 	if prepareErr != nil {
 		return nil, fmt.Errorf("failed to prepare events: %w", prepareErr)
 	}
-	transactionID, globalID, err := c.saveEvents.SavePrepared(
-		ctx, prepared, boundary, expectedPosition, streamSubSet,
+	transactionID, globalID, err := c.eventStore.savePreparedWithMetrics(
+		ctx,
+		c.saveEvents,
+		prepared,
+		boundary,
+		expectedPosition,
+		streamSubSet,
 	)
 
 	if err != nil {

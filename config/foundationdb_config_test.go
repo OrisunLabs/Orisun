@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -16,6 +17,7 @@ func TestValidateConfigAcceptsFoundationDB(t *testing.T) {
 		},
 		Admin: AdminConfig{Boundary: "orisun_admin"},
 	}
+	cfg.Auth.SessionTTL = 24 * time.Hour
 
 	if err := validateConfig(cfg); err != nil {
 		t.Fatalf("validateConfig returned error: %v", err)
@@ -28,6 +30,7 @@ func TestValidateConfigRejectsFoundationDBWithoutRoot(t *testing.T) {
 		FoundationDB: FoundationDBConfig{APIVersion: 730},
 		Admin:        AdminConfig{Boundary: "orisun_admin"},
 	}
+	cfg.Auth.SessionTTL = 24 * time.Hour
 
 	err := validateConfig(cfg)
 	if err == nil {

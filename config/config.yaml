@@ -134,6 +134,10 @@ logging:
 auth:
   adminUsername: ${ORISUN_ADMIN_USERNAME:admin}
   adminPassword: ${ORISUN_ADMIN_PASSWORD:changeit}
+  # Inactivity timeout for server-issued x-auth-token sessions. Successful
+  # token use renews the deadline; password changes and user deletion revoke
+  # all sessions for that user.
+  sessionTTL: ${ORISUN_AUTH_SESSION_TTL:24h}
 
 # admin dashboard configuration
 admin:
@@ -145,7 +149,7 @@ pprof:
   enabled: ${ORISUN_PPROF_ENABLED:false}
   port: ${ORISUN_PPROF_PORT:6060}
 
-# OpenTelemetry configuration
+# OpenTelemetry trace and metric export configuration
 openTelemetry:
   enabled: ${ORISUN_OTEL_ENABLED:true}
   endpoint: ${ORISUN_OTEL_ENDPOINT:localhost:4317}  # OTLP gRPC endpoint
