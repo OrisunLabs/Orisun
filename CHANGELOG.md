@@ -10,6 +10,33 @@
 - `CreateUser` now rejects unsupported or incorrectly cased role values instead
   of storing roles that can never satisfy authorization checks.
 
+## 0.9.2 - 2026-07-25
+
+### Fixed
+
+- Admin database operations now propagate request contexts through PostgreSQL,
+  SQLite, and FoundationDB so cancellation and deadlines are honored.
+- SQLite event reads now reject invalid stored `date_created` values instead of
+  silently replacing them with the current time.
+- PostgreSQL admin count columns now use `BIGINT` values instead of
+  `VARCHAR(255)`, avoiding string conversions in projections and queries.
+
+### Changed
+
+- SQLite schemas now use ordered, atomic `PRAGMA user_version` migrations.
+  Existing unversioned databases are adopted through the idempotent baseline,
+  while databases created by a newer Orisun version are rejected.
+- PostgreSQL startup automatically converts legacy admin count columns from
+  `VARCHAR(255)` to `BIGINT`.
+- Documentation is now versioned per release. The latest release remains at
+  `/docs`, while in-progress documentation is available at `/docs/next`.
+
+### Release Notes
+
+- This release carries forward the 0.9.0 breaking changes and migration
+  requirements documented below. Deployments older than 0.8.0 must upgrade
+  through 0.8.0 and verify the boundary catalog before upgrading to 0.9.2.
+
 ## 0.9.1 - 2026-07-24
 
 ### Fixed
