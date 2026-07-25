@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- PostgreSQL startup now runs the current boundary schema initializer before
+  registering each catalog-loaded boundary. Upgrades from older releases
+  therefore create newly introduced boundary tables before APIs become
+  available.
+
 ## 0.9.3 - 2026-07-25
 
 ### Fixed

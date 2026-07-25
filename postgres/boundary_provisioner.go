@@ -16,6 +16,7 @@ type migrateBoundary func(ctx context.Context, boundary, schema string) error
 type PostgresBoundaryProvisioner struct {
 	registry *BoundaryRegistry
 	migrate  migrateBoundary
+	migrated map[string]string
 }
 
 func NewPostgresBoundaryProvisioner(db *sql.DB, registry *BoundaryRegistry, dialect string) *PostgresBoundaryProvisioner {
@@ -25,7 +26,11 @@ func NewPostgresBoundaryProvisioner(db *sql.DB, registry *BoundaryRegistry, dial
 }
 
 func newPostgresBoundaryProvisioner(registry *BoundaryRegistry, migrate migrateBoundary) *PostgresBoundaryProvisioner {
-	return &PostgresBoundaryProvisioner{registry: registry, migrate: migrate}
+	return &PostgresBoundaryProvisioner{
+		registry: registry,
+		migrate:  migrate,
+		migrated: make(map[string]string),
+	}
 }
 
 // ProvisionBoundary validates and creates the physical PostgreSQL boundary.
@@ -44,18 +49,46 @@ func (p *PostgresBoundaryProvisioner) ProvisionBoundary(ctx context.Context, def
 	if err := p.migrate(ctx, definition.Name, schema); err != nil {
 		return fmt.Errorf("migrate boundary %s in schema %s: %w", definition.Name, schema, err)
 	}
+	p.migrated[definition.Name] = schema
 	return nil
 }
 
-// InstallBoundary registers an already-provisioned boundary in one process's
-// boundary-aware SQL adapters.
-func (p *PostgresBoundaryProvisioner) InstallBoundary(_ context.Context, definition boundarymodel.Definition) error {
-	if p == nil || p.registry == nil {
+// InstallBoundary brings an already-provisioned boundary up to the schema
+// version required by this process, then registers it in the boundary-aware SQL
+// adapters. This is required for catalog boundaries discovered during startup:
+// their physical schema may have been created by an older Orisun version.
+func (p *PostgresBoundaryProvisioner) InstallBoundary(ctx context.Context, definition boundarymodel.Definition) error {
+	if p == nil || p.registry == nil || p.migrate == nil {
 		return fmt.Errorf("postgres boundary provisioner is not configured")
 	}
 	schema, err := postgresPlacement(definition)
 	if err != nil {
 		return err
+	}
+
+	if _, found := p.registry.lookup(definition.Name); found {
+		if err := p.registry.Register(definition.Name, schema); err != nil {
+			return fmt.Errorf("register boundary %s: %w", definition.Name, err)
+		}
+		return nil
+	}
+
+	p.registry.provisionMu.Lock()
+	defer p.registry.provisionMu.Unlock()
+
+	// Re-check after taking the lock so concurrent duplicate lifecycle
+	// deliveries run the initializer only once per process.
+	if _, found := p.registry.lookup(definition.Name); found {
+		if err := p.registry.Register(definition.Name, schema); err != nil {
+			return fmt.Errorf("register boundary %s: %w", definition.Name, err)
+		}
+		return nil
+	}
+	if migratedSchema, migrated := p.migrated[definition.Name]; !migrated || migratedSchema != schema {
+		if err := p.migrate(ctx, definition.Name, schema); err != nil {
+			return fmt.Errorf("migrate boundary %s in schema %s: %w", definition.Name, schema, err)
+		}
+		p.migrated[definition.Name] = schema
 	}
 	if err := p.registry.Register(definition.Name, schema); err != nil {
 		return fmt.Errorf("register boundary %s: %w", definition.Name, err)
