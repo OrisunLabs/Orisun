@@ -25,6 +25,10 @@
 - `EventStore/ListIndexes` and `EventStore/GetIndex` now report Orisun-managed
   index definitions and `BUILDING` or `READY` state across all storage
   backends. Official Go, Node, and Java clients expose both calls.
+- OpenTelemetry now exports gRPC request counts, active calls, duration
+  histograms, and canonical status codes over OTLP alongside traces. Prometheus
+  integration remains collector-owned rather than adding an application scrape
+  endpoint.
 
 ## 0.9.2 - 2026-07-25
 

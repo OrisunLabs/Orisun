@@ -55,21 +55,34 @@ readinessProbe:
   periodSeconds: 5
 ```
 
-## Tracing
+## OpenTelemetry
 
-Orisun emits OpenTelemetry **traces** and exports them over OTLP gRPC. This is the primary signal for understanding request flow and latency across the save, query, and publish paths.
+Orisun emits OpenTelemetry traces and metrics over OTLP gRPC. Point the
+endpoint at an OpenTelemetry Collector with both trace and metric pipelines;
+the collector can route each signal to Prometheus, Tempo, or another backend.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ORISUN_OTEL_ENABLED` | `true` | Enable OpenTelemetry tracing. |
+| `ORISUN_OTEL_ENABLED` | `true` | Enable OpenTelemetry traces and metrics. |
 | `ORISUN_OTEL_ENDPOINT` | `localhost:4317` | OTLP gRPC collector endpoint. |
-| `ORISUN_OTEL_SERVICE_NAME` | `orisun` | Service name attached to exported spans. |
+| `ORISUN_OTEL_SERVICE_NAME` | `orisun` | Service name attached to exported telemetry. |
 
-Point `ORISUN_OTEL_ENDPOINT` at any OTLP-compatible collector (the OpenTelemetry Collector, Tempo, Jaeger with OTLP, Honeycomb, etc.). Traces are tagged with the service name so multiple nodes are distinguishable.
+RPC metrics are exported every 15 seconds:
 
-:::note
-Orisun currently exports traces, not a built-in metrics endpoint. For request rates and latencies, derive them from spans in your tracing backend, or scrape the Go runtime via `pprof`. There is no Prometheus `/metrics` endpoint to scrape.
-:::
+| Metric | Meaning |
+| --- | --- |
+| `orisun.rpc.server.requests` | Completed gRPC calls. |
+| `orisun.rpc.server.active_requests` | Calls currently in flight. |
+| `rpc.server.call.duration` | Call duration in seconds using the OpenTelemetry RPC histogram buckets. |
+
+Metrics include `rpc.system.name`, `rpc.method`, `orisun.rpc.type`, and the
+final `rpc.response.status_code`. Failed calls also include `error.type`.
+These attributes let dashboards separate EventStore, Admin, health, unary, and
+streaming traffic without parsing spans.
+
+Orisun intentionally does not expose a Prometheus `/metrics` endpoint. Use the
+collector's Prometheus exporter or remote-write exporter when Prometheus is the
+metrics backend.
 
 ## Logging
 

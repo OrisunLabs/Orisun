@@ -760,7 +760,7 @@ func startGRPCServer(
 			serviceName = "orisun"
 		}
 		var err error
-		otelShutdown, err = admin.InitTracerWithContext(ctx, serviceName, config.OpenTelemetry.Endpoint, logger)
+		otelShutdown, err = admin.InitTelemetryWithContext(ctx, serviceName, config.OpenTelemetry.Endpoint, logger)
 		if err != nil {
 			logger.Errorf("Failed to initialize OpenTelemetry: %v", err)
 		}
@@ -793,12 +793,14 @@ func startGRPCServer(
 	// Add interceptors and other options
 	serverOpts = append(serverOpts,
 		grpc.ChainUnaryInterceptor(
+			admin.UnaryMetricsInterceptor(),
 			compressionUnaryInterceptor(),
 			admin.UnaryTracingInterceptor(logger),
 			admin.UnaryAuthInterceptor(authenticator, logger),
 			recoveryInterceptor(logger),
 		),
 		grpc.ChainStreamInterceptor(
+			admin.StreamMetricsInterceptor(),
 			compressionStreamInterceptor(),
 			admin.StreamTracingInterceptor(logger),
 			admin.StreamAuthInterceptor(authenticator, logger),

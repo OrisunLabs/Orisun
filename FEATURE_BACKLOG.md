@@ -66,9 +66,13 @@ Comparable operational models:
 - [KurrentDB persistent subscriptions](https://docs.kurrent.io/server/v25.1/features/persistent-subscriptions)
 - [NATS JetStream consumers](https://docs.nats.io/nats-concepts/jetstream/consumers)
 
-### 5. Prometheus and OpenTelemetry metrics
+### 5. OpenTelemetry metrics
 
-Add first-class metrics for:
+Orisun now exports gRPC request counts, active calls, duration histograms, and
+status codes over OTLP. Prometheus integration belongs in the OpenTelemetry
+Collector rather than an application-local scrape endpoint.
+
+Still add first-class metrics for:
 
 - commits, events, bytes, and latency,
 - CCC conflicts by boundary and criterion shape,
@@ -81,7 +85,7 @@ Add first-class metrics for:
 - PostgreSQL pools,
 - FoundationDB transaction retries.
 
-There is currently no metrics endpoint. See
+See
 [Observability](docs/docs/operations/observability.md).
 
 Use standard RPC, database, and messaging conventions where possible:

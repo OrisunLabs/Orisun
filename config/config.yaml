@@ -149,7 +149,7 @@ pprof:
   enabled: ${ORISUN_PPROF_ENABLED:false}
   port: ${ORISUN_PPROF_PORT:6060}
 
-# OpenTelemetry configuration
+# OpenTelemetry trace and metric export configuration
 openTelemetry:
   enabled: ${ORISUN_OTEL_ENABLED:true}
   endpoint: ${ORISUN_OTEL_ENDPOINT:localhost:4317}  # OTLP gRPC endpoint

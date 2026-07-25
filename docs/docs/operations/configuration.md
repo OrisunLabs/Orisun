@@ -194,9 +194,9 @@ Orisun uses separate PostgreSQL-compatible pools for writes, reads, and admin wo
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ORISUN_OTEL_ENABLED` | `true` | Enable OpenTelemetry tracing. |
+| `ORISUN_OTEL_ENABLED` | `true` | Enable OpenTelemetry traces and metrics. |
 | `ORISUN_OTEL_ENDPOINT` | `localhost:4317` | OTLP gRPC endpoint. |
-| `ORISUN_OTEL_SERVICE_NAME` | `orisun` | Service name attached to exported traces. |
+| `ORISUN_OTEL_SERVICE_NAME` | `orisun` | Service name attached to exported telemetry. |
 | `ORISUN_PPROF_ENABLED` | `false` | Enable pprof. |
 | `ORISUN_PPROF_PORT` | `6060` | pprof port. |
 
