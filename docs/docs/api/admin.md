@@ -14,6 +14,11 @@ Admin is available in every server flavor:
 - SQLite-only server
 - FoundationDB server
 
+Administrative mutations require the `ADMIN` role. The `OPERATIONS` role can
+inspect boundary state and event counts but cannot provision boundaries or
+manage users. `ChangePassword` remains available to every authenticated user
+for their own account.
+
 ## Authentication
 
 Admin calls use the same Basic auth header as EventStore calls:
@@ -32,16 +37,16 @@ Set a production password with `ORISUN_ADMIN_PASSWORD` before exposing the serve
 
 | Method | Purpose |
 | --- | --- |
-| `CreateBoundary` | Define and asynchronously provision new or existing physical storage. |
-| `ListBoundaries` | Rebuild and return the boundary catalog. |
-| `GetBoundary` | Return one boundary and its current lifecycle state. |
-| `CreateUser` | Create an admin or application user. |
-| `DeleteUser` | Delete a user by ID. Users cannot delete their own account. |
-| `ChangePassword` | Change the authenticated user's password. |
-| `ListUsers` | List non-deleted users. |
-| `ValidateCredentials` | Validate a username/password pair. |
-| `GetUserCount` | Return total active user count. |
-| `GetEventCount` | Return event count for a boundary. |
+| `CreateBoundary` | Define and asynchronously provision new or existing physical storage. Requires `ADMIN`. |
+| `ListBoundaries` | Rebuild and return the boundary catalog. Requires `ADMIN` or `OPERATIONS`. |
+| `GetBoundary` | Return one boundary and its current lifecycle state. Requires `ADMIN` or `OPERATIONS`. |
+| `CreateUser` | Create an admin or application user. Requires `ADMIN`. |
+| `DeleteUser` | Delete a user by ID. Requires `ADMIN`; users cannot delete their own account. |
+| `ChangePassword` | Change the authenticated user's own password. |
+| `ListUsers` | List non-deleted users. Requires `ADMIN`. |
+| `ValidateCredentials` | Validate a username/password pair. Requires `ADMIN`. |
+| `GetUserCount` | Return total active user count. Requires `ADMIN`. |
+| `GetEventCount` | Return event count for a boundary. Requires `ADMIN` or `OPERATIONS`. |
 
 ## Boundary lifecycle
 
@@ -158,17 +163,11 @@ An unknown name returns `NOT_FOUND`.
 | `INVALID_ARGUMENT` | Missing placement, invalid name, or empty backend/namespace. |
 | `ALREADY_EXISTS` | A definition already exists for that name, including definitions currently `FAILED`. |
 | `NOT_FOUND` | `GetBoundary` cannot find the requested definition. |
+| `PERMISSION_DENIED` | The caller does not have the role required by the operation. |
 
 Backend and namespace compatibility is checked by the asynchronous provisioner.
 An incompatible non-empty placement can therefore make the definition RPC
 succeed and the boundary subsequently become `FAILED`.
-
-:::warning
-All Admin RPCs, including boundary creation, currently require
-authentication but are not role-gated. Restrict access to the Admin service at
-the network and credential layers. See
-[Security & Authorization](../operations/security).
-:::
 
 ## CreateUser
 
@@ -192,9 +191,10 @@ Required fields:
 | `password` | Initial password. |
 | `roles` | Role list. Valid values are `ADMIN` and `OPERATIONS`. |
 
-:::warning
-Roles are matched exactly and are case-sensitive. Use the uppercase values `ADMIN` and `OPERATIONS`; a value like `admin` is stored verbatim and never satisfies a role check, so the user is authenticated but authorized for nothing role-gated. See [Security & Authorization](../operations/security).
-:::
+Roles are validated exactly and are case-sensitive. The accepted values are
+`ADMIN` and `OPERATIONS`; an unsupported value such as `admin` is rejected with
+`INVALID_ARGUMENT`. See
+[Security & Authorization](../operations/security).
 
 ## ListUsers
 

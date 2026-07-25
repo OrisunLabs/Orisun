@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- Admin RPCs now enforce the existing role model. Boundary and user
+  administration require `ADMIN`; boundary inventory and event counts allow
+  `ADMIN` or `OPERATIONS`; password changes remain authenticated self-service.
+- `CreateUser` now rejects unsupported or incorrectly cased role values instead
+  of storing roles that can never satisfy authorization checks.
+
 ## 0.9.1 - 2026-07-24
 
 ### Fixed

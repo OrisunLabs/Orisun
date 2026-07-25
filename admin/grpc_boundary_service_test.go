@@ -23,7 +23,7 @@ func TestAdminBoundaryRPCsEmitDefinitionEvents(t *testing.T) {
 		{
 			name: "new storage",
 			invoke: func(server *AdminServiceServer) (*grpcapi.BoundaryInfo, error) {
-				response, err := server.CreateBoundary(t.Context(), &grpcapi.CreateBoundaryRequest{
+				response, err := server.CreateBoundary(adminTestContext(), &grpcapi.CreateBoundaryRequest{
 					Name:        "sales",
 					Description: "Sales domain",
 					Placement:   &grpcapi.BoundaryPlacementInput{Backend: "postgres", Namespace: "tenant_data"},
@@ -38,7 +38,7 @@ func TestAdminBoundaryRPCsEmitDefinitionEvents(t *testing.T) {
 			name:                 "existing storage",
 			existedBeforeCatalog: true,
 			invoke: func(server *AdminServiceServer) (*grpcapi.BoundaryInfo, error) {
-				response, err := server.CreateBoundary(t.Context(), &grpcapi.CreateBoundaryRequest{
+				response, err := server.CreateBoundary(adminTestContext(), &grpcapi.CreateBoundaryRequest{
 					Name:                 "sales",
 					Description:          "Sales domain",
 					Placement:            &grpcapi.BoundaryPlacementInput{Backend: "postgres", Namespace: "tenant_data"},
@@ -80,7 +80,7 @@ func TestAdminBoundaryRPCsEmitDefinitionEvents(t *testing.T) {
 func TestCreateBoundaryRPCMapsAlreadyExists(t *testing.T) {
 	retriever := emptyBoundaryRetriever{existing: true}
 	server := NewGRPCAdminServerWithBoundaryCommands(nil, "orisun_admin", nil, nil, nil, nil, &capturingBoundarySaver{}, retriever)
-	_, err := server.CreateBoundary(t.Context(), &grpcapi.CreateBoundaryRequest{
+	_, err := server.CreateBoundary(adminTestContext(), &grpcapi.CreateBoundaryRequest{
 		Name:      "sales",
 		Placement: &grpcapi.BoundaryPlacementInput{Backend: "postgres", Namespace: "tenant_data"},
 	})
@@ -91,7 +91,7 @@ func TestCreateBoundaryRPCMapsAlreadyExists(t *testing.T) {
 
 func TestCreateBoundaryRPCRequiresPlacement(t *testing.T) {
 	server := NewGRPCAdminServerWithBoundaryCommands(nil, "orisun_admin", nil, nil, nil, nil, &capturingBoundarySaver{}, emptyBoundaryRetriever{})
-	_, err := server.CreateBoundary(t.Context(), &grpcapi.CreateBoundaryRequest{Name: "sales"})
+	_, err := server.CreateBoundary(adminTestContext(), &grpcapi.CreateBoundaryRequest{Name: "sales"})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("CreateBoundary() code = %s, error = %v", status.Code(err), err)
 	}
@@ -115,11 +115,11 @@ func TestAdminBoundaryCatalogRPCs(t *testing.T) {
 	}}
 	server := NewGRPCAdminServerWithBoundaryCommands(nil, "orisun_admin", nil, nil, nil, nil, &capturingBoundarySaver{}, retriever)
 
-	list, err := server.ListBoundaries(t.Context(), &grpcapi.ListBoundariesRequest{})
+	list, err := server.ListBoundaries(operationsTestContext(), &grpcapi.ListBoundariesRequest{})
 	if err != nil || len(list.Boundaries) != 1 || list.Boundaries[0].Status != grpcapi.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE {
 		t.Fatalf("ListBoundaries() = %#v, %v", list, err)
 	}
-	get, err := server.GetBoundary(t.Context(), &grpcapi.GetBoundaryRequest{Name: "sales"})
+	get, err := server.GetBoundary(operationsTestContext(), &grpcapi.GetBoundaryRequest{Name: "sales"})
 	if err != nil || get.Boundary.Name != "sales" {
 		t.Fatalf("GetBoundary() = %#v, %v", get, err)
 	}
@@ -127,7 +127,7 @@ func TestAdminBoundaryCatalogRPCs(t *testing.T) {
 
 func TestGetBoundaryRPCMapsNotFound(t *testing.T) {
 	server := NewGRPCAdminServerWithBoundaryCommands(nil, "orisun_admin", nil, nil, nil, nil, &capturingBoundarySaver{}, emptyBoundaryRetriever{})
-	_, err := server.GetBoundary(t.Context(), &grpcapi.GetBoundaryRequest{Name: "missing"})
+	_, err := server.GetBoundary(operationsTestContext(), &grpcapi.GetBoundaryRequest{Name: "missing"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("GetBoundary() code = %s, error = %v", status.Code(err), err)
 	}
