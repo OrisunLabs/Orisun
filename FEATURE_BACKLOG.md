@@ -89,16 +89,17 @@ Use standard RPC, database, and messaging conventions where possible:
 
 ### 6. Health, readiness, and server information APIs
 
-Add standard gRPC health plus:
+Standard unauthenticated gRPC health now reports startup readiness for the
+server, EventStore, and Admin services. Extend it with:
 
-- unauthenticated liveness,
 - readiness based on admin catalog replay, active boundaries, backend health,
   and NATS health,
 - `GetServerInfo` returning version, commit, backend, capabilities, and node ID,
 - cluster and node health,
 - current publisher ownership.
 
-`Ping` currently returns an empty response.
+`Ping` still returns an empty response, and health does not yet expose
+continuous dependency diagnostics.
 
 ### 7. Complete index lifecycle management
 

@@ -1,9 +1,54 @@
 ---
 title: Observability
-description: Tracing, logging, and profiling signals Orisun emits and how to enable them.
+description: Health, tracing, logging, and profiling signals Orisun emits and how to enable them.
 ---
 
-Orisun exposes three operational signals: distributed traces, structured logs, and on-demand profiles.
+Orisun exposes standard gRPC health, distributed traces, structured logs, and
+on-demand profiles.
+
+## Health and readiness
+
+Orisun implements the standard `grpc.health.v1.Health` service. Health
+`Check`, `List`, and `Watch` calls do not require Orisun credentials, so
+orchestrators can probe a node before application authentication is available.
+
+Check the whole server:
+
+```bash
+grpcurl -plaintext \
+  -d '{"service":""}' \
+  localhost:5005 grpc.health.v1.Health/Check
+```
+
+Or check either registered application service:
+
+```bash
+grpcurl -plaintext \
+  -d '{"service":"orisun.EventStore"}' \
+  localhost:5005 grpc.health.v1.Health/Check
+
+grpcurl -plaintext \
+  -d '{"service":"orisun.Admin"}' \
+  localhost:5005 grpc.health.v1.Health/Check
+```
+
+The response is `NOT_SERVING` while the gRPC server is being prepared and
+`SERVING` after backend initialization, admin catalog bootstrap, service
+registration, and listener creation have succeeded. Cancellation of the
+server context changes all registered statuses back to `NOT_SERVING`.
+
+This initial readiness contract reports node startup state. It does not yet
+continuously evaluate individual boundary lifecycle failures, publisher lag,
+database degradation, or NATS health; monitor those signals separately.
+
+Kubernetes can use its native gRPC probe:
+
+```yaml
+readinessProbe:
+  grpc:
+    port: 5005
+  periodSeconds: 5
+```
 
 ## Tracing
 

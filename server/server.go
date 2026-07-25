@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
@@ -820,6 +821,8 @@ func startGRPCServer(
 
 	grpcServer := grpc.NewServer(serverOpts...)
 	grpcapi.RegisterEventStoreServer(grpcServer, grpcapi.AdaptEventStore(eventStore))
+	healthServer := newGRPCHealthServer()
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
 
 	// Register Admin service
 	grpcAdminServer := admin.NewGRPCAdminServerWithDependencies(
@@ -847,6 +850,12 @@ func startGRPCServer(
 	if err != nil {
 		logger.Fatalf("Failed to listen: %v", err)
 	}
+
+	setGRPCHealthStatus(healthServer, healthpb.HealthCheckResponse_SERVING)
+	go func() {
+		<-ctx.Done()
+		healthServer.Shutdown()
+	}()
 
 	logger.Infof("gRPC server listening on port %s (TLS: %v)", config.Grpc.Port, config.Grpc.TLS.Enabled)
 	if err := grpcServer.Serve(lis); err != nil {

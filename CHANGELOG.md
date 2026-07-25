@@ -14,6 +14,9 @@
 - Password changes, user deletion, and role changes now revoke the affected
   user's active sessions. Authentication debug logs no longer include raw
   session tokens.
+- The server now exposes unauthenticated standard gRPC health for the overall
+  node, EventStore, and Admin services, with startup and context-cancellation
+  readiness transitions.
 
 ## 0.9.2 - 2026-07-25
 
