@@ -396,6 +396,7 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		backend.AdminDB,
 		backend.SaveEvents,
 		backend.GetEvents,
+		natsRuntime.HealthCheck,
 		AppLogger,
 	)
 }
@@ -748,6 +749,7 @@ func startGRPCServer(
 	adminDB common.DB,
 	boundarySaver orisun.EventsSaver,
 	boundaryReader orisun.EventsRetriever,
+	natsHealthCheck func(context.Context) error,
 	logger l.Logger,
 ) {
 	// Initialize OpenTelemetry
@@ -855,7 +857,43 @@ func startGRPCServer(
 		logger.Fatalf("Failed to listen: %v", err)
 	}
 
-	setGRPCHealthStatus(healthServer, healthpb.HealthCheckResponse_SERVING)
+	healthProbes := []grpcHealthProbe{
+		{
+			name:  "JetStream",
+			check: natsHealthCheck,
+		},
+		{
+			name: "durable storage",
+			check: func(probeCtx context.Context) error {
+				_, err := adminDB.GetUsersCount(probeCtx)
+				return err
+			},
+		},
+	}
+	initialHealthErr := refreshGRPCHealth(
+		ctx,
+		healthServer,
+		grpcHealthProbeTimeout,
+		healthProbes...,
+	)
+	if initialHealthErr != nil {
+		logger.Warnf("gRPC readiness dependencies are unavailable: %v", initialHealthErr)
+	}
+	go monitorGRPCHealth(
+		ctx,
+		healthServer,
+		grpcHealthProbeInterval,
+		grpcHealthProbeTimeout,
+		initialHealthErr,
+		func(healthErr error) {
+			if healthErr != nil {
+				logger.Warnf("gRPC readiness changed to NOT_SERVING: %v", healthErr)
+				return
+			}
+			logger.Infof("gRPC readiness recovered to SERVING")
+		},
+		healthProbes...,
+	)
 	go func() {
 		<-ctx.Done()
 		healthServer.Shutdown()

@@ -3,15 +3,15 @@ package nats
 import (
 	"context"
 	"fmt"
-
-	"github.com/nats-io/nats-server/v2/server"
-	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-	c "github.com/OrisunLabs/Orisun/config"
-	l "github.com/OrisunLabs/Orisun/logging"
 	"net/url"
 	"strings"
 	"time"
+
+	c "github.com/OrisunLabs/Orisun/config"
+	l "github.com/OrisunLabs/Orisun/logging"
+	"github.com/nats-io/nats-server/v2/server"
+	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func InitializeNATS(ctx context.Context, config c.NatsConfig, logger l.Logger) (jetstream.JetStream, *natsgo.Conn, *server.Server) {
@@ -28,6 +28,22 @@ type Runtime struct {
 	Server    *server.Server
 
 	ownsConn bool
+}
+
+// HealthCheck verifies that the JetStream control plane can answer a request.
+// Connection status alone is insufficient because a NATS connection may be
+// established while JetStream is unavailable.
+func (r *Runtime) HealthCheck(ctx context.Context) error {
+	if r == nil || r.JetStream == nil {
+		return fmt.Errorf("JetStream runtime is not configured")
+	}
+	if r.Conn != nil && r.Conn.IsClosed() {
+		return fmt.Errorf("NATS connection is closed")
+	}
+	if _, err := r.JetStream.AccountInfo(ctx); err != nil {
+		return fmt.Errorf("query JetStream account info: %w", err)
+	}
+	return nil
 }
 
 func (r *Runtime) Close() {

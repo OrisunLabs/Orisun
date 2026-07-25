@@ -16,7 +16,9 @@
   session tokens.
 - The server now exposes unauthenticated standard gRPC health for the overall
   node, EventStore, and Admin services, with startup and context-cancellation
-  readiness transitions.
+  readiness transitions. Readiness continuously probes JetStream and durable
+  admin storage, becomes `NOT_SERVING` on dependency failure, and recovers
+  automatically.
 - `EventStore/GetServerInfo` now reports build metadata, storage backend,
   per-process node identity, and typed server capabilities. Official Go, Node,
   and Java clients expose the call.

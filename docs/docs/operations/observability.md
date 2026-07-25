@@ -37,9 +37,14 @@ The response is `NOT_SERVING` while the gRPC server is being prepared and
 registration, and listener creation have succeeded. Cancellation of the
 server context changes all registered statuses back to `NOT_SERVING`.
 
-This initial readiness contract reports node startup state. It does not yet
-continuously evaluate individual boundary lifecycle failures, publisher lag,
-database degradation, or NATS health; monitor those signals separately.
+After startup, Orisun probes JetStream and durable storage every five seconds.
+The JetStream probe makes a control-plane round trip; the storage probe performs
+a read-only query against the admin boundary. A failed probe changes the whole
+server plus the EventStore and Admin service statuses to `NOT_SERVING`.
+Readiness returns to `SERVING` automatically when both probes recover.
+
+Health does not yet evaluate individual boundary lifecycle failures, publisher
+lag, or publisher ownership; monitor those signals separately.
 
 Kubernetes can use its native gRPC probe:
 

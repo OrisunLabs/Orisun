@@ -92,15 +92,16 @@ Use standard RPC, database, and messaging conventions where possible:
 Standard unauthenticated gRPC health now reports startup readiness for the
 server, EventStore, and Admin services. Authenticated `GetServerInfo` reports
 version, commit, build time, backend, runtime node ID, and typed capabilities.
+Readiness continuously probes JetStream and durable admin storage, transitions
+to `NOT_SERVING` on dependency failure, and recovers automatically.
 Extend this with:
 
-- readiness based on admin catalog replay, active boundaries, backend health,
-  and NATS health,
+- readiness based on individual active-boundary health,
 - cluster and node health,
 - current publisher ownership.
 
 `Ping` still returns an empty response, and health does not yet expose
-continuous dependency diagnostics.
+publisher or per-boundary diagnostics.
 
 ### 7. Complete index lifecycle management
 

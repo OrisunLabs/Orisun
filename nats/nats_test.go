@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	c "github.com/OrisunLabs/Orisun/config"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
-	c "github.com/OrisunLabs/Orisun/config"
 )
 
 type testLogger struct{}
@@ -55,6 +55,13 @@ func TestStartUsesEmbeddedNATSByDefault(t *testing.T) {
 	}
 	if runtime.JetStream == nil {
 		t.Fatal("expected JetStream context")
+	}
+	if err := runtime.HealthCheck(ctx); err != nil {
+		t.Fatalf("HealthCheck() returned error: %v", err)
+	}
+	runtime.Close()
+	if err := runtime.HealthCheck(ctx); err == nil {
+		t.Fatal("HealthCheck() succeeded after runtime close")
 	}
 }
 
