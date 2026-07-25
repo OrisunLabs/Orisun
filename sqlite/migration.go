@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS orisun_last_published_event_position (
 
 CREATE TABLE IF NOT EXISTS events_count (
     boundary    TEXT PRIMARY KEY,
-    event_count TEXT NOT NULL,
+    event_count INTEGER NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

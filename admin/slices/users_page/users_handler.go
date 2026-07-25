@@ -1,6 +1,7 @@
 package users_page
 
 import (
+	"context"
 	"github.com/OrisunLabs/Orisun/admin/slices/common"
 	l "github.com/OrisunLabs/Orisun/logging"
 	"github.com/OrisunLabs/Orisun/orisun"
@@ -9,12 +10,12 @@ import (
 type UsersPageHandler struct {
 	logger                l.Logger
 	boundary              string
-	ListAdminUsers        func() ([]*orisun.User, error)
+	ListAdminUsers        func(ctx context.Context) ([]*orisun.User, error)
 	subscribeToEventstore admin_common.SubscribeToEventStoreType
 }
 
 func NewUsersPageHandler(logger l.Logger, boundary string,
-	listAdminUsers func() ([]*orisun.User, error),
+	listAdminUsers func(ctx context.Context) ([]*orisun.User, error),
 	subscribeToEventstore admin_common.SubscribeToEventStoreType) *UsersPageHandler {
 	return &UsersPageHandler{
 		logger:                logger,

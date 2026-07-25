@@ -26,8 +26,8 @@ type EventCountReadModel struct {
 	Boundary string
 }
 
-type GetEventCount = func(string) (EventCountReadModel, error)
-type SaveEventCount = func(int, string) error
+type GetEventCount = func(ctx context.Context, boundary string) (EventCountReadModel, error)
+type SaveEventCount = func(ctx context.Context, count int, boundary string) error
 
 type SubscribeToEventCount = func(consumerName string, boundary string, ctx context.Context, stream *orisun.MessageHandler[EventCountReadModel]) error
 
@@ -68,7 +68,7 @@ func (p *EventCountEventHandler) Start(ctx context.Context) error {
 	projectorName := projectorNameForBoundary(p.boundary)
 
 	// Get last checkpoint
-	pos, err := p.getProjectorLastPosition(projectorName)
+	pos, err := p.getProjectorLastPosition(ctx, projectorName)
 	if err != nil {
 		return err
 	}
@@ -111,6 +111,7 @@ func (p *EventCountEventHandler) Start(ctx context.Context) error {
 				}
 
 				err := p.updateProjectorPosition(
+					ctx,
 					projectorName,
 					&position,
 				)
@@ -134,7 +135,7 @@ func (p *EventCountEventHandler) Project(ctx context.Context, event coreeventsto
 	// For any event type, we increment the event count
 	// p.logger.Infof("Projecting event: %v", event)
 	// Get current event count
-	currentCount, err := p.getEventsCount(p.boundary)
+	currentCount, err := p.getEventsCount(ctx, p.boundary)
 	if err != nil {
 		return err
 	}
@@ -149,7 +150,7 @@ func (p *EventCountEventHandler) Project(ctx context.Context, event coreeventsto
 	if err != nil {
 		return err
 	}
-	p.saveEventCount(newCount, p.boundary)
+	p.saveEventCount(ctx, newCount, p.boundary)
 	eventId, err := uuid.NewV7()
 	if err != nil {
 		return err

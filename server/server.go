@@ -294,8 +294,8 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		return nil
 	}
 
-	getUserCount := func() (user_count.UserCountReadModel, error) {
-		count, err := backend.AdminDB.GetUsersCount()
+	getUserCount := func(ctx context.Context) (user_count.UserCountReadModel, error) {
+		count, err := backend.AdminDB.GetUsersCount(ctx)
 		if err != nil {
 			return user_count.UserCountReadModel{}, err
 		}
@@ -304,8 +304,8 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		}, nil
 	}
 
-	getEventCount := func(boundary string) (event_count.EventCountReadModel, error) {
-		count, err := backend.AdminDB.GetEventsCount(boundary)
+	getEventCount := func(ctx context.Context, boundary string) (event_count.EventCountReadModel, error) {
+		count, err := backend.AdminDB.GetEventsCount(ctx, boundary)
 		if err != nil {
 			return event_count.EventCountReadModel{}, err
 		}

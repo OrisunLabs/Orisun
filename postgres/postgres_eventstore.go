@@ -415,8 +415,8 @@ func NewPostgresAdminDBWithRegistry(db *sql.DB, logger logging.Logger, schema st
 
 var userCache = map[string]*eventstore.User{}
 
-func (s *PostgresAdminDB) ListAdminUsers() ([]*eventstore.User, error) {
-	rows, err := s.db.Query(s.qListUsers)
+func (s *PostgresAdminDB) ListAdminUsers(ctx context.Context) ([]*eventstore.User, error) {
+	rows, err := s.db.QueryContext(ctx, s.qListUsers)
 	if err != nil {
 		return nil, err
 	}
@@ -435,9 +435,10 @@ func (s *PostgresAdminDB) ListAdminUsers() ([]*eventstore.User, error) {
 	return users, nil
 }
 
-func (s *PostgresAdminDB) GetProjectorLastPosition(projectorName string) (*eventstore.Position, error) {
+func (s *PostgresAdminDB) GetProjectorLastPosition(ctx context.Context, projectorName string) (*eventstore.Position, error) {
 	var commitPos, preparePos int64
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(
+		ctx,
 		s.qGetProjectorPos,
 		projectorName,
 	).Scan(&commitPos, &preparePos)
@@ -455,7 +456,7 @@ func (s *PostgresAdminDB) GetProjectorLastPosition(projectorName string) (*event
 	}, nil
 }
 
-func (p *PostgresAdminDB) UpdateProjectorPosition(name string, position *eventstore.Position) error {
+func (p *PostgresAdminDB) UpdateProjectorPosition(ctx context.Context, name string, position *eventstore.Position) error {
 
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -463,7 +464,8 @@ func (p *PostgresAdminDB) UpdateProjectorPosition(name string, position *eventst
 		return err
 	}
 
-	if _, err := p.db.Exec(
+	if _, err := p.db.ExecContext(
+		ctx,
 		p.qUpsertProjectorPos,
 		id.String(),
 		name,
@@ -476,8 +478,9 @@ func (p *PostgresAdminDB) UpdateProjectorPosition(name string, position *eventst
 	return nil
 }
 
-func (p *PostgresAdminDB) DeleteUser(id string) error {
-	_, err := p.db.Exec(
+func (p *PostgresAdminDB) DeleteUser(ctx context.Context, id string) error {
+	_, err := p.db.ExecContext(
+		ctx,
 		p.qDeleteUser,
 		id,
 	)
@@ -503,7 +506,7 @@ func (s *PostgresAdminDB) scanUser(rows *sql.Rows) (eventstore.User, error) {
 	return user, nil
 }
 
-func (s *PostgresAdminDB) GetUserByUsername(username string) (eventstore.User, error) {
+func (s *PostgresAdminDB) GetUserByUsername(ctx context.Context, username string) (eventstore.User, error) {
 	user := userCache[username]
 	if user != nil {
 		if s.logger.IsDebugEnabled() {
@@ -512,7 +515,7 @@ func (s *PostgresAdminDB) GetUserByUsername(username string) (eventstore.User, e
 		return *user, nil
 	}
 
-	rows, err := s.db.Query(s.qGetUserByUsername, username)
+	rows, err := s.db.QueryContext(ctx, s.qGetUserByUsername, username)
 	if err != nil {
 		s.logger.Infof("User: %v", err)
 		return eventstore.User{}, err
@@ -534,8 +537,8 @@ func (s *PostgresAdminDB) GetUserByUsername(username string) (eventstore.User, e
 	return eventstore.User{}, fmt.Errorf("user not found")
 }
 
-func (s *PostgresAdminDB) GetUserById(id string) (eventstore.User, error) {
-	rows, err := s.db.Query(s.qGetUserById, id)
+func (s *PostgresAdminDB) GetUserById(ctx context.Context, id string) (eventstore.User, error) {
+	rows, err := s.db.QueryContext(ctx, s.qGetUserById, id)
 	if err != nil {
 		if s.logger.IsDebugEnabled() {
 			s.logger.Debugf("User by ID: %v", err)
@@ -558,14 +561,15 @@ func (s *PostgresAdminDB) GetUserById(id string) (eventstore.User, error) {
 	return eventstore.User{}, fmt.Errorf("user not found with id: %s", id)
 }
 
-func (s *PostgresAdminDB) UpsertUser(user eventstore.User) error {
+func (s *PostgresAdminDB) UpsertUser(ctx context.Context, user eventstore.User) error {
 	roleStrings := make([]string, len(user.Roles))
 	for i, role := range user.Roles {
 		roleStrings[i] = string(role)
 	}
 	rolesStr := "{" + strings.Join(roleStrings, ",") + "}"
 
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(
+		ctx,
 		s.qUpsertUser,
 		user.Id,
 		user.Name,
@@ -585,8 +589,8 @@ func (s *PostgresAdminDB) UpsertUser(user eventstore.User) error {
 	return nil
 }
 
-func (s *PostgresAdminDB) GetUsersCount() (uint32, error) {
-	rows, err := s.db.Query(s.qGetUsersCount)
+func (s *PostgresAdminDB) GetUsersCount(ctx context.Context) (uint32, error) {
+	rows, err := s.db.QueryContext(ctx, s.qGetUsersCount)
 	if err != nil {
 		if s.logger.IsDebugEnabled() {
 			s.logger.Debugf("User count: %v", err)
@@ -605,19 +609,19 @@ func (s *PostgresAdminDB) GetUsersCount() (uint32, error) {
 	return count, nil
 }
 
-func (s *PostgresAdminDB) GetEventsCount(boundary string) (int, error) {
+func (s *PostgresAdminDB) GetEventsCount(ctx context.Context, boundary string) (int, error) {
 	entry, ok := s.registry.lookup(boundary)
 	if !ok {
 		return 0, fmt.Errorf("no schema mapping found for boundary: %s", boundary)
 	}
 
-	rows, err := s.db.Query(entry.getEventCount)
+	rows, err := s.db.QueryContext(ctx, entry.getEventCount)
 	if err != nil {
 		if s.logger.IsDebugEnabled() {
 			s.logger.Debugf("Event count table query error: %v", err)
 		}
 		var count int
-		err := s.db.QueryRow(entry.fallbackGetEventCount).Scan(&count)
+		err := s.db.QueryRowContext(ctx, entry.fallbackGetEventCount).Scan(&count)
 		if err != nil {
 			s.logger.Errorf("Error getting events count for boundary %s: %v", boundary, err)
 			return 0, err
@@ -647,8 +651,9 @@ const (
 	eventCountId = "0195c053-57e7-7a6d-8e17-a2a695f67d2f"
 )
 
-func (s *PostgresAdminDB) SaveUsersCount(users_count uint32) error {
-	_, err := s.db.Exec(
+func (s *PostgresAdminDB) SaveUsersCount(ctx context.Context, users_count uint32) error {
+	_, err := s.db.ExecContext(
+		ctx,
 		s.qSaveUsersCount,
 		userCountId,
 		strconv.FormatUint(uint64(users_count), 10),
@@ -664,12 +669,13 @@ func (s *PostgresAdminDB) SaveUsersCount(users_count uint32) error {
 	return nil
 }
 
-func (s *PostgresAdminDB) SaveEventCount(event_count int, boundary string) error {
+func (s *PostgresAdminDB) SaveEventCount(ctx context.Context, event_count int, boundary string) error {
 	entry, ok := s.registry.lookup(boundary)
 	if !ok {
 		return fmt.Errorf("no schema mapping found for boundary: %s", boundary)
 	}
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(
+		ctx,
 		entry.saveEventCount,
 		eventCountId,
 		strconv.Itoa(event_count),

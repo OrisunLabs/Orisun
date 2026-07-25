@@ -587,10 +587,10 @@ func TestSqliteMetadataDBIsPerBoundary(t *testing.T) {
 	}
 
 	admin := NewSqliteAdminDBWithMetadata(pools, metadataPools, "test", logger)
-	if err := admin.SaveEventCount(11, "test"); err != nil {
+	if err := admin.SaveEventCount(context.Background(), 11, "test"); err != nil {
 		t.Fatalf("save test event count: %v", err)
 	}
-	if err := admin.SaveEventCount(22, "other"); err != nil {
+	if err := admin.SaveEventCount(context.Background(), 22, "other"); err != nil {
 		t.Fatalf("save other event count: %v", err)
 	}
 
@@ -1032,16 +1032,16 @@ func TestAdminUserCacheInvalidatedOnDelete(t *testing.T) {
 		HashedPassword: "hash",
 		Roles:          []eventstore.Role{eventstore.RoleAdmin},
 	}
-	if err := admin.UpsertUser(user); err != nil {
+	if err := admin.UpsertUser(context.Background(), user); err != nil {
 		t.Fatalf("upsert user: %v", err)
 	}
-	if _, err := admin.GetUserByUsername(user.Username); err != nil {
+	if _, err := admin.GetUserByUsername(context.Background(), user.Username); err != nil {
 		t.Fatalf("expected cached user: %v", err)
 	}
-	if err := admin.DeleteUser(user.Id); err != nil {
+	if err := admin.DeleteUser(context.Background(), user.Id); err != nil {
 		t.Fatalf("delete user: %v", err)
 	}
-	if _, err := admin.GetUserByUsername(user.Username); err == nil {
+	if _, err := admin.GetUserByUsername(context.Background(), user.Username); err == nil {
 		t.Fatal("expected deleted user lookup to fail")
 	}
 }
@@ -1059,21 +1059,21 @@ func TestAdminUserCacheEvictedOnUsernameChange(t *testing.T) {
 		HashedPassword: "hash",
 		Roles:          []eventstore.Role{eventstore.RoleAdmin},
 	}
-	if err := admin.UpsertUser(user); err != nil {
+	if err := admin.UpsertUser(context.Background(), user); err != nil {
 		t.Fatalf("upsert user: %v", err)
 	}
-	if _, err := admin.GetUserByUsername("old-name"); err != nil {
+	if _, err := admin.GetUserByUsername(context.Background(), "old-name"); err != nil {
 		t.Fatalf("expected cached user: %v", err)
 	}
 
 	user.Username = "new-name"
-	if err := admin.UpsertUser(user); err != nil {
+	if err := admin.UpsertUser(context.Background(), user); err != nil {
 		t.Fatalf("rename user: %v", err)
 	}
-	if _, err := admin.GetUserByUsername("old-name"); err == nil {
+	if _, err := admin.GetUserByUsername(context.Background(), "old-name"); err == nil {
 		t.Fatal("old username must stop resolving after rename")
 	}
-	if _, err := admin.GetUserByUsername("new-name"); err != nil {
+	if _, err := admin.GetUserByUsername(context.Background(), "new-name"); err != nil {
 		t.Fatalf("new username should resolve: %v", err)
 	}
 }

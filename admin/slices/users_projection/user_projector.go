@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-type CreateNewUserType = func(orisun.User) error
-type DeleteUserType = func(id string) error
+type CreateNewUserType = func(ctx context.Context, user orisun.User) error
+type DeleteUserType = func(ctx context.Context, id string) error
 type CountUsersType = func() error
-type GetUserById = func(userId string) (orisun.User, error)
+type GetUserById = func(ctx context.Context, userId string) (orisun.User, error)
 
 type UserProjector struct {
 	getProjectorLastPosition common.GetProjectorLastPositionType
@@ -60,7 +60,7 @@ func (p *UserProjector) Start(ctx context.Context) error {
 	p.logger.Info("Starting user projector")
 	var projectorName = "user-projector"
 	// Get last checkpoint
-	pos, err := p.getProjectorLastPosition(projectorName)
+	pos, err := p.getProjectorLastPosition(ctx, projectorName)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func (p *UserProjector) Start(ctx context.Context) error {
 			}
 
 			for {
-				if err := p.handleEvent(event); err != nil {
+				if err := p.handleEvent(ctx, event); err != nil {
 					p.logger.Error("Error handling event: %v", err)
 
 					select {
@@ -103,6 +103,7 @@ func (p *UserProjector) Start(ctx context.Context) error {
 				}
 
 				err := p.updateProjectorPosition(
+					ctx,
 					projectorName,
 					&position,
 				)
@@ -122,7 +123,7 @@ func (p *UserProjector) Start(ctx context.Context) error {
 	)
 }
 
-func (p *UserProjector) handleEvent(event coreeventstore.ReadEvent) error {
+func (p *UserProjector) handleEvent(ctx context.Context, event coreeventstore.ReadEvent) error {
 	if p.logger.IsDebugEnabled() {
 		p.logger.Debugf("Handling event %v", event)
 	}
@@ -135,6 +136,7 @@ func (p *UserProjector) handleEvent(event coreeventstore.ReadEvent) error {
 		}
 
 		err := p.createNewUser(
+			ctx,
 			orisun.User{
 				Id:             userEvent.UserId,
 				Username:       userEvent.Username,
@@ -154,7 +156,7 @@ func (p *UserProjector) handleEvent(event coreeventstore.ReadEvent) error {
 			return err
 		}
 
-		err := p.deleteUser(userEvent.UserId)
+		err := p.deleteUser(ctx, userEvent.UserId)
 		if err != nil {
 			return err
 		}
@@ -164,13 +166,13 @@ func (p *UserProjector) handleEvent(event coreeventstore.ReadEvent) error {
 		if err := json.Unmarshal([]byte(event.Data), &userEvent); err != nil {
 			return err
 		}
-		user, err := p.getUserById(userEvent.UserId)
+		user, err := p.getUserById(ctx, userEvent.UserId)
 
 		if err != nil {
 			return err
 		}
 		user.HashedPassword = userEvent.PasswordHash
-		err = p.createNewUser(user)
+		err = p.createNewUser(ctx, user)
 		if err != nil {
 			return err
 		}

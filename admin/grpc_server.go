@@ -50,11 +50,11 @@ type GetEventsFunc func(ctx context.Context, req *orisun.GetEventsRequest) (*ori
 type SaveEventsFunc func(ctx context.Context, req *orisun.SaveEventsRequest) (*orisun.WriteResult, error)
 
 // ListAdminUsersFunc is the function signature for listing admin users
-type ListAdminUsersFunc func() ([]*orisun.User, error)
+type ListAdminUsersFunc func(ctx context.Context) ([]*orisun.User, error)
 
-type GetUserCountFunc func() (uint32, error)
+type GetUserCountFunc func(ctx context.Context) (uint32, error)
 
-type GetEventCountFunc func(boundary string) (int, error)
+type GetEventCountFunc func(ctx context.Context, boundary string) (int, error)
 
 type CredentialsValidator interface {
 	ValidateCredentials(context.Context, string, string) (orisun.User, string, error)
@@ -229,7 +229,7 @@ func (s *AdminServiceServer) DeleteUser(ctx context.Context, req *grpcapi.Delete
 	}
 
 	// Check if user exists
-	user, err := s.getUserByID(req.UserId)
+	user, err := s.getUserByID(ctx, req.UserId)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
 			return nil, status.Errorf(codes.NotFound, "user not found")
@@ -292,7 +292,7 @@ func (s *AdminServiceServer) ListUsers(ctx context.Context, _ *grpcapi.ListUsers
 	if s.listAdminUser == nil {
 		return nil, status.Error(codes.Internal, "admin user store is not configured")
 	}
-	users, err := s.listAdminUser()
+	users, err := s.listAdminUser(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list users: %v", err)
 	}
@@ -341,7 +341,7 @@ func (s *AdminServiceServer) ValidateCredentials(ctx context.Context, req *grpca
 // GetUserCount returns the total number of users
 func (s *AdminServiceServer) GetUserCount(ctx context.Context, _ *grpcapi.GetUserCountRequest) (*grpcapi.GetUserCountResponse, error) {
 	if s.getUserCount != nil {
-		count, err := s.getUserCount()
+		count, err := s.getUserCount(ctx)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to count users: %v", err)
 		}
@@ -350,7 +350,7 @@ func (s *AdminServiceServer) GetUserCount(ctx context.Context, _ *grpcapi.GetUse
 	if s.listAdminUser == nil {
 		return nil, status.Error(codes.Internal, "admin user store is not configured")
 	}
-	users, err := s.listAdminUser()
+	users, err := s.listAdminUser(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to count users: %v", err)
 	}
@@ -369,7 +369,7 @@ func (s *AdminServiceServer) GetEventCount(ctx context.Context, req *grpcapi.Get
 	if s.getEventCount == nil {
 		return nil, status.Error(codes.Internal, "event count store is not configured")
 	}
-	count, err := s.getEventCount(req.Boundary)
+	count, err := s.getEventCount(ctx, req.Boundary)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to count events: %v", err)
 	}
@@ -403,11 +403,11 @@ func (s *AdminServiceServer) validateCreateUserRequest(req *grpcapi.CreateUserRe
 	return nil
 }
 
-func (s *AdminServiceServer) getUserByID(userID string) (*orisun.User, error) {
+func (s *AdminServiceServer) getUserByID(ctx context.Context, userID string) (*orisun.User, error) {
 	if s.listAdminUser == nil {
 		return nil, fmt.Errorf("admin user store is not configured")
 	}
-	users, err := s.listAdminUser()
+	users, err := s.listAdminUser(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -584,15 +584,11 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 	if err := sqlitex.ExecuteTransient(conn, q, &sqlitex.ExecOptions{
 		Args: args,
 		ResultFunc: func(stmt *sqlite.Stmt) error {
-			batch = append(batch, eventstore.ReadEvent{
-				CommitPosition:  stmt.ColumnInt64(0),
-				PreparePosition: stmt.ColumnInt64(1),
-				EventId:         stmt.ColumnText(2),
-				EventType:       stmt.ColumnText(3),
-				Data:            stmt.ColumnText(4),
-				Metadata:        stmt.ColumnText(5),
-				DateCreated:     parseSQLiteEventTime(stmt.ColumnText(6)),
-			})
+			event, scanErr := scanReadEventRow(stmt)
+			if scanErr != nil {
+				return scanErr
+			}
+			batch = append(batch, event)
 			return nil
 		},
 	}); err != nil {
@@ -654,7 +650,10 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 		// Transient: criteria literals are inlined (see buildCriteriaSQL).
 		if err := sqlitex.ExecuteTransient(conn, q, &sqlitex.ExecOptions{
 			ResultFunc: func(stmt *sqlite.Stmt) error {
-				event := scanReadEventRow(stmt)
+				event, scanErr := scanReadEventRow(stmt)
+				if scanErr != nil {
+					return scanErr
+				}
 				batch.Matches[i] = eventstore.LatestCriterionMatch{Event: event, Found: true}
 				if !found || (event.CommitPosition > batch.ContextCommitPosition ||
 					(event.CommitPosition == batch.ContextCommitPosition &&
@@ -674,7 +673,11 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 
 // scanReadEventRow decodes one orisun_es_event row in the canonical query order
 // (transaction_id, global_id, event_id, event_type alias, data, metadata, date_created).
-func scanReadEventRow(stmt *sqlite.Stmt) eventstore.ReadEvent {
+func scanReadEventRow(stmt *sqlite.Stmt) (eventstore.ReadEvent, error) {
+	created, err := parseSQLiteEventTime(stmt.ColumnText(6))
+	if err != nil {
+		return eventstore.ReadEvent{}, err
+	}
 	return eventstore.ReadEvent{
 		EventId:         stmt.ColumnText(2),
 		EventType:       stmt.ColumnText(3),
@@ -682,20 +685,19 @@ func scanReadEventRow(stmt *sqlite.Stmt) eventstore.ReadEvent {
 		Metadata:        stmt.ColumnText(5),
 		CommitPosition:  stmt.ColumnInt64(0),
 		PreparePosition: stmt.ColumnInt64(1),
-		DateCreated:     parseSQLiteEventTime(stmt.ColumnText(6)),
-	}
+		DateCreated:     created,
+	}, nil
 }
 
-func parseSQLiteEventTime(created string) time.Time {
+func parseSQLiteEventTime(created string) (time.Time, error) {
 	t, parseErr := time.Parse(time.RFC3339Nano, created)
 	if parseErr != nil {
 		if t2, e2 := time.Parse("2006-01-02T15:04:05.000Z", created); e2 == nil {
-			t = t2
-		} else {
-			t = time.Now().UTC()
+			return t2, nil
 		}
+		return time.Time{}, fmt.Errorf("unparseable date_created %q: %w", created, parseErr)
 	}
-	return t
+	return t, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -703,7 +705,6 @@ func parseSQLiteEventTime(created string) time.Time {
 // ---------------------------------------------------------------------------
 
 type SqliteAdminDB struct {
-	ctx           context.Context
 	pools         map[string]*BoundaryPools
 	metadataPools map[string]*BoundaryPools
 	registry      *BoundaryRegistry
@@ -716,7 +717,6 @@ type SqliteAdminDB struct {
 func NewSqliteAdminDB(pools map[string]*BoundaryPools, adminBoundary string, logger logging.Logger) *SqliteAdminDB {
 	registry := NewBoundaryRegistry(pools, nil)
 	return &SqliteAdminDB{
-		ctx:           context.Background(),
 		pools:         pools,
 		registry:      registry,
 		adminBoundary: adminBoundary,
@@ -726,12 +726,11 @@ func NewSqliteAdminDB(pools map[string]*BoundaryPools, adminBoundary string, log
 }
 
 func NewSqliteAdminDBWithMetadata(pools map[string]*BoundaryPools, metadataPools map[string]*BoundaryPools, adminBoundary string, logger logging.Logger) *SqliteAdminDB {
-	return newSqliteAdminDBWithRegistry(context.Background(), NewBoundaryRegistry(pools, metadataPools), adminBoundary, logger)
+	return newSqliteAdminDBWithRegistry(NewBoundaryRegistry(pools, metadataPools), adminBoundary, logger)
 }
 
-func newSqliteAdminDBWithRegistry(ctx context.Context, registry *BoundaryRegistry, adminBoundary string, logger logging.Logger) *SqliteAdminDB {
+func newSqliteAdminDBWithRegistry(registry *BoundaryRegistry, adminBoundary string, logger logging.Logger) *SqliteAdminDB {
 	return &SqliteAdminDB{
-		ctx:           ctx,
 		pools:         registry.pools,
 		metadataPools: registry.metadataPools,
 		registry:      registry,
@@ -790,9 +789,9 @@ func csvToRoles(s string) []eventstore.Role {
 	return out
 }
 
-func (a *SqliteAdminDB) ListAdminUsers() ([]*eventstore.User, error) {
+func (a *SqliteAdminDB) ListAdminUsers(ctx context.Context) ([]*eventstore.User, error) {
 	pool := a.adminPool()
-	conn, err := pool.Read.Take(a.ctx)
+	conn, err := pool.Read.Take(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -817,9 +816,9 @@ func (a *SqliteAdminDB) ListAdminUsers() ([]*eventstore.User, error) {
 	return users, err
 }
 
-func (a *SqliteAdminDB) GetProjectorLastPosition(projectorName string) (*eventstore.Position, error) {
+func (a *SqliteAdminDB) GetProjectorLastPosition(ctx context.Context, projectorName string) (*eventstore.Position, error) {
 	pool := a.poolForProjectorName(projectorName)
-	conn, err := pool.Read.Take(a.ctx)
+	conn, err := pool.Read.Take(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -848,9 +847,9 @@ func (a *SqliteAdminDB) GetProjectorLastPosition(projectorName string) (*eventst
 	return &eventstore.Position{CommitPosition: commit, PreparePosition: prepare}, nil
 }
 
-func (a *SqliteAdminDB) UpdateProjectorPosition(name string, position *eventstore.Position) error {
+func (a *SqliteAdminDB) UpdateProjectorPosition(ctx context.Context, name string, position *eventstore.Position) error {
 	pool := a.poolForProjectorName(name)
-	conn, err := pool.Write.Take(a.ctx)
+	conn, err := pool.Write.Take(ctx)
 	if err != nil {
 		return err
 	}
@@ -869,9 +868,9 @@ func (a *SqliteAdminDB) UpdateProjectorPosition(name string, position *eventstor
 		})
 }
 
-func (a *SqliteAdminDB) UpsertUser(user eventstore.User) error {
+func (a *SqliteAdminDB) UpsertUser(ctx context.Context, user eventstore.User) error {
 	pool := a.adminPool()
-	conn, err := pool.Write.Take(a.ctx)
+	conn, err := pool.Write.Take(ctx)
 	if err != nil {
 		return err
 	}
@@ -902,9 +901,9 @@ func (a *SqliteAdminDB) UpsertUser(user eventstore.User) error {
 	return nil
 }
 
-func (a *SqliteAdminDB) DeleteUser(id string) error {
+func (a *SqliteAdminDB) DeleteUser(ctx context.Context, id string) error {
 	pool := a.adminPool()
-	conn, err := pool.Write.Take(a.ctx)
+	conn, err := pool.Write.Take(ctx)
 	if err != nil {
 		return err
 	}
@@ -918,7 +917,7 @@ func (a *SqliteAdminDB) DeleteUser(id string) error {
 	return nil
 }
 
-func (a *SqliteAdminDB) GetUserByUsername(username string) (eventstore.User, error) {
+func (a *SqliteAdminDB) GetUserByUsername(ctx context.Context, username string) (eventstore.User, error) {
 	a.userCacheMu.RLock()
 	if u, ok := a.userCache[username]; ok && u != nil {
 		a.userCacheMu.RUnlock()
@@ -927,7 +926,7 @@ func (a *SqliteAdminDB) GetUserByUsername(username string) (eventstore.User, err
 	a.userCacheMu.RUnlock()
 
 	pool := a.adminPool()
-	conn, err := pool.Read.Take(a.ctx)
+	conn, err := pool.Read.Take(ctx)
 	if err != nil {
 		return eventstore.User{}, err
 	}
@@ -963,9 +962,9 @@ func (a *SqliteAdminDB) GetUserByUsername(username string) (eventstore.User, err
 	return u, nil
 }
 
-func (a *SqliteAdminDB) GetUserById(id string) (eventstore.User, error) {
+func (a *SqliteAdminDB) GetUserById(ctx context.Context, id string) (eventstore.User, error) {
 	pool := a.adminPool()
-	conn, err := pool.Read.Take(a.ctx)
+	conn, err := pool.Read.Take(ctx)
 	if err != nil {
 		return eventstore.User{}, err
 	}
@@ -998,9 +997,9 @@ func (a *SqliteAdminDB) GetUserById(id string) (eventstore.User, error) {
 	return u, nil
 }
 
-func (a *SqliteAdminDB) GetUsersCount() (uint32, error) {
+func (a *SqliteAdminDB) GetUsersCount(ctx context.Context) (uint32, error) {
 	pool := a.adminPool()
-	conn, err := pool.Read.Take(a.ctx)
+	conn, err := pool.Read.Take(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -1020,9 +1019,9 @@ const (
 	userCountID = "0195c053-57e7-7a6d-8e17-a2a695f67d1f"
 )
 
-func (a *SqliteAdminDB) SaveUsersCount(count uint32) error {
+func (a *SqliteAdminDB) SaveUsersCount(ctx context.Context, count uint32) error {
 	pool := a.adminPool()
-	conn, err := pool.Write.Take(a.ctx)
+	conn, err := pool.Write.Take(ctx)
 	if err != nil {
 		return err
 	}
@@ -1038,37 +1037,35 @@ func (a *SqliteAdminDB) SaveUsersCount(count uint32) error {
 		})
 }
 
-func (a *SqliteAdminDB) GetEventsCount(boundary string) (int, error) {
+func (a *SqliteAdminDB) GetEventsCount(ctx context.Context, boundary string) (int, error) {
 	eventPool, ok := a.registry.eventPool(boundary)
 	if !ok {
 		return 0, fmt.Errorf("unknown boundary: %s", boundary)
 	}
 	cachePool := a.metadataPoolForBoundary(boundary)
-	conn, err := cachePool.Read.Take(a.ctx)
+	conn, err := cachePool.Read.Take(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	var countStr string
+	var count int64
 	cacheHit := false
 	err = sqlitex.Execute(conn, "SELECT event_count FROM events_count WHERE boundary = ?", &sqlitex.ExecOptions{
 		Args: []any{boundary},
 		ResultFunc: func(stmt *sqlite.Stmt) error {
-			countStr = stmt.ColumnText(0)
+			count = stmt.ColumnInt64(0)
 			cacheHit = true
 			return nil
 		},
 	})
 	if err == nil && cacheHit {
-		if n, perr := strconv.Atoi(countStr); perr == nil {
-			cachePool.Read.Put(conn)
-			return n, nil
-		}
+		cachePool.Read.Put(conn)
+		return int(count), nil
 	}
 	cachePool.Read.Put(conn)
 
 	var total int64
-	conn, err = eventPool.Read.Take(a.ctx)
+	conn, err = eventPool.Read.Take(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -1085,12 +1082,12 @@ func (a *SqliteAdminDB) GetEventsCount(boundary string) (int, error) {
 	return int(total), nil
 }
 
-func (a *SqliteAdminDB) SaveEventCount(count int, boundary string) error {
+func (a *SqliteAdminDB) SaveEventCount(ctx context.Context, count int, boundary string) error {
 	if _, ok := a.registry.eventPool(boundary); !ok {
 		return fmt.Errorf("unknown boundary: %s", boundary)
 	}
 	pool := a.metadataPoolForBoundary(boundary)
-	conn, err := pool.Write.Take(a.ctx)
+	conn, err := pool.Write.Take(ctx)
 	if err != nil {
 		return err
 	}
@@ -1102,7 +1099,7 @@ func (a *SqliteAdminDB) SaveEventCount(count int, boundary string) error {
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(boundary) DO UPDATE SET event_count = excluded.event_count, updated_at = excluded.updated_at`,
 		&sqlitex.ExecOptions{
-			Args: []any{boundary, strconv.Itoa(count), now, now},
+			Args: []any{boundary, count, now, now},
 		})
 }
 
@@ -1373,7 +1370,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	}
 	saver.notifier = notifier
 	getter := newSqliteGetEventsWithRegistry(registry, logger)
-	admin := newSqliteAdminDBWithRegistry(ctx, registry, adminCfg.Boundary, logger)
+	admin := newSqliteAdminDBWithRegistry(registry, adminCfg.Boundary, logger)
 	publishing := newSqliteEventPublishingWithRegistry(registry, logger)
 	provisioner := NewSqliteBoundaryProvisioner(sqliteCfg, adminCfg, registry, saver)
 

@@ -507,7 +507,7 @@ func sqliteGRPCServerOptions(b *testing.B, optionSet, authMode string, eventStor
 			eventStore.getEvents,
 			logger,
 			benchBoundary,
-			func(username string) (orisun.User, error) {
+			func(ctx context.Context, username string) (orisun.User, error) {
 				if username != user.Username {
 					return orisun.User{}, errors.New("user not found")
 				}

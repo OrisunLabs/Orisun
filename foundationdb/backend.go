@@ -510,7 +510,7 @@ type storedPosition struct {
 	Prepare int64 `json:"prepare_position"`
 }
 
-func (b *Backend) ListAdminUsers() ([]*eventstore.User, error) {
+func (b *Backend) ListAdminUsers(ctx context.Context) ([]*eventstore.User, error) {
 	result, err := b.db.ReadTransact(func(rt fdb.ReadTransaction) (interface{}, error) {
 		iter := rt.GetRange(prefixRange(b.adminUserByIDPrefix()), fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
 		var users []*eventstore.User
@@ -533,7 +533,7 @@ func (b *Backend) ListAdminUsers() ([]*eventstore.User, error) {
 	return result.([]*eventstore.User), nil
 }
 
-func (b *Backend) GetProjectorLastPosition(projectorName string) (*eventstore.Position, error) {
+func (b *Backend) GetProjectorLastPosition(ctx context.Context, projectorName string) (*eventstore.Position, error) {
 	result, err := b.db.ReadTransact(func(rt fdb.ReadTransaction) (interface{}, error) {
 		raw := rt.Get(b.projectorKey(projectorName)).MustGet()
 		if raw == nil {
@@ -552,7 +552,7 @@ func (b *Backend) GetProjectorLastPosition(projectorName string) (*eventstore.Po
 	return result.(*eventstore.Position), nil
 }
 
-func (b *Backend) UpdateProjectorPosition(name string, position *eventstore.Position) error {
+func (b *Backend) UpdateProjectorPosition(ctx context.Context, name string, position *eventstore.Position) error {
 	if position == nil {
 		position = &eventstore.Position{}
 	}
@@ -567,7 +567,7 @@ func (b *Backend) UpdateProjectorPosition(name string, position *eventstore.Posi
 	return err
 }
 
-func (b *Backend) UpsertUser(user eventstore.User) error {
+func (b *Backend) UpsertUser(ctx context.Context, user eventstore.User) error {
 	if user.Id == "" {
 		id, err := uuid.NewV7()
 		if err != nil {
@@ -616,7 +616,7 @@ func (b *Backend) UpsertUser(user eventstore.User) error {
 	return nil
 }
 
-func (b *Backend) DeleteUser(id string) error {
+func (b *Backend) DeleteUser(ctx context.Context, id string) error {
 	_, err := b.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
 		raw := tr.Get(b.adminUserByIDKey(id)).MustGet()
 		if raw == nil {
@@ -641,7 +641,7 @@ func (b *Backend) DeleteUser(id string) error {
 
 // GetUserByUsername sits on the per-request auth path, so hits are served from
 // an in-process cache like the SQLite backend's. Mutations reset the cache.
-func (b *Backend) GetUserByUsername(username string) (eventstore.User, error) {
+func (b *Backend) GetUserByUsername(ctx context.Context, username string) (eventstore.User, error) {
 	b.userCacheMu.RLock()
 	if u, ok := b.userCache[username]; ok && u != nil {
 		b.userCacheMu.RUnlock()
@@ -659,11 +659,11 @@ func (b *Backend) GetUserByUsername(username string) (eventstore.User, error) {
 	return user, nil
 }
 
-func (b *Backend) GetUserById(id string) (eventstore.User, error) {
+func (b *Backend) GetUserById(ctx context.Context, id string) (eventstore.User, error) {
 	return b.getUser(b.adminUserByIDKey(id), "user not found with id: "+id)
 }
 
-func (b *Backend) GetUsersCount() (uint32, error) {
+func (b *Backend) GetUsersCount(ctx context.Context) (uint32, error) {
 	result, err := b.db.ReadTransact(func(rt fdb.ReadTransaction) (interface{}, error) {
 		raw := rt.Get(b.usersCountKey()).MustGet()
 		if raw == nil {
@@ -681,7 +681,7 @@ func (b *Backend) GetUsersCount() (uint32, error) {
 	return result.(uint32), nil
 }
 
-func (b *Backend) SaveUsersCount(count uint32) error {
+func (b *Backend) SaveUsersCount(ctx context.Context, count uint32) error {
 	_, err := b.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
 		tr.Set(b.usersCountKey(), []byte(strconv.FormatUint(uint64(count), 10)))
 		return nil, nil
@@ -689,7 +689,7 @@ func (b *Backend) SaveUsersCount(count uint32) error {
 	return err
 }
 
-func (b *Backend) GetEventsCount(boundary string) (int, error) {
+func (b *Backend) GetEventsCount(ctx context.Context, boundary string) (int, error) {
 	if err := b.checkBoundary(boundary); err != nil {
 		return 0, err
 	}
@@ -832,7 +832,7 @@ func isTransactionTooLarge(err error) bool {
 	return false
 }
 
-func (b *Backend) SaveEventCount(count int, boundary string) error {
+func (b *Backend) SaveEventCount(ctx context.Context, count int, boundary string) error {
 	if err := b.checkBoundary(boundary); err != nil {
 		return err
 	}

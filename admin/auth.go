@@ -20,11 +20,15 @@ type Authenticator struct {
 	boundary          string
 	getEvents         admin_common.GetEventsType
 	logger            logger.Logger
-	getUserByUsername func(username string) (orisun.User, error)
+	getUserByUsername func(ctx context.Context, username string) (orisun.User, error)
 }
 
-func NewAuthenticator(getEvents admin_common.GetEventsType, logger logger.Logger,
-	boundary string, getUserByUsername func(username string) (orisun.User, error)) *Authenticator {
+func NewAuthenticator(
+	getEvents admin_common.GetEventsType,
+	logger logger.Logger,
+	boundary string,
+	getUserByUsername func(ctx context.Context, username string) (orisun.User, error),
+) *Authenticator {
 	return &Authenticator{
 		boundary:          boundary,
 		getEvents:         getEvents,
@@ -66,7 +70,7 @@ func (a *Authenticator) ValidateCredentials(ctx context.Context, username string
 	// 	return *user, userByIdCache[], nil
 	// }
 
-	userr, errr := a.getUserByUsername(username)
+	userr, errr := a.getUserByUsername(ctx, username)
 	if errr != nil {
 		a.logger.Errorf("Could not retrieve user %v", errr)
 		return orisun.User{}, "", fmt.Errorf("invalid credentials")

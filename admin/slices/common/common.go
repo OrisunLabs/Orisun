@@ -15,24 +15,24 @@ const CombinatorAND = orisun.IndexCombinatorAND
 const CombinatorOR = orisun.IndexCombinatorOR
 
 type DB interface {
-	ListAdminUsers() ([]*orisun.User, error)
-	GetProjectorLastPosition(projectorName string) (*orisun.Position, error)
-	UpdateProjectorPosition(name string, position *orisun.Position) error
-	UpsertUser(user orisun.User) error
-	DeleteUser(id string) error
-	GetUserByUsername(username string) (orisun.User, error)
-	GetUserById(username string) (orisun.User, error)
-	GetUsersCount() (uint32, error)
-	SaveUsersCount(uint32) error
-	GetEventsCount(boundary string) (int, error)
-	SaveEventCount(int, string) error
+	ListAdminUsers(ctx context.Context) ([]*orisun.User, error)
+	GetProjectorLastPosition(ctx context.Context, projectorName string) (*orisun.Position, error)
+	UpdateProjectorPosition(ctx context.Context, name string, position *orisun.Position) error
+	UpsertUser(ctx context.Context, user orisun.User) error
+	DeleteUser(ctx context.Context, id string) error
+	GetUserByUsername(ctx context.Context, username string) (orisun.User, error)
+	GetUserById(ctx context.Context, username string) (orisun.User, error)
+	GetUsersCount(ctx context.Context) (uint32, error)
+	SaveUsersCount(ctx context.Context, count uint32) error
+	GetEventsCount(ctx context.Context, boundary string) (int, error)
+	SaveEventCount(ctx context.Context, count int, boundary string) error
 	orisun.BoundaryIndexManager
 }
 
 type SaveEventsType = func(ctx context.Context, in *orisun.SaveEventsRequest) (resp *orisun.WriteResult, err error)
 type GetEventsType = func(ctx context.Context, in *orisun.GetEventsRequest) (*orisun.GetEventsResponse, error)
-type GetProjectorLastPositionType = func(projectorName string) (*orisun.Position, error)
-type UpdateProjectorPositionType = func(projectorName string, position *orisun.Position) error
+type GetProjectorLastPositionType = func(ctx context.Context, projectorName string) (*orisun.Position, error)
+type UpdateProjectorPositionType = func(ctx context.Context, projectorName string, position *orisun.Position) error
 type SubscribeToEventStoreType = func(
 	ctx context.Context,
 	request coreeventstore.SubscribeRequest,

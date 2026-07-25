@@ -22,8 +22,8 @@ type UserCountReadModel struct {
 	Count uint32
 }
 
-type GetUserCount = func() (UserCountReadModel, error)
-type SaveUserCount = func(uint32) error
+type GetUserCount = func(ctx context.Context) (UserCountReadModel, error)
+type SaveUserCount = func(ctx context.Context, count uint32) error
 
 type SubscribeToUserCount = func(consumerName string, ctx context.Context, stream *orisun.MessageHandler[UserCountReadModel]) error
 
@@ -62,7 +62,7 @@ func NewUserCountProjection(
 
 func (p *UserCountEventHandler) Start(ctx context.Context) error {
 	// Get last checkpoint
-	pos, err := p.getProjectorLastPosition(projectorName)
+	pos, err := p.getProjectorLastPosition(ctx, projectorName)
 	if err != nil {
 		return err
 	}
@@ -105,6 +105,7 @@ func (p *UserCountEventHandler) Start(ctx context.Context) error {
 				}
 
 				err := p.updateProjectorPosition(
+					ctx,
 					projectorName,
 					&position,
 				)
@@ -130,7 +131,7 @@ func (p *UserCountEventHandler) Project(ctx context.Context, event coreeventstor
 		{
 			// p.logger.Infof("Projecting event: %v", event)
 			// Get current user count
-			currentCount, err := p.getUsersCount()
+			currentCount, err := p.getUsersCount(ctx)
 			if err != nil {
 				return err
 			}
@@ -144,7 +145,7 @@ func (p *UserCountEventHandler) Project(ctx context.Context, event coreeventstor
 			if err != nil {
 				return err
 			}
-			p.saveUserCount(newCount)
+			p.saveUserCount(ctx, newCount)
 			userId, err := uuid.NewV7()
 			if err != nil {
 				return err
@@ -158,7 +159,7 @@ func (p *UserCountEventHandler) Project(ctx context.Context, event coreeventstor
 	case ev.EventTypeUserDeleted:
 		{
 			// Get current user count
-			currentCount, err := p.getUsersCount()
+			currentCount, err := p.getUsersCount(ctx)
 			if err != nil {
 				return err
 			}
@@ -175,7 +176,7 @@ func (p *UserCountEventHandler) Project(ctx context.Context, event coreeventstor
 				return err
 			}
 
-			p.saveUserCount(newCount)
+			p.saveUserCount(ctx, newCount)
 			userId, err := uuid.NewV7()
 			if err != nil {
 				return err

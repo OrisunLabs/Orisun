@@ -15,10 +15,10 @@ func TestAdminServiceUsesCountDependencies(t *testing.T) {
 
 	var countedBoundary string
 	server := NewGRPCAdminServerWithDependencies(nil, "orisun_admin", GRPCAdminDependencies{
-		GetUserCount: func() (uint32, error) {
+		GetUserCount: func(ctx context.Context) (uint32, error) {
 			return 7, nil
 		},
-		GetEventCount: func(boundary string) (int, error) {
+		GetEventCount: func(ctx context.Context, boundary string) (int, error) {
 			countedBoundary = boundary
 			return 42, nil
 		},
@@ -77,11 +77,11 @@ func TestGetUserByIDReturnsNotFound(t *testing.T) {
 	t.Parallel()
 
 	server := NewGRPCAdminServerWithDependencies(nil, "orisun_admin", GRPCAdminDependencies{
-		ListAdminUsers: func() ([]*orisun.User, error) {
+		ListAdminUsers: func(ctx context.Context) ([]*orisun.User, error) {
 			return []*orisun.User{{Id: "user-1"}}, nil
 		},
 	})
-	_, err := server.getUserByID("missing")
+	_, err := server.getUserByID(context.Background(), "missing")
 	if err != ErrUserNotFound {
 		t.Fatalf("getUserByID error = %v, want %v", err, ErrUserNotFound)
 	}

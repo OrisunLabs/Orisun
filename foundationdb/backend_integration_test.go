@@ -173,7 +173,7 @@ func TestFoundationDBSaveGetCCCAndIndexes(t *testing.T) {
 func TestFoundationDBAdminAndPublishingState(t *testing.T) {
 	backend := newTestBackend(t)
 
-	missing, err := backend.GetProjectorLastPosition("missing-projector")
+	missing, err := backend.GetProjectorLastPosition(context.Background(), "missing-projector")
 	if err != nil {
 		t.Fatalf("GetProjectorLastPosition(missing): %v", err)
 	}
@@ -189,10 +189,10 @@ func TestFoundationDBAdminAndPublishingState(t *testing.T) {
 		HashedPassword: "hash",
 		Roles:          []eventstore.Role{eventstore.RoleAdmin},
 	}
-	if err := backend.UpsertUser(user); err != nil {
+	if err := backend.UpsertUser(context.Background(), user); err != nil {
 		t.Fatalf("UpsertUser returned error: %v", err)
 	}
-	got, err := backend.GetUserByUsername("admin")
+	got, err := backend.GetUserByUsername(context.Background(), "admin")
 	if err != nil {
 		t.Fatalf("GetUserByUsername returned error: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestFoundationDBAdminAndPublishingState(t *testing.T) {
 func TestFoundationDBUsernameMustBeUnique(t *testing.T) {
 	backend := newTestBackend(t)
 
-	if err := backend.UpsertUser(eventstore.User{
+	if err := backend.UpsertUser(context.Background(), eventstore.User{
 		Id:             "user-1",
 		Name:           "Ada",
 		Username:       "admin",
@@ -225,7 +225,7 @@ func TestFoundationDBUsernameMustBeUnique(t *testing.T) {
 		t.Fatalf("first UpsertUser: %v", err)
 	}
 
-	err := backend.UpsertUser(eventstore.User{
+	err := backend.UpsertUser(context.Background(), eventstore.User{
 		Id:             "user-2",
 		Name:           "Grace",
 		Username:       "admin",
@@ -413,21 +413,21 @@ func TestFoundationDBUserRename(t *testing.T) {
 	backend := newTestBackend(t)
 
 	user := eventstore.User{Id: "u-1", Name: "Ada", Username: "ada", HashedPassword: "h1", Roles: []eventstore.Role{eventstore.RoleAdmin}}
-	if err := backend.UpsertUser(user); err != nil {
+	if err := backend.UpsertUser(context.Background(), user); err != nil {
 		t.Fatalf("UpsertUser: %v", err)
 	}
-	if _, err := backend.GetUserByUsername("ada"); err != nil {
+	if _, err := backend.GetUserByUsername(context.Background(), "ada"); err != nil {
 		t.Fatalf("GetUserByUsername(ada): %v", err)
 	}
 
 	user.Username = "ada2"
-	if err := backend.UpsertUser(user); err != nil {
+	if err := backend.UpsertUser(context.Background(), user); err != nil {
 		t.Fatalf("UpsertUser rename: %v", err)
 	}
-	if _, err := backend.GetUserByUsername("ada"); err == nil {
+	if _, err := backend.GetUserByUsername(context.Background(), "ada"); err == nil {
 		t.Fatalf("old username must not resolve after rename")
 	}
-	got, err := backend.GetUserByUsername("ada2")
+	got, err := backend.GetUserByUsername(context.Background(), "ada2")
 	if err != nil {
 		t.Fatalf("GetUserByUsername(ada2): %v", err)
 	}
@@ -451,7 +451,7 @@ func TestFoundationDBGetEventsCountPaged(t *testing.T) {
 			t.Fatalf("Save %d: %v", i, err)
 		}
 	}
-	count, err := backend.GetEventsCount("test")
+	count, err := backend.GetEventsCount(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("GetEventsCount: %v", err)
 	}
