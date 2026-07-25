@@ -73,13 +73,44 @@ BEGIN
                    schema_name,
                    boundary_name || '_orisun_es_event');
 
+    -- Older releases included the unbounded JSONB data and metadata columns in
+    -- these B-tree indexes. PostgreSQL applies its index-tuple size limit to
+    -- INCLUDE columns too, so sufficiently large events could not be inserted.
+    -- Drop only those legacy managed definitions; the lean replacements below
+    -- keep ordered reads fast without copying event payloads into the index.
+    IF EXISTS (
+        SELECT 1
+        FROM pg_indexes
+        WHERE schemaname = schema_name
+          AND tablename = boundary_name || '_orisun_es_event'
+          AND indexname = boundary_name || '_idx_global_order_covering'
+          AND indexdef ILIKE '%INCLUDE%'
+          AND indexdef ILIKE '%data%'
+    ) THEN
+        EXECUTE format('DROP INDEX %I.%I',
+                       schema_name, boundary_name || '_idx_global_order_covering');
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_indexes
+        WHERE schemaname = schema_name
+          AND tablename = boundary_name || '_orisun_es_event'
+          AND indexname = boundary_name || '_idx_event_order_visibility_covering'
+          AND indexdef ILIKE '%INCLUDE%'
+          AND indexdef ILIKE '%data%'
+    ) THEN
+        EXECUTE format('DROP INDEX %I.%I',
+                       schema_name, boundary_name || '_idx_event_order_visibility_covering');
+    END IF;
+
     -- Create indexes used by latest-position checks and ordered event reads.
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC) INCLUDE (data)',
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC)',
                    boundary_name || '_idx_global_order_covering', schema_name, boundary_name || '_orisun_es_event');
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I ((data->>''eventType''), transaction_id DESC, global_id DESC)',
                    boundary_name || '_idx_event_type_order', schema_name, boundary_name || '_orisun_es_event');
     EXECUTE format(
-            'CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC) INCLUDE (pg_xact_id, event_id, data, metadata, date_created)',
+            'CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC) INCLUDE (pg_xact_id)',
             boundary_name || '_idx_event_order_visibility_covering', schema_name, boundary_name || '_orisun_es_event');
 
     -- Persist definitions for indexes created through Orisun's index API.

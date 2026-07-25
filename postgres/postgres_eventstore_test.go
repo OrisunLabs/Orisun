@@ -358,6 +358,21 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	_, err = db.Exec(`SELECT setval('public.test_boundary_orisun_es_event_global_id_seq', 2, true)`)
 	require.NoError(t, err)
 
+	// Recreate the payload-bearing indexes shipped before the lean-index
+	// migration. RunDbScripts must repair these existing definitions, not only
+	// use the safe definitions for newly provisioned boundaries.
+	_, err = db.Exec(`
+		DROP INDEX public.test_boundary_idx_global_order_covering;
+		CREATE INDEX test_boundary_idx_global_order_covering
+			ON public.test_boundary_orisun_es_event (transaction_id DESC, global_id DESC)
+			INCLUDE (data);
+		DROP INDEX public.test_boundary_idx_event_order_visibility_covering;
+		CREATE INDEX test_boundary_idx_event_order_visibility_covering
+			ON public.test_boundary_orisun_es_event (transaction_id DESC, global_id DESC)
+			INCLUDE (pg_xact_id, event_id, data, metadata, date_created);
+	`)
+	require.NoError(t, err)
+
 	require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, context.Background()))
 
 	rows, err := db.Query(`
@@ -386,8 +401,22 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 		  AND indexname = 'test_boundary_idx_event_order_visibility_covering'
 	`).Scan(&visibilityIndexDef)
 	require.NoError(t, err)
-	require.Contains(t, visibilityIndexDef, "pg_xact_id")
+	require.Contains(t, visibilityIndexDef, "INCLUDE (pg_xact_id)")
+	require.NotContains(t, visibilityIndexDef, "event_id")
+	require.NotContains(t, visibilityIndexDef, "metadata")
+	require.NotContains(t, visibilityIndexDef, "date_created")
 	require.NotContains(t, visibilityIndexDef, "event_type")
+
+	var globalOrderIndexDef string
+	err = db.QueryRow(`
+		SELECT indexdef
+		FROM pg_indexes
+		WHERE schemaname = 'public'
+		  AND tablename = 'test_boundary_orisun_es_event'
+		  AND indexname = 'test_boundary_idx_global_order_covering'
+	`).Scan(&globalOrderIndexDef)
+	require.NoError(t, err)
+	require.NotContains(t, globalOrderIndexDef, "INCLUDE")
 
 	var eventTypeIndexDef string
 	err = db.QueryRow(`
@@ -449,13 +478,24 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	saveEvents := NewPostgresSaveEvents(t.Context(), db, logger, mapping)
 	getEvents := NewPostgresGetEvents(db, logger, mapping)
 	expectedPosition := &orisun.Position{CommitPosition: 3, PreparePosition: 2}
+
+	var largePayload strings.Builder
+	for range 256 {
+		largePayload.WriteString(uuid.NewString())
+	}
+	largeEventData, err := json.Marshal(map[string]string{
+		"key":     "after-upgrade",
+		"content": largePayload.String(),
+	})
+	require.NoError(t, err)
+
 	transactionID, globalID, err := saveEvents.Save(
 		t.Context(),
 		[]orisun.EventWithMapTags{
 			{
 				EventId:   uuid.NewString(),
 				EventType: "PostUpgradeEvent",
-				Data:      `{"key":"after-upgrade"}`,
+				Data:      string(largeEventData),
 				Metadata:  `{}`,
 			},
 		},
