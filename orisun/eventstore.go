@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	c "github.com/OrisunLabs/Orisun/config"
@@ -73,6 +74,7 @@ type EventStore struct {
 	indexManager BoundaryIndexManager
 	logger       logging.Logger
 	streamConfig EventStreamConfig
+	metrics      atomic.Pointer[eventStoreMetrics]
 
 	boundaryStateMu           sync.RWMutex
 	enforceBoundaryActivation bool
@@ -471,8 +473,13 @@ func (s *EventStore) SaveEvents(ctx context.Context, req *SaveEventsRequest) (re
 	if prepareErr != nil {
 		return nil, statuscode.Errorf(statuscode.InvalidArgument, "invalid event JSON: %v", prepareErr)
 	}
-	transactionID, globalID, err = s.saveEventsFn.SavePrepared(
-		ctx, prepared, req.Boundary, expectedPosition, subsetQuery,
+	transactionID, globalID, err = s.savePreparedWithMetrics(
+		ctx,
+		s.saveEventsFn,
+		prepared,
+		req.Boundary,
+		expectedPosition,
+		subsetQuery,
 	)
 
 	if err != nil {

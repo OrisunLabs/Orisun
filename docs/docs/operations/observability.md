@@ -1,10 +1,10 @@
 ---
 title: Observability
-description: Health, tracing, logging, and profiling signals Orisun emits and how to enable them.
+description: Health, tracing, metrics, logging, and profiling signals Orisun emits and how to enable them.
 ---
 
-Orisun exposes standard gRPC health, distributed traces, structured logs, and
-on-demand profiles.
+Orisun exposes standard gRPC health, distributed traces, application and RPC
+metrics, structured logs, and on-demand profiles.
 
 ## Health and readiness
 
@@ -67,7 +67,9 @@ the collector can route each signal to Prometheus, Tempo, or another backend.
 | `ORISUN_OTEL_ENDPOINT` | `localhost:4317` | OTLP gRPC collector endpoint. |
 | `ORISUN_OTEL_SERVICE_NAME` | `orisun` | Service name attached to exported telemetry. |
 
-RPC metrics are exported every 15 seconds:
+Metrics are exported every 15 seconds.
+
+RPC metrics:
 
 | Metric | Meaning |
 | --- | --- |
@@ -75,10 +77,33 @@ RPC metrics are exported every 15 seconds:
 | `orisun.rpc.server.active_requests` | Calls currently in flight. |
 | `rpc.server.call.duration` | Call duration in seconds using the OpenTelemetry RPC histogram buckets. |
 
-Metrics include `rpc.system.name`, `rpc.method`, `orisun.rpc.type`, and the
-final `rpc.response.status_code`. Failed calls also include `error.type`.
+These metrics include `rpc.system.name`, `rpc.method`, `orisun.rpc.type`, and
+the final `rpc.response.status_code`. Failed calls also include `error.type`.
 These attributes let dashboards separate EventStore, Admin, health, unary, and
 streaming traffic without parsing spans.
+
+Event-store write metrics:
+
+| Metric | Meaning |
+| --- | --- |
+| `orisun.eventstore.commits` | Event batches committed successfully. |
+| `orisun.eventstore.events` | Events committed successfully. |
+| `orisun.eventstore.payload.size` | Uncompressed event data and metadata bytes committed successfully. |
+| `orisun.eventstore.commit.duration` | Durable backend commit-attempt duration in seconds, including failed attempts. |
+| `orisun.ccc.conflicts` | Writes rejected because their Command Context Consistency context changed. |
+
+Write metrics include `orisun.boundary.name`. Commit duration also includes
+`orisun.eventstore.commit.status`; failures add the bounded `error.type`
+status. CCC conflicts include a bounded `orisun.ccc.criterion_shape` value:
+`unscoped`, `position_only`, `empty_criterion`,
+`single_criterion_single_tag`, `single_criterion_multiple_tags`, or
+`multiple_criteria`. Criterion keys and values and raw error messages are
+never metric attributes.
+
+The commit, event, and payload counters advance only after durable storage
+accepts the batch. Payload size is the byte length of the normalized event
+data and metadata JSON; it excludes transport framing, event IDs, and event
+type fields outside the data document.
 
 Orisun intentionally does not expose a Prometheus `/metrics` endpoint. Use the
 collector's Prometheus exporter or remote-write exporter when Prometheus is the

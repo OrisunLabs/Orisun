@@ -20,17 +20,15 @@ Admin RPC, including `CreateBoundary`. See
 
 ### 2. Real identity and session management
 
-Add:
+Sessions now have configurable sliding expiry and are revoked when a user's
+password, roles, or account changes. Still add:
 
-- expiring and revocable sessions,
-- logout,
 - API keys and service accounts,
 - credential rotation,
 - OIDC/JWT support,
 - optional LDAP or external identity-provider integration.
 
-Current tokens are process-local map entries with no visible expiry or
-revocation mechanism. See `admin/auth.go`.
+Session tokens remain process-local map entries. See `admin/auth.go`.
 
 ### 3. Server-side idempotent writes
 
@@ -69,13 +67,13 @@ Comparable operational models:
 ### 5. OpenTelemetry metrics
 
 Orisun now exports gRPC request counts, active calls, duration histograms, and
-status codes over OTLP. Prometheus integration belongs in the OpenTelemetry
+status codes over OTLP. It also exports successful commits, events, payload
+bytes, durable commit-attempt latency, and CCC conflicts by boundary and
+bounded criterion shape. Prometheus integration belongs in the OpenTelemetry
 Collector rather than an application-local scrape endpoint.
 
 Still add first-class metrics for:
 
-- commits, events, bytes, and latency,
-- CCC conflicts by boundary and criterion shape,
 - publisher head, checkpoint, and lag,
 - subscriber lag, reconnects, retries, and parked events,
 - boundary lifecycle failures,

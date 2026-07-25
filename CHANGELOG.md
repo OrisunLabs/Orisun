@@ -29,6 +29,10 @@
   histograms, and canonical status codes over OTLP alongside traces. Prometheus
   integration remains collector-owned rather than adding an application scrape
   endpoint.
+- OpenTelemetry now reports successful event-store commits, events, normalized
+  payload bytes, durable commit-attempt latency, and CCC conflicts by boundary
+  and bounded criterion shape without exporting criterion values or raw error
+  messages.
 
 ## 0.9.2 - 2026-07-25
 

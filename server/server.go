@@ -765,6 +765,9 @@ func startGRPCServer(
 			logger.Errorf("Failed to initialize OpenTelemetry: %v", err)
 		}
 		if otelShutdown != nil {
+			if err := eventStore.EnableOpenTelemetryMetrics(); err != nil {
+				logger.Errorf("Failed to initialize event-store metrics: %v", err)
+			}
 			defer func() {
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				defer shutdownCancel()
