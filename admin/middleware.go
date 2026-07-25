@@ -42,7 +42,7 @@ func UnaryAuthInterceptor(auth *Authenticator, logger l.Logger) grpc.UnaryServer
 		}
 
 		if auth.logger.IsDebugEnabled() {
-			auth.logger.Debugf("Authenticated user %s for method %s with token %s", user.Username, info.FullMethod, token)
+			auth.logger.Debugf("Authenticated user %s for method %s", user.Username, info.FullMethod)
 		}
 		return handler(withUserCtx, req)
 	}
@@ -78,9 +78,6 @@ func authenticate(ctx context.Context, auth *Authenticator, logger l.Logger) (or
 	// get token if present in header
 	token := md.Get(tokenHeaderName)
 	if len(token) > 0 {
-		if logger.IsDebugEnabled() {
-			logger.Debugf("Token is %v", token)
-		}
 		user, err := auth.ValidateToken(ctx, token[len(token)-1])
 		if err == nil {
 			return *user, token[len(token)-1], nil

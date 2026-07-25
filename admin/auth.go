@@ -3,24 +3,35 @@ package admin
 import (
 	"context"
 	"fmt"
-	admin_events "github.com/OrisunLabs/Orisun/admin/events"
-	admin_common "github.com/OrisunLabs/Orisun/admin/slices/common"
-	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
-	"github.com/OrisunLabs/Orisun/orisun"
 	"sync"
 	"time"
 
+	admin_events "github.com/OrisunLabs/Orisun/admin/events"
+	admin_common "github.com/OrisunLabs/Orisun/admin/slices/common"
+	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	logger "github.com/OrisunLabs/Orisun/logging"
+	"github.com/OrisunLabs/Orisun/orisun"
 
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 )
+
+const DefaultSessionTTL = 24 * time.Hour
+
+type authenticatedSession struct {
+	user      orisun.User
+	expiresAt time.Time
+}
 
 type Authenticator struct {
 	boundary          string
 	getEvents         admin_common.GetEventsType
 	logger            logger.Logger
 	getUserByUsername func(ctx context.Context, username string) (orisun.User, error)
+	sessionTTL        time.Duration
+	now               func() time.Time
+	sessionMutex      sync.Mutex
+	sessions          map[string]authenticatedSession
 }
 
 func NewAuthenticator(
@@ -28,93 +39,121 @@ func NewAuthenticator(
 	logger logger.Logger,
 	boundary string,
 	getUserByUsername func(ctx context.Context, username string) (orisun.User, error),
+	sessionTTL ...time.Duration,
 ) *Authenticator {
+	ttl := DefaultSessionTTL
+	if len(sessionTTL) > 0 && sessionTTL[0] > 0 {
+		ttl = sessionTTL[0]
+	}
 	return &Authenticator{
 		boundary:          boundary,
 		getEvents:         getEvents,
 		logger:            logger,
 		getUserByUsername: getUserByUsername,
+		sessionTTL:        ttl,
+		now:               time.Now,
+		sessions:          make(map[string]authenticatedSession),
 	}
 }
 
-var userByIdCache = map[string]*orisun.User{}
-var userByUsernameCache = map[string]*orisun.User{}
-var userTokenCache = map[string]*orisun.User{}
-var cacheMutex sync.RWMutex
-
 func (a *Authenticator) ValidateToken(ctx context.Context, token string) (*orisun.User, error) {
-	// Check if the user is in the cache
-	user, ok := userTokenCache[token]
-
-	if ok && user != nil {
-		if a.logger.IsDebugEnabled() {
-			a.logger.Debugf("Fetched user from cache by token")
-		}
-		return user, nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("invalid credentials")
+	now := a.now()
+	a.sessionMutex.Lock()
+	session, ok := a.sessions[token]
+	if !ok || !now.Before(session.expiresAt) {
+		delete(a.sessions, token)
+		a.sessionMutex.Unlock()
+		return nil, fmt.Errorf("invalid or expired credentials")
+	}
+	session.expiresAt = now.Add(a.sessionTTL)
+	a.sessions[token] = session
+	a.sessionMutex.Unlock()
+
+	if a.logger.IsDebugEnabled() {
+		a.logger.Debugf("Validated session token for user %s", session.user.Username)
+	}
+	user := session.user
+	return &user, nil
 }
 
 func (a *Authenticator) ValidateCredentials(ctx context.Context, username string, password string) (orisun.User, string, error) {
-	// Check if the user is in the cache
-	// cacheMutex.Lock()
-	// defer cacheMutex.Unlock()
-	// user, ok := userByUsernameCache[username]
-
-	// if ok && user.Username == username {
-	// 	// Compare the provided password with the stored hash
-	// 	if err := admin_common.ComparePassword(user.HashedPassword, password); err != nil {
-	// 		return orisun.User{}, "", fmt.Errorf("invalid credentials")
-	// 	}
-	// 	a.logger.Debugf("Fetched user from cache")
-	// 	return *user, userByIdCache[], nil
-	// }
-
-	userr, errr := a.getUserByUsername(ctx, username)
-	if errr != nil {
-		a.logger.Errorf("Could not retrieve user %v", errr)
+	user, err := a.getUserByUsername(ctx, username)
+	if err != nil {
+		a.logger.Errorf("Could not retrieve user %v", err)
 		return orisun.User{}, "", fmt.Errorf("invalid credentials")
 	}
 
 	// Compare the provided password with the stored hash
-	if err := admin_common.ComparePassword(userr.HashedPassword, password); err != nil {
+	if err := admin_common.ComparePassword(user.HashedPassword, password); err != nil {
 		return orisun.User{}, "", fmt.Errorf("invalid password")
 	}
 
-	// generate a session token for the user
-	generatredToken := uuid.New().String()
+	token := uuid.New().String()
 	if a.logger.IsDebugEnabled() {
-		a.logger.Debugf("Generated session token %s for user %s", generatredToken, userr.Username)
+		a.logger.Debugf("Generated session token for user %s", user.Username)
 	}
 
-	// Cache the user
-	// go func() {
-	// userByIdCache[userr.Id] = &userr
-	// userByUsernameCache[userr.Username] = &userr
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-	userTokenCache[generatredToken] = &userr
-	// }()
+	now := a.now()
+	a.sessionMutex.Lock()
+	a.deleteExpiredSessionsLocked(now)
+	a.sessions[token] = authenticatedSession{
+		user:      user,
+		expiresAt: now.Add(a.sessionTTL),
+	}
+	a.sessionMutex.Unlock()
 
-	return userr, generatredToken, nil
+	return user, token, nil
+}
+
+// RevokeUserSessions invalidates every session issued for userID and returns
+// the number of sessions removed.
+func (a *Authenticator) RevokeUserSessions(userID string) int {
+	a.sessionMutex.Lock()
+	defer a.sessionMutex.Unlock()
+
+	revoked := 0
+	for token, session := range a.sessions {
+		if session.user.Id == userID {
+			delete(a.sessions, token)
+			revoked++
+		}
+	}
+	return revoked
+}
+
+func (a *Authenticator) deleteExpiredSessionsLocked(now time.Time) {
+	for token, session := range a.sessions {
+		if !now.Before(session.expiresAt) {
+			delete(a.sessions, token)
+		}
+	}
 }
 
 type AuthUserProjector struct {
 	boundary          string
 	logger            logger.Logger
 	subscribeToEvents admin_common.SubscribeToEventStoreType
+	revokeSessions    func(string) int
 }
 
 func NewAuthUserProjector(
 	logger logger.Logger,
 	subscribeToEvents admin_common.SubscribeToEventStoreType,
 	boundary string,
+	revokeSessions ...func(string) int,
 ) *AuthUserProjector {
-	return &AuthUserProjector{
+	projector := &AuthUserProjector{
 		boundary:          boundary,
 		logger:            logger,
 		subscribeToEvents: subscribeToEvents,
 	}
+	if len(revokeSessions) > 0 {
+		projector.revokeSessions = revokeSessions[0]
+	}
+	return projector
 }
 
 func (p *AuthUserProjector) Start(ctx context.Context) error {
@@ -156,30 +195,33 @@ func (p *AuthUserProjector) handleEvent(event coreeventstore.ReadEvent) error {
 		if err := json.Unmarshal([]byte(event.Data), &userEvent); err != nil {
 			return err
 		}
-
-		if userByIdCache[userEvent.UserId] != nil {
-			if p.logger.IsDebugEnabled() {
-				p.logger.Debugf("Updating password hash for user %s", userEvent.UserId)
-			}
-			cacheMutex.Lock()
-			defer cacheMutex.Unlock()
-			userByIdCache[userEvent.UserId].HashedPassword = userEvent.PasswordHash
-			userByUsernameCache[userByIdCache[userEvent.UserId].Username].HashedPassword = userEvent.PasswordHash
-		}
+		p.revokeUserSessions(userEvent.UserId)
 
 	case admin_events.EventTypeUserDeleted:
 		var userEvent admin_events.UserDeleted
 		if err := json.Unmarshal([]byte(event.Data), &userEvent); err != nil {
 			return err
 		}
+		p.revokeUserSessions(userEvent.UserId)
 
-		cacheMutex.Lock()
-		defer cacheMutex.Unlock()
-		if userByIdCache[userEvent.UserId] != nil {
-			p.logger.Infof("Deleting user %s from cache", userEvent.UserId)
-			delete(userByUsernameCache, userByIdCache[userEvent.UserId].Username)
-			delete(userByIdCache, userEvent.UserId)
+	case admin_events.EventTypeRolesChanged:
+		var userEvent struct {
+			UserId string `json:"user_id"`
 		}
+		if err := json.Unmarshal([]byte(event.Data), &userEvent); err != nil {
+			return err
+		}
+		p.revokeUserSessions(userEvent.UserId)
 	}
 	return nil
+}
+
+func (p *AuthUserProjector) revokeUserSessions(userID string) {
+	if p.revokeSessions == nil || userID == "" {
+		return
+	}
+	revoked := p.revokeSessions(userID)
+	if revoked > 0 && p.logger.IsDebugEnabled() {
+		p.logger.Debugf("Revoked %d sessions for user %s", revoked, userID)
+	}
 }

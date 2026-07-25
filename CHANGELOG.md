@@ -9,6 +9,11 @@
   `ADMIN` or `OPERATIONS`; password changes remain authenticated self-service.
 - `CreateUser` now rejects unsupported or incorrectly cased role values instead
   of storing roles that can never satisfy authorization checks.
+- Session tokens now have a configurable sliding inactivity timeout through
+  `ORISUN_AUTH_SESSION_TTL`, defaulting to `24h`.
+- Password changes, user deletion, and role changes now revoke the affected
+  user's active sessions. Authentication debug logs no longer include raw
+  session tokens.
 
 ## 0.9.2 - 2026-07-25
 

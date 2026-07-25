@@ -210,7 +210,8 @@ grpcurl -H "$AUTH" \
   localhost:5005 orisun.Admin/DeleteUser
 ```
 
-Authenticated users cannot delete their own account.
+Authenticated users cannot delete their own account. A successful deletion
+revokes the deleted user's active session tokens.
 
 ## ChangePassword
 
@@ -224,7 +225,9 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/ChangePassword <<EOF
 EOF
 ```
 
-Users can only change their own password.
+Users can only change their own password. A successful change revokes all of
+that user's session tokens, so authenticate again with the new password before
+making another call.
 
 ## ValidateCredentials
 

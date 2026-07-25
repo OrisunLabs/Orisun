@@ -46,6 +46,21 @@ func TestAdminServiceUsesCountDependencies(t *testing.T) {
 	}
 }
 
+func TestAdminServiceUsesAuthenticatorAsSessionRevoker(t *testing.T) {
+	t.Parallel()
+
+	auth := &revokingCredentialsValidator{}
+	server := NewGRPCAdminServerWithDependencies(nil, "orisun_admin", GRPCAdminDependencies{
+		CredentialsValidator: auth,
+	})
+
+	server.revokeUserSessions("user-1")
+
+	if len(auth.revokedUserIDs) != 1 || auth.revokedUserIDs[0] != "user-1" {
+		t.Fatalf("revoked user IDs = %v, want [user-1]", auth.revokedUserIDs)
+	}
+}
+
 func TestChangePasswordRequiresAuthenticatedUserContext(t *testing.T) {
 	t.Parallel()
 
@@ -248,4 +263,17 @@ func operationsTestContext() context.Context {
 		Id:    "operations-1",
 		Roles: []orisun.Role{orisun.RoleOperations},
 	})
+}
+
+type revokingCredentialsValidator struct {
+	revokedUserIDs []string
+}
+
+func (*revokingCredentialsValidator) ValidateCredentials(context.Context, string, string) (orisun.User, string, error) {
+	return orisun.User{}, "", nil
+}
+
+func (v *revokingCredentialsValidator) RevokeUserSessions(userID string) int {
+	v.revokedUserIDs = append(v.revokedUserIDs, userID)
+	return 1
 }

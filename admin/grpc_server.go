@@ -38,6 +38,7 @@ type AdminServiceServer struct {
 	getUserCount   GetUserCountFunc
 	getEventCount  GetEventCountFunc
 	authenticator  CredentialsValidator
+	sessionRevoker SessionRevoker
 	boundaryEvents *eventstoreadapter.Adapter
 }
 
@@ -58,6 +59,10 @@ type GetEventCountFunc func(ctx context.Context, boundary string) (int, error)
 
 type CredentialsValidator interface {
 	ValidateCredentials(context.Context, string, string) (orisun.User, string, error)
+}
+
+type SessionRevoker interface {
+	RevokeUserSessions(userID string) int
 }
 
 type GRPCAdminDependencies struct {
@@ -113,7 +118,7 @@ func NewGRPCAdminServerWithDependencies(
 	boundary string,
 	dependencies GRPCAdminDependencies,
 ) *AdminServiceServer {
-	return &AdminServiceServer{
+	server := &AdminServiceServer{
 		logger:         logger,
 		boundary:       boundary,
 		getEvents:      dependencies.GetEvents,
@@ -124,6 +129,10 @@ func NewGRPCAdminServerWithDependencies(
 		authenticator:  dependencies.CredentialsValidator,
 		boundaryEvents: eventstoreadapter.New(dependencies.BoundarySaver, dependencies.BoundaryReader, nil),
 	}
+	if revoker, ok := dependencies.CredentialsValidator.(SessionRevoker); ok {
+		server.sessionRevoker = revoker
+	}
+	return server
 }
 
 // CreateBoundary emits the definition event. Physical provisioning is handled
@@ -261,6 +270,7 @@ func (s *AdminServiceServer) DeleteUser(ctx context.Context, req *grpcapi.Delete
 	if err := s.deleteUser(ctx, req.UserId, currentUserId); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete user: %v", err)
 	}
+	s.revokeUserSessions(req.UserId)
 
 	s.logger.Infof("Deleted user: %s (ID: %s)", user.Username, req.UserId)
 	return &grpcapi.DeleteUserResponse{Success: true}, nil
@@ -300,6 +310,7 @@ func (s *AdminServiceServer) ChangePassword(ctx context.Context, req *grpcapi.Ch
 		}
 		return nil, status.Errorf(codes.Internal, "failed to change password: %v", err)
 	}
+	s.revokeUserSessions(req.UserId)
 
 	s.logger.Infof("Changed password for user: %s", req.UserId)
 	return &grpcapi.ChangePasswordResponse{Success: true}, nil
@@ -507,6 +518,13 @@ func (s *AdminServiceServer) changeUserPassword(ctx context.Context, req *grpcap
 		s.logger,
 		req.UserId,
 	)
+}
+
+func (s *AdminServiceServer) revokeUserSessions(userID string) {
+	if s.sessionRevoker == nil {
+		return
+	}
+	s.sessionRevoker.RevokeUserSessions(userID)
 }
 
 func isUserDeleted(ctx context.Context, getEvents GetEventsFunc, boundary, userId string) bool {

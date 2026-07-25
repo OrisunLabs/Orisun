@@ -20,6 +20,14 @@ Every EventStore and Admin call must carry credentials. Two forms are accepted:
 
 A missing or malformed header returns `UNAUTHENTICATED`. Invalid credentials also return `UNAUTHENTICATED`.
 
+Session tokens expire after `ORISUN_AUTH_SESSION_TTL` of inactivity, which
+defaults to `24h`. Each successful use renews that deadline. A password change,
+user deletion, or role change revokes every session for the affected user; the
+client must authenticate with Basic credentials again. Tokens are held by the
+server process that issued them, so clustered deployments should either route a
+client consistently to one node or keep Basic credentials available for
+fallback authentication.
+
 The default account is `admin:changeit`.
 
 :::warning
@@ -74,6 +82,8 @@ Two points are worth calling out:
 ## Recommended posture
 
 - Set a strong `ORISUN_ADMIN_PASSWORD` and create per-application users with the narrowest role they need: `OPERATIONS` for services that only save and read events, `ADMIN` only where index management is required.
+- Set `ORISUN_AUTH_SESSION_TTL` to the shortest inactivity window your clients
+  can tolerate.
 - Enable gRPC TLS and, where mutual auth is needed, `ORISUN_GRPC_TLS_CLIENT_AUTH_REQUIRED`.
 - Put PostgreSQL, the gRPC port, and NATS cluster routes behind network policy. See the [Deployment security checklist](./deployment#security-checklist).
 - Monitor the event-backed boundary catalog. Treat unexpected definitions or

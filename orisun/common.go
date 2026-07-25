@@ -41,7 +41,7 @@ type MessageHandler[T any] struct {
 
 var ErrQueueFull = errors.New("message handler queue full")
 
-// Add constructor and methods for the generic stream
+// NewMessageHandler Add constructor and methods for the generic stream
 func NewMessageHandler[T any](ctx context.Context) *MessageHandler[T] {
 	handler := &MessageHandler[T]{
 		ctx:    ctx,

@@ -357,13 +357,6 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		AppLogger,
 	)
 
-	startAuthUserProjector(
-		ctx,
-		config.Admin.Boundary,
-		eventStore.SubscribeToAllEvents,
-		AppLogger,
-	)
-
 	// Create default user
 	err = createDefaultUser(
 		ctx,
@@ -381,6 +374,15 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		AppLogger,
 		config.Admin.Boundary,
 		backend.AdminDB.GetUserByUsername,
+		config.Auth.SessionTTL,
+	)
+
+	startAuthUserProjector(
+		ctx,
+		config.Admin.Boundary,
+		eventStore.SubscribeToAllEvents,
+		authenticator,
+		AppLogger,
 	)
 
 	// Start gRPC server
@@ -469,6 +471,7 @@ func startAuthUserProjector(
 	ctx context.Context,
 	adminBoundary string,
 	subscribeToEvents common.SubscribeToEventStoreType,
+	authenticator *admin.Authenticator,
 	logger l.Logger) {
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
@@ -476,6 +479,7 @@ func startAuthUserProjector(
 			logger,
 			subscribeToEvents,
 			adminBoundary,
+			authenticator.RevokeUserSessions,
 		)
 		backoff := orisun.Backoff{Base: 100 * time.Millisecond, Max: 5 * time.Second}
 		for {
