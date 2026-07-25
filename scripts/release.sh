@@ -16,6 +16,8 @@ Notes:
   When --notes is provided, the file becomes the annotated tag message.
   Markdown headings are preserved exactly in the tag message.
   The GitHub release workflow uses that tag message as the release notes.
+  The script snapshots, validates, commits, and pushes the versioned docs before
+  creating the tag so GitHub Pages publishes the same release.
   After pushing the tag, the script asks proxy.golang.org and pkg.go.dev to
   fetch the new module version. Set SKIP_GO_INDEX_SYNC=1 to skip that step.
 EOF
@@ -92,6 +94,64 @@ sync_go_index() {
     echo "Go package docs: https://pkg.go.dev/$module@$version_tag"
 }
 
+prepare_versioned_docs() {
+    local versions_file config_file versioned_docs_dir versioned_sidebar tmp_file
+    versions_file="docs/versions.json"
+    config_file="docs/docusaurus.config.ts"
+    versioned_docs_dir="docs/versioned_docs/version-$VERSION"
+    versioned_sidebar="docs/versioned_sidebars/version-$VERSION-sidebars.json"
+
+    if ! grep -Fq "\"$VERSION\"" "$versions_file"; then
+        if ! command -v bun >/dev/null 2>&1; then
+            echo "Error: Bun is required to create the versioned documentation snapshot."
+            exit 1
+        fi
+
+        echo "Creating documentation snapshot for v$VERSION..."
+        (
+            cd docs
+            bun install --frozen-lockfile
+            bun x docusaurus docs:version "$VERSION"
+        )
+    fi
+
+    if ! grep -Fq "lastVersion: '$VERSION'" "$config_file"; then
+        tmp_file=$(mktemp)
+        awk -v version="$VERSION" '
+            {
+                sub(/lastVersion: ['"'"'"][^'"'"'"]+['"'"'"]/, "lastVersion: \047" version "\047")
+                print
+            }
+        ' "$config_file" > "$tmp_file"
+        mv "$tmp_file" "$config_file"
+    fi
+
+    if [ -n "$(git status --porcelain -- docs)" ]; then
+        if ! command -v bun >/dev/null 2>&1; then
+            echo "Error: Bun is required to validate the versioned documentation."
+            exit 1
+        fi
+
+        echo "Validating documentation snapshot for v$VERSION..."
+        (
+            cd docs
+            bun install --frozen-lockfile
+            bun run build
+        )
+
+        git add \
+            "$versions_file" \
+            "$config_file" \
+            "$versioned_docs_dir" \
+            "$versioned_sidebar"
+        git commit -m "docs: publish v$VERSION documentation"
+        echo "Pushing versioned documentation to main..."
+        git push origin main
+    else
+        echo "Documentation snapshot for v$VERSION is already committed."
+    fi
+}
+
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     usage
     exit 0
@@ -164,6 +224,10 @@ fi
 # Pull latest changes
 echo "Pulling latest changes from main..."
 git pull origin main
+
+# Cut, validate, commit, and publish the documentation snapshot before tagging
+# the same commit. This also triggers the Pages workflow through the docs paths.
+prepare_versioned_docs
 
 # Create and push the tag
 echo "Creating tag v$VERSION..."
