@@ -4,6 +4,7 @@ package orisun
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
@@ -99,7 +100,9 @@ func TestEventStoreMetricsRecordCCCConflictWithoutCriterionValues(t *testing.T) 
 	}
 	store := &EventStore{
 		saveEventsFn: &metricsSaver{
-			err: statuscode.New(statuscode.AlreadyExists, "consistency context changed"),
+			err: errors.New(
+				"OptimisticConcurrencyException:StreamVersionConflict: consistency context changed",
+			),
 		},
 		logger: noopLogger{},
 	}

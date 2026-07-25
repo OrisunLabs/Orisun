@@ -61,6 +61,10 @@ type CredentialsValidator interface {
 	ValidateCredentials(context.Context, string, string) (orisun.User, string, error)
 }
 
+type CredentialsVerifier interface {
+	VerifyCredentials(context.Context, string, string) (orisun.User, error)
+}
+
 type SessionRevoker interface {
 	RevokeUserSessions(userID string) int
 }
@@ -357,8 +361,15 @@ func (s *AdminServiceServer) ValidateCredentials(ctx context.Context, req *grpca
 		return nil, status.Error(codes.Internal, "credentials validator is not configured")
 	}
 
-	// Use the Authenticator to validate credentials
-	user, _, err := s.authenticator.ValidateCredentials(ctx, req.Username, req.Password)
+	// Credential checks do not need a session. Use the verification-only path
+	// when available, while retaining compatibility with custom validators.
+	var user orisun.User
+	var err error
+	if verifier, ok := s.authenticator.(CredentialsVerifier); ok {
+		user, err = verifier.VerifyCredentials(ctx, req.Username, req.Password)
+	} else {
+		user, _, err = s.authenticator.ValidateCredentials(ctx, req.Username, req.Password)
+	}
 	if err != nil {
 		// Return success: false instead of an error for invalid credentials
 		return &grpcapi.ValidateCredentialsResponse{Success: false}, nil

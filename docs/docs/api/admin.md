@@ -227,7 +227,9 @@ EOF
 
 Users can only change their own password. A successful change revokes all of
 that user's session tokens, so authenticate again with the new password before
-making another call.
+making another call. Official typed clients retain the token and Basic
+credentials supplied at construction, so construct a new client with the new
+password after this call succeeds.
 
 ## ValidateCredentials
 
@@ -237,7 +239,8 @@ grpcurl -H "$AUTH" \
   localhost:5005 orisun.Admin/ValidateCredentials
 ```
 
-The response includes `success` and, when validation succeeds, the matching user.
+The response includes `success` and, when validation succeeds, the matching
+user. The check does not issue another session token.
 
 ## GetUserCount
 

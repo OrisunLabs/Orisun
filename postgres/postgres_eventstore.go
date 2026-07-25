@@ -33,6 +33,8 @@ const selectLatestByCriteria = `
 SELECT * FROM %s.get_latest_by_criteria_v1($1::text, $2::text, $3::jsonb)
 `
 
+const invalidIndexCleanupTimeout = 30 * time.Second
+
 type PostgresSaveEvents struct {
 	db       *sql.DB
 	logger   logging.Logger
@@ -744,6 +746,7 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 	}
 
 	indexName := pq.QuoteIdentifier(boundary + "_" + name + "_idx")
+	physicalIndexName := boundary + "_" + name + "_idx"
 	tableName := pq.QuoteIdentifier(boundary + "_orisun_es_event")
 	schemaName := pq.QuoteIdentifier(schema)
 	metadataTable := pq.QuoteIdentifier(boundary + "_orisun_boundary_index_metadata")
@@ -780,6 +783,12 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		return fmt.Errorf("persist building index metadata: %w", err)
 	}
 
+	if dropped, err := db.dropInvalidBoundaryIndex(ctx, schema, physicalIndexName); err != nil {
+		return fmt.Errorf("remove invalid index before creation: %w", err)
+	} else if dropped {
+		db.logger.Warnf("Dropped invalid PostgreSQL index %s.%s before retry", schema, physicalIndexName)
+	}
+
 	ddl := fmt.Sprintf(
 		"CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s.%s USING btree (%s)%s",
 		indexName,
@@ -790,7 +799,33 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 	)
 
 	if _, err := db.db.ExecContext(ctx, ddl); err != nil {
-		return err
+		cleanupErr := db.cleanupInvalidBoundaryIndex(ctx, schema, physicalIndexName)
+		if cleanupErr != nil {
+			return errors.Join(
+				fmt.Errorf("create index concurrently: %w", err),
+				fmt.Errorf("clean up invalid index: %w", cleanupErr),
+			)
+		}
+		return fmt.Errorf("create index concurrently: %w", err)
+	}
+	exists, valid, err := db.postgresIndexValidity(ctx, schema, physicalIndexName)
+	if err != nil {
+		return fmt.Errorf("verify created index: %w", err)
+	}
+	if !exists || !valid {
+		cleanupErr := db.cleanupInvalidBoundaryIndex(ctx, schema, physicalIndexName)
+		verificationErr := fmt.Errorf(
+			"created index %s.%s is not valid",
+			schema,
+			physicalIndexName,
+		)
+		if cleanupErr != nil {
+			return errors.Join(
+				verificationErr,
+				fmt.Errorf("clean up invalid index: %w", cleanupErr),
+			)
+		}
+		return verificationErr
 	}
 	markReady := fmt.Sprintf(
 		"UPDATE %s.%s SET state = $2, date_updated = NOW() WHERE name = $1",
@@ -801,6 +836,62 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		return fmt.Errorf("mark index metadata ready: %w", err)
 	}
 	return nil
+}
+
+func (db *PostgresAdminDB) postgresIndexValidity(
+	ctx context.Context,
+	schema, indexName string,
+) (exists, valid bool, err error) {
+	const query = `
+SELECT i.indisvalid
+FROM pg_catalog.pg_index AS i
+JOIN pg_catalog.pg_class AS c ON c.oid = i.indexrelid
+JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname = $1
+  AND c.relname = LEFT($2, 63)
+`
+	if err := db.db.QueryRowContext(ctx, query, schema, indexName).Scan(&valid); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	return true, valid, nil
+}
+
+func (db *PostgresAdminDB) dropInvalidBoundaryIndex(
+	ctx context.Context,
+	schema, indexName string,
+) (bool, error) {
+	exists, valid, err := db.postgresIndexValidity(ctx, schema, indexName)
+	if err != nil || !exists || valid {
+		return false, err
+	}
+	ddl := fmt.Sprintf(
+		"DROP INDEX CONCURRENTLY IF EXISTS %s.%s",
+		pq.QuoteIdentifier(schema),
+		pq.QuoteIdentifier(indexName),
+	)
+	if _, err := db.db.ExecContext(ctx, ddl); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (db *PostgresAdminDB) cleanupInvalidBoundaryIndex(
+	parent context.Context,
+	schema, indexName string,
+) error {
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(parent),
+		invalidIndexCleanupTimeout,
+	)
+	defer cancel()
+	dropped, err := db.dropInvalidBoundaryIndex(cleanupCtx, schema, indexName)
+	if dropped {
+		db.logger.Warnf("Dropped invalid PostgreSQL index %s.%s after failed creation", schema, indexName)
+	}
+	return err
 }
 
 func (db *PostgresAdminDB) DropBoundaryIndex(

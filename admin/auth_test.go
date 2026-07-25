@@ -98,6 +98,61 @@ func TestAuthenticatorRevokesAllSessionsForUser(t *testing.T) {
 	}
 }
 
+func TestAuthenticatorCapsLiveSessionsPerUser(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
+	auth := newTestAuthenticator(t, time.Hour, map[string]orisun.User{
+		"admin": testAuthUser(t, "user-1", "admin", "changeit"),
+	})
+	auth.maxUserSessions = 2
+	auth.now = func() time.Time {
+		current := now
+		now = now.Add(time.Second)
+		return current
+	}
+
+	var tokens []string
+	for range 3 {
+		_, token, err := auth.ValidateCredentials(t.Context(), "admin", "changeit")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens = append(tokens, token)
+	}
+
+	if got := len(auth.sessions); got != 2 {
+		t.Fatalf("live sessions = %d, want 2", got)
+	}
+	if _, err := auth.ValidateToken(t.Context(), tokens[0]); err == nil {
+		t.Fatal("oldest session was retained after reaching the per-user cap")
+	}
+	for _, token := range tokens[1:] {
+		if _, err := auth.ValidateToken(t.Context(), token); err != nil {
+			t.Fatalf("newer session was evicted: %v", err)
+		}
+	}
+}
+
+func TestAuthenticatorVerifyCredentialsDoesNotIssueSession(t *testing.T) {
+	t.Parallel()
+
+	auth := newTestAuthenticator(t, time.Hour, map[string]orisun.User{
+		"admin": testAuthUser(t, "user-1", "admin", "changeit"),
+	})
+
+	user, err := auth.VerifyCredentials(t.Context(), "admin", "changeit")
+	if err != nil {
+		t.Fatalf("VerifyCredentials() error = %v", err)
+	}
+	if user.Id != "user-1" {
+		t.Fatalf("verified user = %q, want user-1", user.Id)
+	}
+	if got := len(auth.sessions); got != 0 {
+		t.Fatalf("VerifyCredentials() issued %d sessions, want 0", got)
+	}
+}
+
 func TestAuthenticatorSessionsAreInstanceLocal(t *testing.T) {
 	t.Parallel()
 

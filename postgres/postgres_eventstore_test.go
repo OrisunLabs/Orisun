@@ -1550,6 +1550,21 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 		require.NoError(t, err)
 		return exists
 	}
+	indexValidity := func(indexName string) (bool, bool) {
+		var valid bool
+		err := db.QueryRowContext(ctx, `
+			SELECT i.indisvalid
+			FROM pg_catalog.pg_index AS i
+			JOIN pg_catalog.pg_class AS c ON c.oid = i.indexrelid
+			JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+			WHERE n.nspname = 'public' AND c.relname = $1
+		`, indexName).Scan(&valid)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, false
+		}
+		require.NoError(t, err)
+		return true, valid
+	}
 
 	t.Run("single field text index", func(t *testing.T) {
 		err := adminDB.CreateBoundaryIndex(ctx, "test_boundary", "user_id", []common.IndexField{
@@ -1600,6 +1615,65 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 
 		require.NoError(t, adminDB.DropBoundaryIndex(ctx, "test_boundary", "placed_amount"))
 		assert.False(t, indexExists("test_boundary_placed_amount_idx"))
+	})
+
+	t.Run("failed concurrent build drops invalid index and retries cleanly", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO public.test_boundary_orisun_es_event
+				(transaction_id, global_id, event_id, data, metadata)
+			VALUES (1, 0, $1, '{"amount":"not-a-number"}', '{}')
+		`, uuid.NewString())
+		require.NoError(t, err)
+
+		fields := []common.IndexField{{JsonKey: "amount", ValueType: "numeric"}}
+		err = adminDB.CreateBoundaryIndex(
+			ctx,
+			"test_boundary",
+			"invalid_amount",
+			fields,
+			nil,
+			"",
+		)
+		require.Error(t, err)
+		exists, valid := indexValidity("test_boundary_invalid_amount_idx")
+		assert.False(t, exists, "failed build should not leave a physical index")
+		assert.False(t, valid)
+
+		index, err := adminDB.GetBoundaryIndex(ctx, "test_boundary", "invalid_amount")
+		require.NoError(t, err)
+		assert.Equal(t, orisun.BoundaryIndexStateBuilding, index.State)
+
+		_, err = db.ExecContext(ctx, `
+			CREATE INDEX CONCURRENTLY test_boundary_invalid_amount_idx
+			ON public.test_boundary_orisun_es_event
+			USING btree (((data->>'amount')::numeric))
+		`)
+		require.Error(t, err)
+		exists, valid = indexValidity("test_boundary_invalid_amount_idx")
+		assert.True(t, exists, "direct failed build should leave an invalid index for retry recovery")
+		assert.False(t, valid)
+
+		_, err = db.ExecContext(
+			ctx,
+			"DELETE FROM public.test_boundary_orisun_es_event WHERE global_id = 0",
+		)
+		require.NoError(t, err)
+		require.NoError(t, adminDB.CreateBoundaryIndex(
+			ctx,
+			"test_boundary",
+			"invalid_amount",
+			fields,
+			nil,
+			"",
+		))
+		exists, valid = indexValidity("test_boundary_invalid_amount_idx")
+		assert.True(t, exists)
+		assert.True(t, valid)
+
+		index, err = adminDB.GetBoundaryIndex(ctx, "test_boundary", "invalid_amount")
+		require.NoError(t, err)
+		assert.Equal(t, orisun.BoundaryIndexStateReady, index.State)
+		require.NoError(t, adminDB.DropBoundaryIndex(ctx, "test_boundary", "invalid_amount"))
 	})
 
 	t.Run("unknown boundary returns error", func(t *testing.T) {

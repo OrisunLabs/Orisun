@@ -14,14 +14,15 @@ how much reusable implementation already exists in the repository.
 Add permissions such as `READ`, `APPEND`, `SUBSCRIBE`, `MANAGE_INDEXES`, and
 `MANAGE_BOUNDARY`, scoped per boundary.
 
-Currently every authenticated user can read every boundary and invoke every
-Admin RPC, including `CreateBoundary`. See
+Roles now restrict administrative actions, but permissions are not scoped by
+boundary: any authenticated user can read every boundary, and an authorized
+`ADMIN` or `OPERATIONS` user has that role across every boundary. See
 [Security & Authorization](docs/docs/operations/security.md#permission-matrix).
 
 ### 2. Real identity and session management
 
-Sessions now have configurable sliding expiry and are revoked when a user's
-password, roles, or account changes. Still add:
+Sessions now have configurable sliding expiry, a per-user live-session cap, and
+revocation when a user's password changes or account is deleted. Still add:
 
 - API keys and service accounts,
 - credential rotation,

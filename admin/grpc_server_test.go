@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/OrisunLabs/Orisun/orisun"
 	"github.com/OrisunLabs/Orisun/orisun/grpcapi"
@@ -234,6 +235,31 @@ func TestValidateCreateUserRequestRejectsUnknownRoles(t *testing.T) {
 		if err := server.validateCreateUserRequest(&req); err != nil {
 			t.Fatalf("validateCreateUserRequest() rejected roles %v: %v", roles, err)
 		}
+	}
+}
+
+func TestValidateCredentialsUsesVerificationWithoutIssuingSession(t *testing.T) {
+	t.Parallel()
+
+	auth := newTestAuthenticator(t, time.Hour, map[string]orisun.User{
+		"admin": testAuthUser(t, "user-1", "admin", "changeit"),
+	})
+	server := NewGRPCAdminServerWithDependencies(nil, "orisun_admin", GRPCAdminDependencies{
+		CredentialsValidator: auth,
+	})
+
+	response, err := server.ValidateCredentials(adminTestContext(), &grpcapi.ValidateCredentialsRequest{
+		Username: "admin",
+		Password: "changeit",
+	})
+	if err != nil {
+		t.Fatalf("ValidateCredentials() error = %v", err)
+	}
+	if !response.Success || response.User.GetUserId() != "user-1" {
+		t.Fatalf("ValidateCredentials() response = %#v", response)
+	}
+	if got := len(auth.sessions); got != 0 {
+		t.Fatalf("ValidateCredentials() issued %d sessions, want 0", got)
 	}
 }
 

@@ -123,13 +123,22 @@ func (s *EventStore) savePreparedWithMetrics(
 ) (transactionID string, globalID int64, err error) {
 	m := s.metrics.Load()
 	if m == nil {
-		return saver.SavePrepared(ctx, events, boundary, expectedPosition, subset)
+		transactionID, globalID, err = saver.SavePrepared(
+			ctx, events, boundary, expectedPosition, subset,
+		)
+		if err != nil {
+			err = normalizeSaveError(err)
+		}
+		return transactionID, globalID, err
 	}
 
 	started := time.Now()
 	transactionID, globalID, err = saver.SavePrepared(
 		ctx, events, boundary, expectedPosition, subset,
 	)
+	if err != nil {
+		err = normalizeSaveError(err)
+	}
 	m.recordCommitAttempt(ctx, boundary, events, expectedPosition, subset, started, err)
 	return transactionID, globalID, err
 }
@@ -249,8 +258,6 @@ func commitStatus(err error) string {
 		return "CANCELLED"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "DEADLINE_EXCEEDED"
-	case strings.Contains(err.Error(), "OptimisticConcurrencyException"):
-		return "ALREADY_EXISTS"
 	}
 
 	switch statuscode.CodeOf(err) {
@@ -277,4 +284,17 @@ func commitStatus(err error) string {
 	default:
 		return "INTERNAL"
 	}
+}
+
+func normalizeSaveError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if code, _, ok := statuscode.FromError(err); ok && code != statuscode.Unknown {
+		return err
+	}
+	if strings.Contains(err.Error(), "OptimisticConcurrencyException") {
+		return statuscode.New(statuscode.AlreadyExists, err.Error())
+	}
+	return err
 }

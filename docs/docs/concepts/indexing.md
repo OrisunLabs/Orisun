@@ -114,7 +114,12 @@ creation remains idempotent.
 
 ## Backend Behavior
 
-PostgreSQL uses JSONB expression indexes. SQLite uses JSON expression indexes.
+PostgreSQL uses concurrent JSONB expression-index builds so boundary writes can
+continue during creation. Orisun verifies `pg_index.indisvalid` before reporting
+an index as `READY`. If a concurrent build fails or a retry finds an invalid
+physical index, Orisun drops that invalid index and leaves the logical
+definition `BUILDING` so the operation can be retried cleanly. SQLite uses JSON
+expression indexes.
 
 ## Naming and safety
 

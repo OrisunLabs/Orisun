@@ -16,7 +16,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const DefaultSessionTTL = 24 * time.Hour
+const (
+	DefaultSessionTTL         = 24 * time.Hour
+	DefaultMaxSessionsPerUser = 16
+)
 
 type authenticatedSession struct {
 	user      orisun.User
@@ -29,6 +32,7 @@ type Authenticator struct {
 	logger            logger.Logger
 	getUserByUsername func(ctx context.Context, username string) (orisun.User, error)
 	sessionTTL        time.Duration
+	maxUserSessions   int
 	now               func() time.Time
 	sessionMutex      sync.Mutex
 	sessions          map[string]authenticatedSession
@@ -51,6 +55,7 @@ func NewAuthenticator(
 		logger:            logger,
 		getUserByUsername: getUserByUsername,
 		sessionTTL:        ttl,
+		maxUserSessions:   DefaultMaxSessionsPerUser,
 		now:               time.Now,
 		sessions:          make(map[string]authenticatedSession),
 	}
@@ -80,15 +85,9 @@ func (a *Authenticator) ValidateToken(ctx context.Context, token string) (*orisu
 }
 
 func (a *Authenticator) ValidateCredentials(ctx context.Context, username string, password string) (orisun.User, string, error) {
-	user, err := a.getUserByUsername(ctx, username)
+	user, err := a.VerifyCredentials(ctx, username, password)
 	if err != nil {
-		a.logger.Errorf("Could not retrieve user %v", err)
-		return orisun.User{}, "", fmt.Errorf("invalid credentials")
-	}
-
-	// Compare the provided password with the stored hash
-	if err := admin_common.ComparePassword(user.HashedPassword, password); err != nil {
-		return orisun.User{}, "", fmt.Errorf("invalid password")
+		return orisun.User{}, "", err
 	}
 
 	token := uuid.New().String()
@@ -99,6 +98,7 @@ func (a *Authenticator) ValidateCredentials(ctx context.Context, username string
 	now := a.now()
 	a.sessionMutex.Lock()
 	a.deleteExpiredSessionsLocked(now)
+	a.enforceUserSessionLimitLocked(user.Id)
 	a.sessions[token] = authenticatedSession{
 		user:      user,
 		expiresAt: now.Add(a.sessionTTL),
@@ -106,6 +106,24 @@ func (a *Authenticator) ValidateCredentials(ctx context.Context, username string
 	a.sessionMutex.Unlock()
 
 	return user, token, nil
+}
+
+// VerifyCredentials validates a username and password without issuing a
+// session. Administrative credential checks use this path so their result does
+// not leave an unreachable live token behind.
+func (a *Authenticator) VerifyCredentials(ctx context.Context, username string, password string) (orisun.User, error) {
+	user, err := a.getUserByUsername(ctx, username)
+	if err != nil {
+		a.logger.Errorf("Could not retrieve user %v", err)
+		return orisun.User{}, fmt.Errorf("invalid credentials")
+	}
+
+	// Compare the provided password with the stored hash
+	if err := admin_common.ComparePassword(user.HashedPassword, password); err != nil {
+		return orisun.User{}, fmt.Errorf("invalid password")
+	}
+
+	return user, nil
 }
 
 // RevokeUserSessions invalidates every session issued for userID and returns
@@ -129,6 +147,31 @@ func (a *Authenticator) deleteExpiredSessionsLocked(now time.Time) {
 		if !now.Before(session.expiresAt) {
 			delete(a.sessions, token)
 		}
+	}
+}
+
+func (a *Authenticator) enforceUserSessionLimitLocked(userID string) {
+	if a.maxUserSessions <= 0 {
+		return
+	}
+	for {
+		count := 0
+		oldestToken := ""
+		var oldestExpiry time.Time
+		for token, session := range a.sessions {
+			if session.user.Id != userID {
+				continue
+			}
+			count++
+			if oldestToken == "" || session.expiresAt.Before(oldestExpiry) {
+				oldestToken = token
+				oldestExpiry = session.expiresAt
+			}
+		}
+		if count < a.maxUserSessions {
+			return
+		}
+		delete(a.sessions, oldestToken)
 	}
 }
 
@@ -204,6 +247,8 @@ func (p *AuthUserProjector) handleEvent(event coreeventstore.ReadEvent) error {
 		}
 		p.revokeUserSessions(userEvent.UserId)
 
+	// No supported role-mutation command emits this event yet. Keep the
+	// revocation behavior ready for that event contract when one is added.
 	case admin_events.EventTypeRolesChanged:
 		var userEvent struct {
 			UserId string `json:"user_id"`

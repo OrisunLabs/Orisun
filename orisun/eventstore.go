@@ -486,9 +486,6 @@ func (s *EventStore) SaveEvents(ctx context.Context, req *SaveEventsRequest) (re
 		if code, _, ok := statuscode.FromError(err); ok && code != statuscode.Unknown {
 			return nil, err
 		}
-		if strings.Contains(err.Error(), "OptimisticConcurrencyException") {
-			return nil, statuscode.Errorf(statuscode.AlreadyExists, "failed to save events: %v", err)
-		}
 		return nil, statuscode.Errorf(statuscode.Internal, "failed to save events: %v", err)
 	}
 

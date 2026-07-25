@@ -21,12 +21,15 @@ Every EventStore and Admin call must carry credentials. Two forms are accepted:
 A missing or malformed header returns `UNAUTHENTICATED`. Invalid credentials also return `UNAUTHENTICATED`.
 
 Session tokens expire after `ORISUN_AUTH_SESSION_TTL` of inactivity, which
-defaults to `24h`. Each successful use renews that deadline. A password change,
-user deletion, or role change revokes every session for the affected user; the
-client must authenticate with Basic credentials again. Tokens are held by the
-server process that issued them, so clustered deployments should either route a
-client consistently to one node or keep Basic credentials available for
-fallback authentication.
+defaults to `24h`. Each successful use renews that deadline. Orisun retains at
+most 16 live sessions per user and evicts the earliest-expiring session when
+that limit is reached. Because successful use renews expiry, this removes the
+least recently used session in normal operation. A password change or user
+deletion revokes every session for the affected user; the client must
+authenticate with Basic credentials again. Tokens are held by the server
+process that issued them, so clustered deployments should either route a client
+consistently to one node or keep Basic credentials available for fallback
+authentication.
 
 The default account is `admin:changeit`.
 

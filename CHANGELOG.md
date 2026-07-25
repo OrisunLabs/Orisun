@@ -10,10 +10,12 @@
 - `CreateUser` now rejects unsupported or incorrectly cased role values instead
   of storing roles that can never satisfy authorization checks.
 - Session tokens now have a configurable sliding inactivity timeout through
-  `ORISUN_AUTH_SESSION_TTL`, defaulting to `24h`.
-- Password changes, user deletion, and role changes now revoke the affected
-  user's active sessions. Authentication debug logs no longer include raw
-  session tokens.
+  `ORISUN_AUTH_SESSION_TTL`, defaulting to `24h`, with at most 16 live sessions
+  retained per user.
+- Password changes and user deletion now revoke the affected user's active
+  sessions. Authentication debug logs no longer include raw session tokens.
+- `Admin/ValidateCredentials` now verifies credentials without creating and
+  discarding an unreachable session token.
 - The server now exposes unauthenticated standard gRPC health for the overall
   node, EventStore, and Admin services, with startup and context-cancellation
   readiness transitions. Readiness continuously probes JetStream and durable
@@ -33,6 +35,9 @@
   payload bytes, durable commit-attempt latency, and CCC conflicts by boundary
   and bounded criterion shape without exporting criterion values or raw error
   messages.
+- PostgreSQL concurrent index creation now verifies `pg_index.indisvalid`
+  before reporting `READY`. Failed builds and retries automatically remove
+  invalid physical indexes while leaving metadata `BUILDING` for a clean retry.
 
 ## 0.9.2 - 2026-07-25
 
