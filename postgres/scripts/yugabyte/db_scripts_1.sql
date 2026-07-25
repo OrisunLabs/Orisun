@@ -125,10 +125,22 @@ BEGIN
     -- Create the admin event-count cache table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         id          VARCHAR(255) PRIMARY KEY,
-        event_count VARCHAR(255) NOT NULL,
+        event_count BIGINT NOT NULL,
         created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )', schema_name, boundary_name || '_events_count');
+
+    -- Legacy tables stored the count as VARCHAR; convert in place (one-row cache).
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = schema_name
+          AND table_name = boundary_name || '_events_count'
+          AND column_name = 'event_count'
+          AND data_type = 'character varying'
+    ) THEN
+        EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN event_count TYPE BIGINT USING event_count::BIGINT',
+                       schema_name, boundary_name || '_events_count');
+    END IF;
 
     -- Create the admin/projector checkpoint table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -630,16 +629,10 @@ func (s *PostgresAdminDB) GetEventsCount(ctx context.Context, boundary string) (
 	}
 	defer rows.Close()
 
-	var count int = 0
+	var count = 0
 	if rows.Next() {
-		var countStr string
-		if err := rows.Scan(&countStr); err != nil {
+		if err := rows.Scan(&count); err != nil {
 			s.logger.Error("Failed to scan event count: %v", err)
-			return 0, err
-		}
-		count, err = strconv.Atoi(countStr)
-		if err != nil {
-			s.logger.Error("Failed to convert event count to int: %v", err)
 			return 0, err
 		}
 	}
@@ -656,7 +649,7 @@ func (s *PostgresAdminDB) SaveUsersCount(ctx context.Context, users_count uint32
 		ctx,
 		s.qSaveUsersCount,
 		userCountId,
-		strconv.FormatUint(uint64(users_count), 10),
+		int64(users_count),
 		time.Now().UTC(),
 		time.Now().UTC(),
 	)
@@ -678,7 +671,7 @@ func (s *PostgresAdminDB) SaveEventCount(ctx context.Context, event_count int, b
 		ctx,
 		entry.saveEventCount,
 		eventCountId,
-		strconv.Itoa(event_count),
+		event_count,
 		time.Now().UTC(),
 		time.Now().UTC(),
 	)

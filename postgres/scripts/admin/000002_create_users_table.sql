@@ -36,9 +36,21 @@ BEGIN
     -- Create users_count table
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         id VARCHAR(255) PRIMARY KEY,
-        user_count VARCHAR(255) NOT NULL,
+        user_count BIGINT NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )', schema_name, boundary_name || '_users_count');
+
+    -- Legacy tables stored the count as VARCHAR; convert in place (one-row cache).
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = schema_name
+          AND table_name = boundary_name || '_users_count'
+          AND column_name = 'user_count'
+          AND data_type = 'character varying'
+    ) THEN
+        EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN user_count TYPE BIGINT USING user_count::BIGINT',
+                       schema_name, boundary_name || '_users_count');
+    END IF;
 END;
 $$ LANGUAGE plpgsql;
