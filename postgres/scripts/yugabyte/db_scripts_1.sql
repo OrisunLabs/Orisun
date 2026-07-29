@@ -271,7 +271,6 @@ BEGIN
     END IF;
 
     -- If criteria are present, acquire granular locks for each criterion object.
-    -- This allows concurrent saves with non-overlapping content contexts.
     -- Each criterion object is locked as a unit (not individual fields within it).
     IF criteria IS NOT NULL THEN
         -- Extract all unique criteria. Each criterion object maps to one lock.
@@ -291,7 +290,16 @@ BEGIN
                     PERFORM pg_advisory_xact_lock(hashtext(key_record));
                 END LOOP;
         END IF;
+    END IF;
 
+    -- Always take the boundary position lock before evaluating the content
+    -- query. Taking it after the read allowed a writer with a different (but
+    -- overlapping) criterion lock to invalidate this request while it waited
+    -- for the position lock. Criterion locks remain first in the hierarchy,
+    -- and the position lock is always last, so the ordering is deadlock-free.
+    PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
+
+    IF criteria IS NOT NULL THEN
         -- Build the content query as an OR of criteria, where each criterion is
         -- an AND of tag equality checks.
         all_parts := '{}';
@@ -339,17 +347,6 @@ BEGIN
                 expected_tx_id, expected_gid, latest_tx_id, latest_gid;
         END IF;
     END IF;
-
-    -- Per-boundary position lock: held from position draw until commit, so
-    -- positions are assigned in COMMIT order per boundary. Without it, a
-    -- concurrent batch can draw lower global_ids, stay in flight while a
-    -- later-drawn batch commits, then commit "into the past" of the boundary —
-    -- below a context max another writer already observed — which a scalar
-    -- expected-position check cannot detect. Acquired AFTER the per-criterion
-    -- locks above and always last, so lock ordering stays deadlock-free.
-    -- This serialises writers per boundary from draw to commit; that is the
-    -- price of commit-ordered positions on PostgreSQL.
-    PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
 
     -- CTE-based insert using only schema-qualified table/sequence names.
     EXECUTE format('
@@ -416,6 +413,226 @@ BEGIN
     PERFORM pg_notify('orisun_events_' || md5(boundary_name), new_global_id::text);
 
     RETURN QUERY SELECT new_global_id, latest_transaction_id, latest_global_id;
+END;
+$$;
+
+
+-- Group-commit entry point. Each request runs in its own PL/pgSQL exception
+-- block, which PostgreSQL-compatible databases implement as a subtransaction.
+-- A failed CCC check therefore rolls back only that request while later
+-- requests observe all earlier successful writes in this outer transaction.
+CREATE OR REPLACE FUNCTION insert_event_requests_with_consistency_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    requests JSONB
+)
+    RETURNS TABLE
+            (
+                request_index         INT,
+                new_global_id         BIGINT,
+                latest_transaction_id BIGINT,
+                latest_global_id      BIGINT,
+                error_code            TEXT,
+                error_message         TEXT
+            )
+    LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    request                     JSONB;
+    current_index               INT := 0;
+    key_record                  TEXT;
+    criteria_tags               TEXT[];
+    request_new_global_id       BIGINT;
+    request_transaction_id      BIGINT;
+    request_global_id           BIGINT;
+    request_error_code          TEXT;
+    request_error_message       TEXT;
+BEGIN
+    IF requests IS NULL OR jsonb_typeof(requests) <> 'array' THEN
+        RAISE EXCEPTION 'requests must be a JSON array';
+    END IF;
+
+    -- Preserve the Yugabyte lock hierarchy across the entire outer
+    -- transaction. Without this pre-lock, request A could hold the position
+    -- lock while a competing writer holds request B's criterion lock and waits
+    -- for the position lock, deadlocking when this batch advances to B.
+    SELECT ARRAY_AGG(DISTINCT criterion::TEXT ORDER BY criterion::TEXT)
+    INTO criteria_tags
+    FROM jsonb_array_elements(requests) AS request_item
+    CROSS JOIN LATERAL jsonb_array_elements(request_item -> 'query' -> 'criteria') AS criterion;
+
+    IF criteria_tags IS NOT NULL THEN
+        FOREACH key_record IN ARRAY criteria_tags
+            LOOP
+                PERFORM pg_advisory_xact_lock(hashtext(key_record));
+            END LOOP;
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
+
+    FOR request IN SELECT value FROM jsonb_array_elements(requests)
+        LOOP
+            request_new_global_id := NULL;
+            request_transaction_id := NULL;
+            request_global_id := NULL;
+            request_error_code := NULL;
+            request_error_message := NULL;
+
+            BEGIN
+                EXECUTE format(
+                    'SELECT new_global_id, latest_transaction_id, latest_global_id
+                     FROM %I.insert_events_with_consistency_v3($1, $2, $3, $4)',
+                    schema
+                )
+                    INTO request_new_global_id, request_transaction_id, request_global_id
+                    USING boundary_name, schema, request -> 'query', request -> 'events';
+            EXCEPTION
+                WHEN OTHERS THEN
+                    GET STACKED DIAGNOSTICS
+                        request_error_code = RETURNED_SQLSTATE,
+                        request_error_message = MESSAGE_TEXT;
+            END;
+
+            RETURN QUERY
+                SELECT current_index,
+                       request_new_global_id,
+                       request_transaction_id,
+                       request_global_id,
+                       request_error_code,
+                       request_error_message;
+            current_index := current_index + 1;
+        END LOOP;
+END;
+$$;
+
+
+-- Set-based fast path for canonical one-event requests without a CCC query.
+-- The Go batcher only calls this function after validating event type, UUID,
+-- canonical JSON, and the one-event/no-query shape. One advisory lock, sequence
+-- scan, INSERT, notification, statement, and commit serve the whole flush.
+CREATE OR REPLACE FUNCTION insert_unconditional_event_requests_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    requests JSONB
+)
+    RETURNS TABLE
+            (
+                request_index         INT,
+                new_global_id         BIGINT,
+                latest_transaction_id BIGINT,
+                latest_global_id      BIGINT,
+                error_code            TEXT,
+                error_message         TEXT
+            )
+    LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    last_global_id     BIGINT;
+    prefixed_seq_name  TEXT;
+BEGIN
+    IF requests IS NULL OR jsonb_typeof(requests) <> 'array' OR jsonb_array_length(requests) = 0 THEN
+        RAISE EXCEPTION 'requests must be a non-empty JSON array';
+    END IF;
+
+    prefixed_seq_name := format('%I.%I', schema, boundary_name || '_orisun_es_event_global_id_seq');
+
+    -- Keep position assignment commit-ordered across every Orisun process.
+    PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
+
+    RETURN QUERY EXECUTE format('
+        WITH request_events AS MATERIALIZED (
+            SELECT (ordinality - 1)::INT AS request_index,
+                   request -> ''events'' -> 0 AS event
+            FROM jsonb_array_elements($1) WITH ORDINALITY AS requests(request, ordinality)
+            ORDER BY ordinality
+        ),
+        events_with_ids AS MATERIALIZED (
+            SELECT request_index,
+                   event,
+                   nextval(%L) AS global_id
+            FROM request_events
+            ORDER BY request_index
+        ),
+        inserted_events AS (
+            INSERT INTO %I.%I (
+                transaction_id,
+                pg_xact_id,
+                event_id,
+                global_id,
+                data,
+                metadata
+            )
+            SELECT events_with_ids.global_id + 1,
+                   NULL,
+                   (event ->> ''event_id'')::UUID,
+                   events_with_ids.global_id,
+                   jsonb_set(
+                       COALESCE(event -> ''data'', ''{}''::JSONB),
+                       ''{eventType}'',
+                       to_jsonb(event ->> ''event_type''),
+                       true
+                   ),
+                   COALESCE(event -> ''metadata'', ''{}''::JSONB)
+            FROM events_with_ids
+            ORDER BY request_index
+            RETURNING transaction_id, global_id
+        )
+        SELECT events_with_ids.request_index,
+               inserted_events.global_id,
+               inserted_events.transaction_id,
+               inserted_events.global_id,
+               NULL::TEXT,
+               NULL::TEXT
+        FROM events_with_ids
+        JOIN inserted_events USING (global_id)
+        ORDER BY events_with_ids.request_index',
+        prefixed_seq_name,
+        schema,
+        boundary_name || '_orisun_es_event'
+    ) USING requests;
+
+    EXECUTE format('SELECT currval(%L)', prefixed_seq_name) INTO last_global_id;
+    EXECUTE format('
+        INSERT INTO %I.%I (boundary, transaction_id, global_id, date_created, date_updated)
+        VALUES ($1, $2, $3, NOW(), NOW())
+        ON CONFLICT (boundary)
+        DO UPDATE SET transaction_id = $2,
+                      global_id = $3,
+                      date_updated = NOW()',
+        schema,
+        boundary_name || '_orisun_committed_position'
+    ) USING boundary_name, last_global_id + 1, last_global_id;
+    PERFORM pg_notify('orisun_events_' || md5(boundary_name), last_global_id::TEXT);
+END;
+$$;
+
+
+-- Yugabyte keeps the generic batch implementation for canonical CCC requests:
+-- that function pre-acquires the union of criterion locks before the position
+-- lock, preserving its distributed lock hierarchy across the outer batch.
+CREATE OR REPLACE FUNCTION insert_canonical_event_requests_with_consistency_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    requests JSONB
+)
+    RETURNS TABLE
+            (
+                request_index         INT,
+                new_global_id         BIGINT,
+                latest_transaction_id BIGINT,
+                latest_global_id      BIGINT,
+                error_code            TEXT,
+                error_message         TEXT
+            )
+    LANGUAGE plpgsql
+AS
+$$
+BEGIN
+    RETURN QUERY EXECUTE format(
+        'SELECT * FROM %I.insert_event_requests_with_consistency_v1($1, $2, $3)',
+        schema
+    ) USING boundary_name, schema, requests;
 END;
 $$;
 

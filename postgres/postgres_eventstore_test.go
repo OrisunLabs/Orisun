@@ -624,6 +624,181 @@ func TestYugabyteDialectUsesCommittedWatermark(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, visible, 1)
 	requirePosition(t, visible[0], 1, 0)
+
+	groupSaver, err := NewPostgresSaveEventsWithConfig(
+		t.Context(),
+		db,
+		logger,
+		mapping,
+		config.PostgresGroupCommitConfig{
+			MaxBatchRequests: 2,
+			MaxBatchEvents:   2,
+			MaxDelay:         250 * time.Millisecond,
+		},
+	)
+	require.NoError(t, err)
+	defer groupSaver.close()
+
+	savePair := func(events []orisun.EventWithMapTags, queries []*orisun.Query) {
+		t.Helper()
+		start := make(chan struct{})
+		results := make(chan error, len(events))
+		var wg sync.WaitGroup
+		for i := range events {
+			event := events[i]
+			var query *orisun.Query
+			if queries != nil {
+				query = queries[i]
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				position := orisun.NotExistsPosition()
+				_, _, saveErr := groupSaver.Save(
+					context.Background(),
+					[]orisun.EventWithMapTags{event},
+					"test_boundary",
+					&position,
+					query,
+				)
+				results <- saveErr
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+		for saveErr := range results {
+			require.NoError(t, saveErr)
+		}
+	}
+
+	savePair([]orisun.EventWithMapTags{
+		{
+			EventId:   uuid.NewString(),
+			EventType: "YugabyteFastBatchA",
+			Data:      `{"batch":"fast-a"}`,
+			Metadata:  `{}`,
+		},
+		{
+			EventId:   uuid.NewString(),
+			EventType: "YugabyteFastBatchB",
+			Data:      `{"batch":"fast-b"}`,
+			Metadata:  `{}`,
+		},
+	}, nil)
+	require.Equal(t, int64(1), groupSaver.gc.fastFlushes.Load())
+
+	cccQueries := []*orisun.Query{
+		{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: "context", Value: "yb-a"}}}}},
+		{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: "context", Value: "yb-b"}}}}},
+	}
+	savePair([]orisun.EventWithMapTags{
+		{
+			EventId:   uuid.NewString(),
+			EventType: "YugabyteCCCBatchA",
+			Data:      `{"context":"yb-a"}`,
+			Metadata:  `{}`,
+		},
+		{
+			EventId:   uuid.NewString(),
+			EventType: "YugabyteCCCBatchB",
+			Data:      `{"context":"yb-b"}`,
+			Metadata:  `{}`,
+		},
+	}, cccQueries)
+
+	err = db.QueryRow(`
+		SELECT transaction_id, global_id
+		FROM public.test_boundary_orisun_committed_position
+		WHERE boundary = 'test_boundary'
+	`).Scan(&watermarkTransactionID, &watermarkGlobalID)
+	require.NoError(t, err)
+	require.Equal(t, int64(5), watermarkTransactionID)
+	require.Equal(t, int64(4), watermarkGlobalID)
+
+	// A Yugabyte writer must check its context only after it owns the boundary
+	// position lock. Otherwise a differently shaped, overlapping query can pass
+	// against stale state while waiting for that lock.
+	blocker, err := db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer blocker.Rollback()
+	_, err = blocker.ExecContext(
+		t.Context(),
+		`SELECT pg_advisory_xact_lock(hashtext('public.test_boundary::position_draw'))`,
+	)
+	require.NoError(t, err)
+
+	overlapQuery := &orisun.Query{Criteria: []*orisun.Criterion{{
+		Tags: []*orisun.Tag{
+			{Key: "account", Value: "overlap-a"},
+			{Key: "kind", Value: "credit"},
+		},
+	}}}
+	notExists := orisun.NotExistsPosition()
+	waitingResult := make(chan error, 1)
+	go func() {
+		_, _, saveErr := saveEvents.Save(
+			context.Background(),
+			[]orisun.EventWithMapTags{{
+				EventId:   uuid.NewString(),
+				EventType: "WaitingOverlap",
+				Data:      `{"account":"overlap-a","kind":"credit"}`,
+				Metadata:  `{}`,
+			}},
+			"test_boundary",
+			&notExists,
+			overlapQuery,
+		)
+		waitingResult <- saveErr
+	}()
+
+	require.Eventually(t, func() bool {
+		var waiting bool
+		waitErr := db.QueryRowContext(t.Context(), `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity
+				WHERE pid <> pg_backend_pid()
+				  AND wait_event_type = 'Lock'
+				  AND wait_event = 'advisory'
+				  AND query LIKE '%insert_events_with_consistency_v3%'
+			)
+		`).Scan(&waiting)
+		return waitErr == nil && waiting
+	}, 3*time.Second, 10*time.Millisecond)
+
+	blockingPrepared, err := orisun.PrepareEventsForSave([]orisun.EventWithMapTags{{
+		EventId:   uuid.NewString(),
+		EventType: "InvalidatingOverlap",
+		Data:      `{"account":"overlap-a","kind":"credit"}`,
+		Metadata:  `{}`,
+	}})
+	require.NoError(t, err)
+	blockingJSON, err := json.Marshal(blockingPrepared)
+	require.NoError(t, err)
+	var insertedGlobalID, insertedTransactionID, insertedPositionGlobalID int64
+	err = blocker.QueryRowContext(
+		t.Context(),
+		fmt.Sprintf(insertEventsWithConsistency, "public"),
+		"test_boundary",
+		"public",
+		[]byte(`{}`),
+		blockingJSON,
+	).Scan(&insertedGlobalID, &insertedTransactionID, &insertedPositionGlobalID)
+	require.NoError(t, err)
+	require.NoError(t, blocker.Commit())
+
+	require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(<-waitingResult))
+	var overlapCount int
+	err = db.QueryRowContext(
+		t.Context(),
+		`SELECT COUNT(*)
+		 FROM public.test_boundary_orisun_es_event
+		 WHERE data->>'account' = 'overlap-a' AND data->>'kind' = 'credit'`,
+	).Scan(&overlapCount)
+	require.NoError(t, err)
+	require.Equal(t, 1, overlapCount)
 }
 
 func newYugabyteNotifyListenerWithRetry(

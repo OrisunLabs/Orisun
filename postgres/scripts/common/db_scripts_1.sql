@@ -356,6 +356,330 @@ END;
 $$;
 
 
+-- Group-commit entry point. Each request runs in its own PL/pgSQL exception
+-- block, which PostgreSQL implements as a subtransaction. A failed CCC check
+-- therefore rolls back only that request while later requests observe all
+-- earlier successful writes in this outer transaction.
+CREATE OR REPLACE FUNCTION insert_event_requests_with_consistency_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    requests JSONB
+)
+    RETURNS TABLE
+            (
+                request_index         INT,
+                new_global_id         BIGINT,
+                latest_transaction_id BIGINT,
+                latest_global_id      BIGINT,
+                error_code            TEXT,
+                error_message         TEXT
+            )
+    LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    request                     JSONB;
+    current_index               INT := 0;
+    request_new_global_id       BIGINT;
+    request_transaction_id      BIGINT;
+    request_global_id           BIGINT;
+    request_error_code          TEXT;
+    request_error_message       TEXT;
+BEGIN
+    IF requests IS NULL OR jsonb_typeof(requests) <> 'array' THEN
+        RAISE EXCEPTION 'requests must be a JSON array';
+    END IF;
+
+    FOR request IN SELECT value FROM jsonb_array_elements(requests)
+        LOOP
+            request_new_global_id := NULL;
+            request_transaction_id := NULL;
+            request_global_id := NULL;
+            request_error_code := NULL;
+            request_error_message := NULL;
+
+            BEGIN
+                EXECUTE format(
+                    'SELECT new_global_id, latest_transaction_id, latest_global_id
+                     FROM %I.insert_events_with_consistency_v3($1, $2, $3, $4)',
+                    schema
+                )
+                    INTO request_new_global_id, request_transaction_id, request_global_id
+                    USING boundary_name, schema, request -> 'query', request -> 'events';
+            EXCEPTION
+                WHEN OTHERS THEN
+                    GET STACKED DIAGNOSTICS
+                        request_error_code = RETURNED_SQLSTATE,
+                        request_error_message = MESSAGE_TEXT;
+            END;
+
+            RETURN QUERY
+                SELECT current_index,
+                       request_new_global_id,
+                       request_transaction_id,
+                       request_global_id,
+                       request_error_code,
+                       request_error_message;
+            current_index := current_index + 1;
+        END LOOP;
+END;
+$$;
+
+
+-- Set-based fast path for canonical one-event requests without a CCC query.
+-- The Go batcher only calls this function after validating event type, UUID,
+-- canonical JSON, and the one-event/no-query shape. One advisory lock, sequence
+-- scan, INSERT, notification, statement, and commit serve the whole flush.
+CREATE OR REPLACE FUNCTION insert_unconditional_event_requests_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    requests JSONB
+)
+    RETURNS TABLE
+            (
+                request_index         INT,
+                new_global_id         BIGINT,
+                latest_transaction_id BIGINT,
+                latest_global_id      BIGINT,
+                error_code            TEXT,
+                error_message         TEXT
+            )
+    LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    current_pg_xact_id BIGINT;
+    last_global_id     BIGINT;
+    prefixed_seq_name  TEXT;
+BEGIN
+    IF requests IS NULL OR jsonb_typeof(requests) <> 'array' OR jsonb_array_length(requests) = 0 THEN
+        RAISE EXCEPTION 'requests must be a non-empty JSON array';
+    END IF;
+
+    current_pg_xact_id := pg_current_xact_id()::TEXT::BIGINT;
+    prefixed_seq_name := format('%I.%I', schema, boundary_name || '_orisun_es_event_global_id_seq');
+
+    -- Keep position assignment commit-ordered across every Orisun process.
+    PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
+
+    RETURN QUERY EXECUTE format('
+        WITH request_events AS MATERIALIZED (
+            SELECT (ordinality - 1)::INT AS request_index,
+                   request -> ''events'' -> 0 AS event
+            FROM jsonb_array_elements($2) WITH ORDINALITY AS requests(request, ordinality)
+            ORDER BY ordinality
+        ),
+        events_with_ids AS MATERIALIZED (
+            SELECT request_index,
+                   event,
+                   nextval(%L) AS global_id
+            FROM request_events
+            ORDER BY request_index
+        ),
+        inserted_events AS (
+            INSERT INTO %I.%I (
+                transaction_id,
+                pg_xact_id,
+                event_id,
+                global_id,
+                data,
+                metadata
+            )
+            SELECT events_with_ids.global_id + 1,
+                   $1,
+                   (event ->> ''event_id'')::UUID,
+                   events_with_ids.global_id,
+                   jsonb_set(
+                       COALESCE(event -> ''data'', ''{}''::JSONB),
+                       ''{eventType}'',
+                       to_jsonb(event ->> ''event_type''),
+                       true
+                   ),
+                   COALESCE(event -> ''metadata'', ''{}''::JSONB)
+            FROM events_with_ids
+            ORDER BY request_index
+            RETURNING transaction_id, global_id
+        )
+        SELECT events_with_ids.request_index,
+               inserted_events.global_id,
+               inserted_events.transaction_id,
+               inserted_events.global_id,
+               NULL::TEXT,
+               NULL::TEXT
+        FROM events_with_ids
+        JOIN inserted_events USING (global_id)
+        ORDER BY events_with_ids.request_index',
+        prefixed_seq_name,
+        schema,
+        boundary_name || '_orisun_es_event'
+    ) USING current_pg_xact_id, requests;
+
+    EXECUTE format('SELECT currval(%L)', prefixed_seq_name) INTO last_global_id;
+    PERFORM pg_notify('orisun_events_' || md5(boundary_name), last_global_id::TEXT);
+END;
+$$;
+
+
+-- Ordered canonical fast path for one-event requests with CCC queries. It
+-- evaluates requests sequentially under one position lock, so later checks see
+-- earlier accepted writes, but conflicts are returned as data instead of
+-- raising exceptions and successful requests avoid nested subtransactions.
+CREATE OR REPLACE FUNCTION insert_canonical_event_requests_with_consistency_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    requests JSONB
+)
+    RETURNS TABLE
+            (
+                request_index         INT,
+                new_global_id         BIGINT,
+                latest_transaction_id BIGINT,
+                latest_global_id      BIGINT,
+                error_code            TEXT,
+                error_message         TEXT
+            )
+    LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    request                JSONB;
+    event                   JSONB;
+    query_json              JSONB;
+    criteria                JSONB;
+    expected_tx_id          BIGINT;
+    expected_gid            BIGINT;
+    latest_tx_id            BIGINT;
+    latest_gid              BIGINT;
+    inserted_tx_id          BIGINT;
+    inserted_gid            BIGINT;
+    last_inserted_gid       BIGINT;
+    current_index           INT := 0;
+    current_pg_xact_id      BIGINT;
+    prefixed_seq_name       TEXT;
+    criteria_sql            TEXT;
+    crit                    JSONB;
+    crit_parts              TEXT[];
+    all_parts               TEXT[];
+    k                       TEXT;
+    v                       TEXT;
+BEGIN
+    IF requests IS NULL OR jsonb_typeof(requests) <> 'array' OR jsonb_array_length(requests) = 0 THEN
+        RAISE EXCEPTION 'requests must be a non-empty JSON array';
+    END IF;
+
+    current_pg_xact_id := pg_current_xact_id()::TEXT::BIGINT;
+    prefixed_seq_name := format('%I.%I', schema, boundary_name || '_orisun_es_event_global_id_seq');
+    PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
+
+    FOR request IN SELECT value FROM jsonb_array_elements(requests)
+        LOOP
+            event := request -> 'events' -> 0;
+            query_json := request -> 'query';
+            criteria := query_json -> 'criteria';
+            expected_tx_id := (query_json -> 'expected_position' ->> 'transaction_id')::BIGINT;
+            expected_gid := (query_json -> 'expected_position' ->> 'global_id')::BIGINT;
+
+            IF criteria IS NOT NULL THEN
+                all_parts := '{}';
+                FOR crit IN SELECT jsonb_array_elements(criteria)
+                    LOOP
+                        crit_parts := '{}';
+                        FOR k, v IN SELECT * FROM jsonb_each_text(crit)
+                            LOOP
+                                crit_parts := crit_parts || format('(data->>%L = %L)', k, v);
+                            END LOOP;
+                        IF array_length(crit_parts, 1) > 0 THEN
+                            all_parts := all_parts || ('(' || array_to_string(crit_parts, ' AND ') || ')');
+                        END IF;
+                    END LOOP;
+                criteria_sql := CASE
+                                    WHEN array_length(all_parts, 1) > 0
+                                        THEN '(' || array_to_string(all_parts, ' OR ') || ')'
+                                    ELSE 'TRUE'
+                    END;
+
+                EXECUTE format('
+                    SELECT oe.transaction_id, oe.global_id
+                    FROM %I.%I oe
+                    WHERE %s
+                    ORDER BY oe.transaction_id DESC, oe.global_id DESC
+                    LIMIT 1',
+                    schema,
+                    boundary_name || '_orisun_es_event',
+                    criteria_sql
+                ) INTO latest_tx_id, latest_gid;
+
+                latest_tx_id := COALESCE(latest_tx_id, -1);
+                latest_gid := COALESCE(latest_gid, -1);
+                expected_tx_id := COALESCE(expected_tx_id, -1);
+                expected_gid := COALESCE(expected_gid, -1);
+                IF latest_tx_id <> expected_tx_id OR latest_gid <> expected_gid THEN
+                    RETURN QUERY
+                        SELECT current_index,
+                               NULL::BIGINT,
+                               NULL::BIGINT,
+                               NULL::BIGINT,
+                               'P0001'::TEXT,
+                               format(
+                                   'OptimisticConcurrencyException:StreamVersionConflict: Expected (%s, %s), Actual (%s, %s)',
+                                   expected_tx_id,
+                                   expected_gid,
+                                   latest_tx_id,
+                                   latest_gid
+                               );
+                    current_index := current_index + 1;
+                    CONTINUE;
+                END IF;
+            END IF;
+
+            EXECUTE format('
+                WITH allocated AS (
+                    SELECT nextval(%L) AS global_id
+                )
+                INSERT INTO %I.%I (
+                    transaction_id,
+                    pg_xact_id,
+                    event_id,
+                    global_id,
+                    data,
+                    metadata
+                )
+                SELECT allocated.global_id + 1,
+                       $1,
+                       ($2 ->> ''event_id'')::UUID,
+                       allocated.global_id,
+                       jsonb_set(
+                           COALESCE($2 -> ''data'', ''{}''::JSONB),
+                           ''{eventType}'',
+                           to_jsonb($2 ->> ''event_type''),
+                           true
+                       ),
+                       COALESCE($2 -> ''metadata'', ''{}''::JSONB)
+                FROM allocated
+                RETURNING transaction_id, global_id',
+                prefixed_seq_name,
+                schema,
+                boundary_name || '_orisun_es_event'
+            ) INTO inserted_tx_id, inserted_gid USING current_pg_xact_id, event;
+
+            last_inserted_gid := inserted_gid;
+            RETURN QUERY
+                SELECT current_index,
+                       inserted_gid,
+                       inserted_tx_id,
+                       inserted_gid,
+                       NULL::TEXT,
+                       NULL::TEXT;
+            current_index := current_index + 1;
+        END LOOP;
+
+    IF last_inserted_gid IS NOT NULL THEN
+        PERFORM pg_notify('orisun_events_' || md5(boundary_name), last_inserted_gid::TEXT);
+    END IF;
+END;
+$$;
+
+
 -- Get Matching Events Function
 --
 -- Reads events from a boundary event table for PostgresGetEvents.Get. The

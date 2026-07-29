@@ -11,6 +11,9 @@ type postgresBoundary struct {
 	mapping config.BoundaryToPostgresSchemaMapping
 
 	insertEvents          string
+	insertEventRequests   string
+	insertUnconditional   string
+	insertCanonical       string
 	selectEvents          string
 	selectLatest          string
 	getLastPublished      string
@@ -84,6 +87,9 @@ func buildPostgresBoundary(mapping config.BoundaryToPostgresSchemaMapping) postg
 	return postgresBoundary{
 		mapping:               mapping,
 		insertEvents:          fmt.Sprintf(insertEventsWithConsistency, schema),
+		insertEventRequests:   fmt.Sprintf(insertEventRequestsWithConsistency, schema),
+		insertUnconditional:   fmt.Sprintf(insertUnconditionalEventRequests, schema),
+		insertCanonical:       fmt.Sprintf(insertCanonicalEventRequestsWithConsistency, schema),
 		selectEvents:          fmt.Sprintf(selectMatchingEvents, schema),
 		selectLatest:          fmt.Sprintf(selectLatestByCriteria, schema),
 		getLastPublished:      fmt.Sprintf(getLastPublishedEventQuery, schema, boundary),

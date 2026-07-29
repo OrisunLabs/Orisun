@@ -161,6 +161,24 @@ type PostgresDBConfig struct {
 	AdminConnMaxIdleTime time.Duration
 	AdminConnMaxLifetime time.Duration
 	ListenEnabled        bool
+	GroupCommit          PostgresGroupCommitConfig
+}
+
+// PostgresGroupCommitConfig tunes the per-boundary PostgreSQL write batcher.
+// Zero values fall back to package defaults in postgres/group_commit.go;
+// negative values are rejected at startup.
+type PostgresGroupCommitConfig struct {
+	// MaxBatchRequests caps the number of SaveEvents calls in one transaction.
+	MaxBatchRequests int
+	// MaxBatchEvents caps the total events written by one transaction.
+	MaxBatchEvents int
+	// MaxDelay > 0 waits up to this long for more queued requests.
+	// 0 means opportunistic batching without an artificial delay.
+	MaxDelay time.Duration
+	// MaxPending bounds each boundary queue; a full queue applies backpressure.
+	MaxPending int
+	// FlushTimeout bounds one worker-owned batch transaction.
+	FlushTimeout time.Duration
 }
 
 func (p PostgresDBConfig) DatabaseDialect() string {

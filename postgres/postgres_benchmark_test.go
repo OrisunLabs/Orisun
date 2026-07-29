@@ -433,3 +433,182 @@ func BenchmarkPostgres_Burst10000(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkPostgres_GroupCommitBatchSize measures the end-to-end concurrent
+// SaveEvents path while sweeping the maximum set-based flush size.
+func BenchmarkPostgres_GroupCommitBatchSize(b *testing.B) {
+	const burst = 10000
+
+	for _, batchSize := range []int{64, 128, 256, 512, 1024, 2048} {
+		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
+			for range b.N {
+				db, teardown := setupBenchmarkDB(b)
+				ctx := context.Background()
+				logger, err := logging.ZapLogger("warn")
+				require.NoError(b, err)
+				mapping := map[string]config.BoundaryToPostgresSchemaMapping{
+					"bench_boundary": {
+						Boundary: "bench_boundary",
+						Schema:   "public",
+					},
+				}
+				saveEvents, err := NewPostgresSaveEventsWithConfig(
+					ctx,
+					db,
+					logger,
+					mapping,
+					config.PostgresGroupCommitConfig{
+						MaxBatchRequests: batchSize,
+						MaxBatchEvents:   batchSize,
+						MaxPending:       burst,
+					},
+				)
+				require.NoError(b, err)
+
+				events := make([]orisun.EventWithMapTags, burst)
+				for i := range events {
+					eventID, err := uuid.NewV7()
+					require.NoError(b, err)
+					events[i] = orisun.EventWithMapTags{
+						EventId:   eventID.String(),
+						EventType: "BurstEvent",
+						Data:      `{"k":"v"}`,
+						Metadata:  `{}`,
+					}
+				}
+
+				var wg sync.WaitGroup
+				var succeeded, failed atomic.Int64
+				start := make(chan struct{})
+				wg.Add(burst)
+				for i := range events {
+					event := events[i]
+					go func() {
+						defer wg.Done()
+						<-start
+						if _, _, err := saveEvents.Save(
+							ctx,
+							[]orisun.EventWithMapTags{event},
+							"bench_boundary",
+							nil,
+							nil,
+						); err != nil {
+							failed.Add(1)
+							return
+						}
+						succeeded.Add(1)
+					}()
+				}
+
+				b.ResetTimer()
+				startedAt := time.Now()
+				close(start)
+				wg.Wait()
+				elapsed := time.Since(startedAt)
+				b.StopTimer()
+
+				b.ReportMetric(float64(succeeded.Load())/elapsed.Seconds(), "events/sec")
+				b.ReportMetric(float64(elapsed.Milliseconds()), "ms/burst")
+				require.Zero(b, failed.Load())
+				require.Equal(b, int64(burst), succeeded.Load())
+
+				saveEvents.close()
+				teardown()
+			}
+		})
+	}
+}
+
+// BenchmarkPostgres_GroupCommitCCC10000 measures concurrent independent CCC
+// contexts. Each request still observes queue order, but no request conflicts
+// because every content query targets a distinct key.
+func BenchmarkPostgres_GroupCommitCCC10000(b *testing.B) {
+	const burst = 10000
+
+	for range b.N {
+		db, teardown := setupBenchmarkDB(b)
+		ctx := context.Background()
+		logger, err := logging.ZapLogger("warn")
+		require.NoError(b, err)
+		mapping := map[string]config.BoundaryToPostgresSchemaMapping{
+			"bench_boundary": {
+				Boundary: "bench_boundary",
+				Schema:   "public",
+			},
+		}
+		saveEvents, err := NewPostgresSaveEventsWithConfig(
+			ctx,
+			db,
+			logger,
+			mapping,
+			config.PostgresGroupCommitConfig{MaxPending: burst},
+		)
+		require.NoError(b, err)
+		adminDB := NewPostgresAdminDB(db, logger, "public", "bench_boundary", mapping)
+		require.NoError(b, adminDB.CreateBoundaryIndex(
+			ctx,
+			"bench_boundary",
+			"stream_id",
+			[]common.IndexField{{JsonKey: "stream_id", ValueType: "text"}},
+			nil,
+			"",
+		))
+
+		events := make([]orisun.EventWithMapTags, burst)
+		queries := make([]*orisun.Query, burst)
+		for i := range burst {
+			eventID, err := uuid.NewV7()
+			require.NoError(b, err)
+			streamID := fmt.Sprintf("stream-%d", i)
+			events[i] = orisun.EventWithMapTags{
+				EventId:   eventID.String(),
+				EventType: "BurstCCCEvent",
+				Data:      fmt.Sprintf(`{"stream_id":%q}`, streamID),
+				Metadata:  `{}`,
+			}
+			queries[i] = &orisun.Query{Criteria: []*orisun.Criterion{{
+				Tags: []*orisun.Tag{{Key: "stream_id", Value: streamID}},
+			}}}
+		}
+		notExists := orisun.NotExistsPosition()
+
+		var wg sync.WaitGroup
+		var succeeded, failed atomic.Int64
+		start := make(chan struct{})
+		wg.Add(burst)
+		for i := range events {
+			event := events[i]
+			query := queries[i]
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, _, err := saveEvents.Save(
+					ctx,
+					[]orisun.EventWithMapTags{event},
+					"bench_boundary",
+					&notExists,
+					query,
+				); err != nil {
+					failed.Add(1)
+					return
+				}
+				succeeded.Add(1)
+			}()
+		}
+
+		b.ResetTimer()
+		startedAt := time.Now()
+		close(start)
+		wg.Wait()
+		elapsed := time.Since(startedAt)
+		b.StopTimer()
+
+		b.ReportMetric(float64(succeeded.Load())/elapsed.Seconds(), "saves/sec")
+		b.ReportMetric(float64(elapsed.Milliseconds()), "ms/burst")
+		require.Zero(b, failed.Load())
+		require.Equal(b, int64(burst), succeeded.Load())
+
+		saveEvents.close()
+		teardown()
+	}
+}

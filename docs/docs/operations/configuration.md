@@ -146,25 +146,30 @@ with `existed_before_catalog: true`.
 | `ORISUN_SQLITE_GC_MAX_PENDING` | `4096` | Per-boundary queued `SaveEvents` request capacity before callers block. |
 | `ORISUN_SQLITE_GC_FLUSH_TIMEOUT` | `30s` | Timeout for one SQLite group-commit flush. |
 
-## PostgreSQL-compatible pool settings
+## PostgreSQL-compatible settings
 
-Orisun uses separate PostgreSQL-compatible pools for writes, reads, and admin work. Size their combined open connections below the database connection limit or the PgBouncer pool size.
+Orisun uses per-boundary group commit plus separate PostgreSQL-compatible pools for writes, reads, and admin work. Size the pools' combined open connections below the database connection limit or the PgBouncer pool size.
 
 | Variable | Default | Description |
-| --- | --- | --- |
-| `ORISUN_PG_LISTEN_ENABLED` | `true` | Use PostgreSQL `LISTEN/NOTIFY` wake-ups. Polling still protects correctness when notifications are delayed or missed. |
-| `ORISUN_PG_WRITE_MAX_OPEN_CONNS` | `25` | Write pool open-connection cap. |
-| `ORISUN_PG_WRITE_MAX_IDLE_CONNS` | `10` | Write pool idle-connection cap. |
-| `ORISUN_PG_WRITE_CONN_MAX_IDLE_TIME` | `5m` | Write pool idle lifetime. |
-| `ORISUN_PG_WRITE_CONN_MAX_LIFETIME` | `30m` | Write pool max connection lifetime. |
-| `ORISUN_PG_READ_MAX_OPEN_CONNS` | `50` | Read pool open-connection cap. |
-| `ORISUN_PG_READ_MAX_IDLE_CONNS` | `25` | Read pool idle-connection cap. |
-| `ORISUN_PG_READ_CONN_MAX_IDLE_TIME` | `5m` | Read pool idle lifetime. |
-| `ORISUN_PG_READ_CONN_MAX_LIFETIME` | `30m` | Read pool max connection lifetime. |
-| `ORISUN_PG_ADMIN_MAX_OPEN_CONNS` | `5` | Admin pool open-connection cap. |
-| `ORISUN_PG_ADMIN_MAX_IDLE_CONNS` | `2` | Admin pool idle-connection cap. |
-| `ORISUN_PG_ADMIN_CONN_MAX_IDLE_TIME` | `5m` | Admin pool idle lifetime. |
-| `ORISUN_PG_ADMIN_CONN_MAX_LIFETIME` | `30m` | Admin pool max connection lifetime. |
+| --- |---------| --- |
+| `ORISUN_PG_LISTEN_ENABLED` | `true`  | Use PostgreSQL `LISTEN/NOTIFY` wake-ups. Polling still protects correctness when notifications are delayed or missed. |
+| `ORISUN_PG_WRITE_MAX_OPEN_CONNS` | `25`    | Write pool open-connection cap. |
+| `ORISUN_PG_WRITE_MAX_IDLE_CONNS` | `10`    | Write pool idle-connection cap. |
+| `ORISUN_PG_WRITE_CONN_MAX_IDLE_TIME` | `5m`    | Write pool idle lifetime. |
+| `ORISUN_PG_WRITE_CONN_MAX_LIFETIME` | `30m`   | Write pool max connection lifetime. |
+| `ORISUN_PG_GC_MAX_BATCH_REQUESTS` | `256`   | Maximum `SaveEvents` requests committed in one PostgreSQL group-commit transaction. |
+| `ORISUN_PG_GC_MAX_BATCH_EVENTS` | `1024`  | Maximum events committed in one PostgreSQL group-commit transaction. A request that would exceed the cap is carried to the next flush. |
+| `ORISUN_PG_GC_MAX_DELAY` | `0s`    | Optional wait to fill a PostgreSQL group-commit batch. `0s` keeps batching opportunistic. |
+| `ORISUN_PG_GC_MAX_PENDING` | `4096`  | Per-boundary queued `SaveEvents` request capacity before callers block. |
+| `ORISUN_PG_GC_FLUSH_TIMEOUT` | `30s`   | Timeout for one PostgreSQL group-commit flush. |
+| `ORISUN_PG_READ_MAX_OPEN_CONNS` | `50`    | Read pool open-connection cap. |
+| `ORISUN_PG_READ_MAX_IDLE_CONNS` | `25`    | Read pool idle-connection cap. |
+| `ORISUN_PG_READ_CONN_MAX_IDLE_TIME` | `5m`    | Read pool idle lifetime. |
+| `ORISUN_PG_READ_CONN_MAX_LIFETIME` | `30m`   | Read pool max connection lifetime. |
+| `ORISUN_PG_ADMIN_MAX_OPEN_CONNS` | `5`     | Admin pool open-connection cap. |
+| `ORISUN_PG_ADMIN_MAX_IDLE_CONNS` | `2`     | Admin pool idle-connection cap. |
+| `ORISUN_PG_ADMIN_CONN_MAX_IDLE_TIME` | `5m`    | Admin pool idle lifetime. |
+| `ORISUN_PG_ADMIN_CONN_MAX_LIFETIME` | `30m`   | Admin pool max connection lifetime. |
 
 ## NATS settings
 
