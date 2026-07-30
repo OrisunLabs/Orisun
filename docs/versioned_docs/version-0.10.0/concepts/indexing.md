@@ -66,7 +66,6 @@ multi-event saves. For burst-oriented workloads, start performance testing with
 `ORISUN_PG_GC_MAX_DELAY=1ms`. The delay trades up to one millisecond of
 low-volume latency for fuller batches, so measure it under the target command
 mix. Request-local validation failures use the isolated ordered path.
-YugabyteDB currently uses its ordered criterion-lock path.
 
 ## Composite Index
 

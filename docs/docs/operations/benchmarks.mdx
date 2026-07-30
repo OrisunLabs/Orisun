@@ -193,65 +193,6 @@ concurrency increased from 1 to 256.
 This is a single-process FoundationDB baseline. It does not represent a
 fault-tolerant FoundationDB cluster.
 
-## YugabyteDB results
-
-The YugabyteDB results below use the same July 30, 2026 workload, client
-concurrency, dataset, payload, warm-up, and measurement duration. All 30
-measured points completed with zero foreground and background request errors.
-
-### Throughput
-
-Values are events per second.
-
-| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| CCC append, 1 event | 103 | 157 | 190 | **205** | **205** |
-| CCC append, 100 events | 5,730 | 6,723 | 6,830 | **7,020** | 6,566 |
-| Unconditional append, 1 event | 178 | 336 | 1,173 | 3,571 | **7,159** |
-| Conditional read | 2,864 | 9,404 | 22,520 | 28,806 | **29,923** |
-| Projection read | 45,699 | 121,466 | 208,732 | 236,029 | **241,502** |
-| Append with four readers | 117 | 233 | 842 | 2,383 | **5,793** |
-
-Single-event CCC writes saturated around 205 events per second on this
-single-node deployment. The unconditional group-commit path continued scaling
-through 256 clients. The 100-event CCC workload amortized transaction cost and
-peaked at 64 clients.
-
-### Tail latency
-
-Values are foreground request p99 latency in milliseconds.
-
-| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| CCC append, 1 event | 32.51 | 66.27 | 137.99 | 514.75 | 1,546.19 |
-| CCC append, 100 events | 35.29 | 115.61 | 404.58 | 1,214.95 | 5,327.90 |
-| Unconditional append, 1 event | 11.70 | 26.96 | 29.42 | 33.19 | 79.90 |
-| Conditional read | 7.32 | 8.93 | 20.39 | 63.93 | 362.06 |
-| Projection read | 38.43 | 65.44 | 138.94 | 630.74 | 3,905.84 |
-| Append with four readers | 19.86 | 33.08 | 33.78 | 65.03 | 73.21 |
-
-During the mixed workload, the four background readers sustained 108,632,
-108,466, 107,266, 93,597, and 92,115 events per second as foreground writer
-concurrency increased from 1 to 256.
-
-### Test environment
-
-- Orisun `v0.9.3-9-g53e5578`, built as PostgreSQL server and benchmark
-  binaries with Go 1.26.5, using `ORISUN_PG_DIALECT=yugabyte`
-- YugabyteDB image `2025.2.3.2-b1` arm64 in Docker Desktop; YSQL reported
-  `2025.2.3.2-b0`
-- one Master, one TServer, and replication factor 1
-- `LISTEN/NOTIFY` enabled on the Master and TServer
-- Apple MacBook Pro arm64, 10 logical CPUs, 32 GB RAM, host SSD
-- benchmark runner and Orisun server on the host; YugabyteDB in local Docker
-- a fresh benchmark schema in the container's fresh persistent data volume
-- 1,000,000 seed events, 100,000 indexed contexts, and approximately 256 bytes
-  per event
-- 5-second warm-up and 30-second measurement per point
-
-[Download the raw YugabyteDB CSV](/benchmarks/yugabyte-2026-07-30.csv).
-This is a single-node replication-factor-1 baseline. It does not represent a
-fault-tolerant or geographically distributed YugabyteDB cluster.
 
 ## Default benchmark
 

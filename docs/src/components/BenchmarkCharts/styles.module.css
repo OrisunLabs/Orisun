@@ -2,7 +2,6 @@
   --benchmark-postgres: #2563eb;
   --benchmark-sqlite: #ea580c;
   --benchmark-foundationdb: #0f766e;
-  --benchmark-yugabyte: #a21caf;
   margin: 1.25rem 0 2.5rem;
 }
 
@@ -186,7 +185,6 @@
     --benchmark-postgres: #3b82f6;
     --benchmark-sqlite: #f97316;
     --benchmark-foundationdb: #14b8a6;
-    --benchmark-yugabyte: #d946ef;
   }
 
   .button,
@@ -213,7 +211,6 @@
   --benchmark-postgres: #60a5fa;
   --benchmark-sqlite: #fb923c;
   --benchmark-foundationdb: #2dd4bf;
-  --benchmark-yugabyte: #e879f9;
 }
 
 [data-theme='dark'] .chartCard {

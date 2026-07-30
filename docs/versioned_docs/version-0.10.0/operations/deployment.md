@@ -56,7 +56,7 @@ Images are published to both Docker Hub and GitHub Container Registry. The Docke
 
 | Image | Backend |
 | --- | --- |
-| `orisunlabs/orisun:pg` | PostgreSQL-compatible backends: PostgreSQL and YugabyteDB |
+| `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
 | `orisunlabs/orisun:fdb` | FoundationDB only, beta, includes the FDB client library |
 
@@ -205,30 +205,6 @@ Expected publisher behavior:
 - The node that owns a boundary logs successful lock acquisition.
 - Other nodes may log lock contention for that boundary.
 - If the owner exits, another node resumes from the PostgreSQL checkpoint.
-
-## YugabyteDB
-
-YugabyteDB is deployed through the PostgreSQL-compatible backend:
-
-```bash
-ORISUN_BACKEND=postgres
-ORISUN_PG_DIALECT=yugabyte
-ORISUN_PG_PORT=5433
-ORISUN_PG_LISTEN_ENABLED=true
-```
-
-Use YugabyteDB `v2025.2.3` or later. Enable `LISTEN/NOTIFY` on both Masters and TServers:
-
-```bash
---master_flags=ysql_yb_enable_listen_notify=true
---tserver_flags=ysql_yb_enable_listen_notify=true
-```
-
-Orisun requires YugabyteDB advisory locks and `LISTEN/NOTIFY`. Advisory locks are enabled by default in YugabyteDB `v2025.1+`. `LISTEN/NOTIFY` is disabled by default in YugabyteDB and must be enabled before Orisun starts. If `pg_notify` is unavailable, saves fail.
-
-YugabyteDB does not provide PostgreSQL internal transaction ID semantics, so Orisun uses a per-boundary committed-position watermark for stable-prefix reads. This is selected automatically by `ORISUN_PG_DIALECT=yugabyte`; do not run YugabyteDB with the default `postgres` dialect.
-
-For clustered Orisun nodes, use the same guidance as [Clustered PostgreSQL](#clustered-postgresql): all Orisun nodes share the same YugabyteDB database, boundaries, schema mapping, and NATS cluster configuration.
 
 ## FoundationDB topology
 

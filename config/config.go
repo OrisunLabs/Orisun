@@ -144,7 +144,6 @@ type PostgresDBConfig struct {
 	Port        string
 	AdminSchema string
 	SSLMode     string
-	Dialect     string
 	// Write pool configuration (optimized for write operations)
 	WriteMaxOpenConns    int
 	WriteMaxIdleConns    int
@@ -179,13 +178,6 @@ type PostgresGroupCommitConfig struct {
 	MaxPending int
 	// FlushTimeout bounds one worker-owned batch transaction.
 	FlushTimeout time.Duration
-}
-
-func (p PostgresDBConfig) DatabaseDialect() string {
-	if p.Dialect == "" {
-		return "postgres"
-	}
-	return strings.ToLower(strings.TrimSpace(p.Dialect))
 }
 
 type BoundaryToPostgresSchemaMapping struct {
@@ -236,6 +228,12 @@ func (c *NatsClusterConfig) GetRoutes() []string {
 var configData []byte
 
 func LoadConfig() (AppConfig, error) {
+	if _, configured := os.LookupEnv("ORISUN_PG_DIALECT"); configured {
+		return AppConfig{}, fmt.Errorf(
+			"ORISUN_PG_DIALECT was removed in Orisun 0.10.0; the PostgreSQL backend now supports PostgreSQL only",
+		)
+	}
+
 	viper.SetConfigType("yaml")
 
 	if err := viper.ReadConfig(bytes.NewReader(configData)); err != nil {
@@ -295,13 +293,6 @@ func validateConfig(config AppConfig) error {
 		}
 	default:
 		return fmt.Errorf("unknown backend type %q (expected 'postgres', 'sqlite', or 'foundationdb')", config.Backend.Type)
-	}
-
-	switch config.Postgres.DatabaseDialect() {
-	case "postgres", "yugabyte":
-		// ok
-	default:
-		return fmt.Errorf("unknown postgres dialect %q (expected 'postgres' or 'yugabyte')", config.Postgres.Dialect)
 	}
 
 	if err := validateBoundaryName(config.Admin.Boundary); err != nil {

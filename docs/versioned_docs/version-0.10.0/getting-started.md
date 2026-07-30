@@ -87,7 +87,7 @@ Download a release asset for your OS, architecture, and backend from [GitHub Rel
 
 | Binary | Includes |
 | --- | --- |
-| `orisun-pg-<os>-<arch>` | PostgreSQL-compatible backends: PostgreSQL and YugabyteDB |
+| `orisun-pg-<os>-<arch>` | PostgreSQL |
 | `orisun-sqlite-<os>-<arch>` | SQLite only |
 | `orisun-fdb-linux-<arch>` | FoundationDB only; beta; Linux only |
 
@@ -152,44 +152,6 @@ ORISUN_ADMIN_PASSWORD=changeit \
 ORISUN_NATS_STORE_DIR=./data/orisun/nats \
 ./orisun-pg
 ```
-
-## Run YugabyteDB from a binary
-
-YugabyteDB uses the PostgreSQL-compatible Orisun binary with the Yugabyte dialect enabled. Use YugabyteDB `v2025.2.3` or later and enable `LISTEN/NOTIFY` on both Masters and TServers.
-
-For local testing, start a single-node YugabyteDB container:
-
-```bash
-docker run --rm --name yugabyte \
-  -p 5433:5433 \
-  -p 15433:15433 \
-  yugabytedb/yugabyte:2025.2.3.2-b1 \
-  bin/yugabyted start \
-  --background=false \
-  --master_flags=ysql_yb_enable_listen_notify=true \
-  --tserver_flags=ysql_yb_enable_listen_notify=true
-```
-
-Then start Orisun:
-
-```bash
-ORISUN_BACKEND=postgres \
-ORISUN_PG_DIALECT=yugabyte \
-ORISUN_PG_HOST=localhost \
-ORISUN_PG_PORT=5433 \
-ORISUN_PG_USER=yugabyte \
-ORISUN_PG_PASSWORD=yugabyte \
-ORISUN_PG_NAME=yugabyte \
-ORISUN_PG_ADMIN_SCHEMA=admin \
-ORISUN_PG_LISTEN_ENABLED=true \
-ORISUN_ADMIN_BOUNDARY=orisun_admin \
-ORISUN_ADMIN_USERNAME=admin \
-ORISUN_ADMIN_PASSWORD=changeit \
-ORISUN_NATS_STORE_DIR=./data/orisun/nats \
-./orisun-pg
-```
-
-Orisun creates its boundary tables and functions during startup. YugabyteDB mode uses an Orisun committed-position watermark for stable-prefix reads because YugabyteDB does not expose PostgreSQL internal transaction IDs.
 
 ## Run SQLite with Docker
 
@@ -272,61 +234,6 @@ Start the stack:
 docker compose up -d
 ```
 
-## Run YugabyteDB with Docker Compose
-
-Create `docker-compose.yml`:
-
-```yaml
-services:
-  yugabyte:
-    image: yugabytedb/yugabyte:2025.2.3.2-b1
-    command:
-      - bin/yugabyted
-      - start
-      - --background=false
-      - --master_flags=ysql_yb_enable_listen_notify=true
-      - --tserver_flags=ysql_yb_enable_listen_notify=true
-    ports:
-      - "5433:5433"
-      - "15433:15433"
-    volumes:
-      - yugabyte-data:/root/var
-
-  orisun:
-    image: orisunlabs/orisun:pg
-    environment:
-      ORISUN_BACKEND: postgres
-      ORISUN_PG_DIALECT: yugabyte
-      ORISUN_PG_HOST: yugabyte
-      ORISUN_PG_PORT: 5433
-      ORISUN_PG_USER: yugabyte
-      ORISUN_PG_PASSWORD: yugabyte
-      ORISUN_PG_NAME: yugabyte
-      ORISUN_PG_ADMIN_SCHEMA: admin
-      ORISUN_PG_LISTEN_ENABLED: "true"
-      ORISUN_ADMIN_BOUNDARY: orisun_admin
-      ORISUN_ADMIN_USERNAME: admin
-      ORISUN_ADMIN_PASSWORD: changeit
-    ports:
-      - "5005:5005"
-      - "8991:8991"
-    volumes:
-      - orisun-data:/var/lib/orisun/data
-    depends_on:
-      - yugabyte
-    restart: unless-stopped
-
-volumes:
-  yugabyte-data:
-  orisun-data:
-```
-
-Start the stack:
-
-```bash
-docker compose up -d
-```
-
 ## Verify the API
 
 The examples use the default `admin:changeit` credentials.
@@ -359,7 +266,7 @@ grpcurl -H "$AUTH" \
   -d '{"name":"orders","description":"Order events","placement":{"backend":"sqlite","namespace":"orders"}}' \
   localhost:5005 orisun.Admin/CreateBoundary
 
-# PostgreSQL or YugabyteDB
+# PostgreSQL
 grpcurl -H "$AUTH" \
   -d '{"name":"orders","description":"Order events","placement":{"backend":"postgres","namespace":"public"}}' \
   localhost:5005 orisun.Admin/CreateBoundary
@@ -424,7 +331,7 @@ Binary assets are attached to each GitHub release:
 
 | Asset | Backend |
 | --- | --- |
-| `orisun-pg-linux-amd64`, `orisun-pg-darwin-arm64`, ... | PostgreSQL-compatible backends: PostgreSQL and YugabyteDB |
+| `orisun-pg-linux-amd64`, `orisun-pg-darwin-arm64`, ... | PostgreSQL |
 | `orisun-sqlite-linux-amd64`, `orisun-sqlite-darwin-arm64`, ... | SQLite only |
 | `orisun-fdb-linux-amd64`, `orisun-fdb-linux-arm64` | FoundationDB only; beta; requires native FDB client libraries |
 
@@ -432,7 +339,7 @@ Docker images are published to Docker Hub and GitHub Container Registry with the
 
 | Tag | Backend |
 | --- | --- |
-| `orisunlabs/orisun:pg` | PostgreSQL-compatible backends: PostgreSQL and YugabyteDB |
+| `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
 | `orisunlabs/orisun:fdb` | FoundationDB only, beta, includes the FDB client library |
 | `orisunlabs/orisun:<version>-pg` | PostgreSQL-compatible release |

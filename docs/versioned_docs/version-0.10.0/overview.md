@@ -11,7 +11,10 @@ This documentation targets Orisun `0.6.1`.
 
 The mechanism behind that promise is **Command Context Consistency**: commands query the exact events they depend on, and writes succeed only if that context has not changed.
 
-It stores the event log transactionally in PostgreSQL, YugabyteDB, SQLite, or FoundationDB beta, and delivers committed events through embedded NATS JetStream, including catch-up replay and live subscriptions. Storage, consistency checks, publishing, indexes, auth, and gRPC APIs ship as one deployable server.
+It stores the event log transactionally in PostgreSQL, SQLite, or FoundationDB
+beta, and delivers committed events through embedded NATS JetStream, including
+catch-up replay and live subscriptions. Storage, consistency checks,
+publishing, indexes, auth, and gRPC APIs ship as one deployable server.
 
 ## Guarantees
 
@@ -22,7 +25,8 @@ It stores the event log transactionally in PostgreSQL, YugabyteDB, SQLite, or Fo
 - **Runtime boundary management.** New and imported physical boundaries are
   durable lifecycle events, provisioned without restarting the server or
   maintaining a startup boundary list.
-- **Same API on every backend.** SQLite, PostgreSQL, YugabyteDB, and FoundationDB expose the identical gRPC surface, so deployments can grow without client changes.
+- **Same API on every backend.** SQLite, PostgreSQL, and FoundationDB expose the
+  identical gRPC surface, so deployments can grow without client changes.
 
 ## How it works
 
@@ -43,7 +47,10 @@ SQLite is the fastest local loop. Event log, admin state, indexes, publisher che
    and wait for it to become active.
 5. Save an event with [Save your first event](/docs/getting-started#save-your-first-event).
 
-Move to PostgreSQL, YugabyteDB, or FoundationDB when you need multiple Orisun nodes or database-managed operations. SQLite is single-node only and requires NATS clustering disabled. FoundationDB support is beta; read the FoundationDB operations guide before using it in production.
+Move to PostgreSQL or FoundationDB when you need multiple Orisun nodes or
+database-managed operations. SQLite is single-node only and requires NATS
+clustering disabled. FoundationDB support is beta; read the FoundationDB
+operations guide before using it in production.
 
 ## Pick your path
 

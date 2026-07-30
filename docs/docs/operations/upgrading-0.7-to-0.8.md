@@ -3,6 +3,11 @@ title: Upgrade from 0.7.0 to 0.8.0
 description: A production runbook for migrating existing boundaries into the 0.8.0 event-backed catalog.
 ---
 
+This is a historical bridge guide for installations that still need the 0.8.0
+catalog migration. YugabyteDB was supported by those releases but is removed
+in Orisun 0.10.0; see [Upgrading from 0.9 to 0.10](./upgrading-0.9-to-0.10)
+before selecting a current target backend.
+
 Orisun 0.8.0 replaces the static `ORISUN_BOUNDARIES` startup list with a
 durable, event-backed boundary catalog. This is an operator-visible change and,
 for embedded Go users, an API-breaking change. Existing application events are

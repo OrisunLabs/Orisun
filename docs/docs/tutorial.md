@@ -30,8 +30,8 @@ grpcurl -plaintext \
 The command returns while the boundary is `PROVISIONING`. Use `GetBoundary` and
 continue once its status is `BOUNDARY_LIFECYCLE_STATUS_ACTIVE`.
 
-Only the admin schema is configured at startup for a fresh
-PostgreSQL-compatible deployment, including YugabyteDB:
+Only the admin schema is configured at startup for a fresh PostgreSQL
+deployment:
 
 ```bash
 ORISUN_PG_ADMIN_SCHEMA=admin

@@ -65,7 +65,7 @@ Each release publishes standalone binaries for Linux, macOS, and Windows. Use th
 
 | Asset pattern | Backend |
 | --- | --- |
-| `orisun-pg-<os>-<arch>` | PostgreSQL-compatible backends: PostgreSQL and YugabyteDB |
+| `orisun-pg-<os>-<arch>` | PostgreSQL |
 | `orisun-sqlite-<os>-<arch>` | SQLite only |
 | `orisun-fdb-linux-<arch>` | FoundationDB only; beta; Linux only |
 
@@ -81,7 +81,7 @@ The release workflow publishes the same tags to Docker Hub (`orisunlabs/orisun`)
 
 | Tag | Backend |
 | --- | --- |
-| `orisunlabs/orisun:pg` | PostgreSQL-compatible backends: PostgreSQL and YugabyteDB |
+| `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
 | `orisunlabs/orisun:fdb` | FoundationDB only, beta, includes the FDB client library |
 | `orisunlabs/orisun:<version>-pg` | PostgreSQL-compatible release version |

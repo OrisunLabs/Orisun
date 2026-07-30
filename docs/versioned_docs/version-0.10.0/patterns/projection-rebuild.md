@@ -6,7 +6,12 @@ description: Rebuild a read model from the durable event log without losing even
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-The durable event log in PostgreSQL, YugabyteDB, SQLite, or FoundationDB is the source of truth; every read model is derived from it. That means any projection can be rebuilt from scratch at any time, including after a bug fix, a schema change in the read model, or a corrupted store. You do not depend on JetStream retention for correctness; you depend on the log. See [Delivery Guarantees](../concepts/delivery-guarantees).
+The durable event log in PostgreSQL, SQLite, or FoundationDB is the source of
+truth; every read model is derived from it. That means any projection can be
+rebuilt from scratch at any time, including after a bug fix, a schema change in
+the read model, or a corrupted store. You do not depend on JetStream retention
+for correctness; you depend on the log. See
+[Delivery Guarantees](../concepts/delivery-guarantees).
 
 ## When to rebuild
 

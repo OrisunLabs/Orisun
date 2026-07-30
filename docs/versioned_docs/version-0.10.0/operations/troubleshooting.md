@@ -7,11 +7,11 @@ Start with the symptom table, then use the focused sections below.
 
 | Symptom | Check |
 | --- | --- |
-| Cannot connect | PostgreSQL/YugabyteDB host and port, gRPC port, firewall, Docker networking. |
+| Cannot connect | PostgreSQL host and port, gRPC port, firewall, Docker networking. |
 | `ALREADY_EXISTS` | Expected CCC conflict; re-query context and retry only if the command is still valid. |
 | Boundary stays `PROVISIONING` or becomes `FAILED` | Inspect `Admin/GetBoundary.last_error`, placement, backend connectivity, and provisioning retry logs. |
 | Slow criteria queries | Missing JSON field indexes for the selected backend. |
-| Publisher lag | PostgreSQL/YugabyteDB listener health, SQLite signal/polling health, NATS health, boundary lock ownership. |
+| Publisher lag | PostgreSQL listener health, SQLite signal/polling health, NATS health, boundary lock ownership. |
 | Duplicate delivery | Expected after publish/checkpoint failure; deduplicate by `event_id`. |
 | Cluster instability | NATS quorum, routes, unique ports, persistent store directories. |
 

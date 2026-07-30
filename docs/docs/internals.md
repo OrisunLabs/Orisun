@@ -138,8 +138,6 @@ One active publisher per boundary drains the committed log and publishes to embe
 
 PostgreSQL `LISTEN/NOTIFY` and SQLite wake-ups only tell the publisher there *may* be work. If a signal is lost or delayed, periodic polling still drains the log from the persisted checkpoint. This is why no committed event is skipped even when a wake-up goes missing, and why the visibility barrier above matters.
 
-For YugabyteDB (`ORISUN_PG_DIALECT=yugabyte`), Orisun uses an application-managed committed-position watermark instead of PostgreSQL XID snapshot functions. Writers update the watermark in the same transaction as event inserts while holding the per-boundary position lock; ASC reads only return events at or below that watermark.
-
 ### At-least-once around publish + checkpoint
 
 Publishing is at-least-once across the batch publish→checkpoint boundary. If JetStream accepts some or all of a batch and the final checkpoint write fails, the batch is replayed from the previous checkpoint on the next cycle. This can produce duplicates but cannot skip events or publish them out of per-boundary order. Consumers deduplicate by `event_id`. See [Delivery Guarantees](./concepts/delivery-guarantees).

@@ -57,7 +57,7 @@ const config: Config = {
           editUrl: 'https://github.com/OrisunLabs/Orisun/tree/main/docs/',
           // The newest cut version serves at /docs; in-progress docs for the
           // next release live at /docs/next with an "unreleased" banner.
-          lastVersion: '0.9.5',
+          lastVersion: '0.10.0',
           versions: {
             current: {
               label: 'Next 🚧',

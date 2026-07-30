@@ -1124,8 +1124,6 @@ func InitializePostgresDatabaseRuntime(
 		logger.Fatalf("Failed to inspect PostgreSQL catalog bootstrap marker: %v", err)
 	}
 	preexistingAdminStore = preexistingAdminStore && !catalogNative
-	dbDialect := postgresDBConfig.DatabaseDialect()
-
 	// Create PG LISTEN/NOTIFY listener if enabled.
 	var pgListener *PGNotifyListener
 	if postgresDBConfig.ListenEnabled {
@@ -1163,7 +1161,7 @@ func InitializePostgresDatabaseRuntime(
 	for boundary, mapping := range postgesBoundarySchemaMappings {
 		isAdminBoundary := boundary == adminConfig.Boundary
 		// Use write pool for database migrations (schema changes)
-		if err = RunDbScriptsWithDialect(writeDB, boundary, mapping.Schema, isAdminBoundary, dbDialect, ctx); err != nil {
+		if err = RunDbScripts(writeDB, boundary, mapping.Schema, isAdminBoundary, ctx); err != nil {
 			logger.Fatalf("Failed to run database migrations for boundary %s in schema %s: %v", boundary, mapping.Schema, err)
 		}
 
@@ -1207,7 +1205,7 @@ func InitializePostgresDatabaseRuntime(
 		logger,
 		boundaryRegistry,
 	)
-	provisioner := NewPostgresBoundaryProvisioner(writeDB, boundaryRegistry, dbDialect)
+	provisioner := NewPostgresBoundaryProvisioner(writeDB, boundaryRegistry)
 	installBoundary := provisioner.InstallBoundary
 	if pgListener != nil {
 		installBoundary = func(installCtx context.Context, definition boundarymodel.Definition) error {

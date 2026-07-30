@@ -3,7 +3,8 @@ title: Delivery Guarantees
 description: Understand publishing order, catch-up, and duplicate delivery.
 ---
 
-PostgreSQL, YugabyteDB, SQLite, or FoundationDB is the durable source of truth. Embedded NATS JetStream is the real-time delivery layer.
+PostgreSQL, SQLite, or FoundationDB is the durable source of truth. Embedded
+NATS JetStream is the real-time delivery layer.
 
 Wake-up signals are hints. Correctness comes from durable checkpoints and ordered catch-up reads.
 
@@ -40,7 +41,9 @@ Within a boundary, consumers should process positions monotonically and persist 
 
 ## JetStream retention is in memory
 
-The embedded JetStream stream uses memory storage. It is the live-delivery buffer, not the source of truth. The durable event log in PostgreSQL, YugabyteDB, SQLite, or FoundationDB is the source of truth. Two consequences follow:
+The embedded JetStream stream uses memory storage. It is the live-delivery
+buffer, not the source of truth. The durable event log in PostgreSQL, SQLite,
+or FoundationDB is the source of truth. Two consequences follow:
 
 - Live retention is bounded by `ORISUN_NATS_EVENT_STREAM_MAX_BYTES` (default 512 MB), `ORISUN_NATS_EVENT_STREAM_MAX_MSGS`, and `ORISUN_NATS_EVENT_STREAM_MAX_AGE` (default 5m), per boundary. Events older than the window or beyond the size cap are dropped from the live buffer.
 - A subscriber that falls behind the retention window does not lose events. It falls out of live delivery and is served from the durable store by the catch-up phase instead.

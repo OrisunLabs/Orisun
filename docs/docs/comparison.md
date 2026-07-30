@@ -12,7 +12,11 @@ Orisun sits at a specific point on a tradeoff curve: an event database for decis
 Two properties define Orisun's position:
 
 1. **Consistency is scoped by event content, not by a fixed stream.** A command declares the event subset it depends on with JSON criteria, then saves only if that subset is still at the expected position. This is Orisun's [Command Context Consistency](./concepts/command-context-consistency) model.
-2. **The event store and the delivery layer are one system.** The durable log in PostgreSQL, YugabyteDB, SQLite, or FoundationDB is the source of truth; embedded NATS JetStream is the live-delivery buffer; durable publisher checkpoints guarantee no committed event is skipped. See [Delivery Guarantees](./concepts/delivery-guarantees).
+2. **The event store and the delivery layer are one system.** The durable log
+   in PostgreSQL, SQLite, or FoundationDB is the source of truth; embedded NATS
+   JetStream is the live-delivery buffer; durable publisher checkpoints
+   guarantee no committed event is skipped. See
+   [Delivery Guarantees](./concepts/delivery-guarantees).
 
 Most adjacent tools optimize one of consistency, throughput, simplicity, or decoupling and trade the rest. Orisun optimizes for the closed loop: read the relevant event history, make a decision, commit only if that context is still valid, then deliver the committed result from one deployable server.
 
@@ -20,7 +24,7 @@ Most adjacent tools optimize one of consistency, throughput, simplicity, or deco
 
 | Tool | Consistency model | Source of truth | Delivery | Ops model |
 | --- | --- | --- | --- | --- |
-| Orisun | Content-scoped optimistic (CCC) | PostgreSQL, YugabyteDB, SQLite, or FoundationDB | Catch-up replay + live JetStream, per-boundary order, no skips | One deployable server |
+| Orisun | Content-scoped optimistic (CCC) | PostgreSQL, SQLite, or FoundationDB | Catch-up replay + live JetStream, per-boundary order, no skips | One deployable server |
 | Kafka | Partition order; no command consistency check | Kafka log (retention-bounded) | Log tailing by offset | Broker cluster (KRaft or ZooKeeper) |
 | EventStoreDB | Stream / aggregate optimistic (expected revision) | EventStoreDB store | Subscriptions + projections | Dedicated server |
 | PostgreSQL `LISTEN/NOTIFY` | None | Your tables | Best-effort notifications (≤ 8 KB, not durable, no replay) | Existing Postgres |

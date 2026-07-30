@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -38,5 +39,19 @@ func TestLoadConfigReadsPostgresGroupCommit(t *testing.T) {
 		groupCommit.MaxPending != 43 ||
 		groupCommit.FlushTimeout != 7*time.Second {
 		t.Fatalf("PostgreSQL group commit config = %#v", groupCommit)
+	}
+}
+
+func TestLoadConfigRejectsRemovedPostgresDialectSetting(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("ORISUN_PG_DIALECT", "yugabyte")
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("LoadConfig accepted removed ORISUN_PG_DIALECT")
+	}
+	if !strings.Contains(err.Error(), "removed in Orisun 0.10.0") {
+		t.Fatalf("LoadConfig error = %q", err)
 	}
 }

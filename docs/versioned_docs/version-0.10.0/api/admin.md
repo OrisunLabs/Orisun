@@ -86,7 +86,7 @@ has one immutable definition.
 
 | Runtime backend | `placement.backend` | `placement.namespace` |
 | --- | --- | --- |
-| PostgreSQL or YugabyteDB | `postgres` | PostgreSQL schema name. Multiple boundaries may share a schema because physical objects are boundary-prefixed. |
+| PostgreSQL | `postgres` | PostgreSQL schema name. Multiple boundaries may share a schema because physical objects are boundary-prefixed. |
 | SQLite | `sqlite` | Must exactly equal the boundary name. Files are created or opened beneath `ORISUN_SQLITE_DIR`. |
 | FoundationDB | `foundationdb` | Must equal the configured `ORISUN_FDB_ROOT`. |
 

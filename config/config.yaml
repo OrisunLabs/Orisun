@@ -53,9 +53,6 @@ postgres:
   # mappings are treated as existing physical boundaries and imported into it.
   adminSchema: ${ORISUN_PG_ADMIN_SCHEMA:admin}
   sslmode: ${ORISUN_PG_SSLMODE:disable}
-  # Values: postgres (default) or yugabyte. Yugabyte uses an Orisun committed
-  # watermark instead of PostgreSQL xid snapshot visibility.
-  dialect: ${ORISUN_PG_DIALECT:postgres}
   # Pool sizing notes:
   # - MaxOpenConns caps total connections per pool. Sum of all pools must fit under PG max_connections
   #   (or pgbouncer pool size if fronted).

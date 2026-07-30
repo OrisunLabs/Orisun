@@ -15,7 +15,7 @@ Configuration is shared across release binaries, Docker images, and embedded dep
 | `ORISUN_ADMIN_BOUNDARY` | Boundary used for admin state. |
 | `ORISUN_ADMIN_PASSWORD` | Bootstrap admin password. The default is for local development only. |
 
-For PostgreSQL-compatible backends, also set:
+For PostgreSQL, also set:
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -26,25 +26,6 @@ For PostgreSQL-compatible backends, also set:
 | `ORISUN_PG_NAME` | `orisun` | PostgreSQL database. |
 | `ORISUN_PG_ADMIN_SCHEMA` | `admin` | PostgreSQL schema containing the admin boundary. Application-boundary placements come from the catalog. |
 | `ORISUN_PG_SSLMODE` | `disable` | PostgreSQL SSL mode passed to the driver. |
-| `ORISUN_PG_DIALECT` | `postgres` | SQL dialect for the PostgreSQL-compatible backend. Use `yugabyte` for YugabyteDB; this selects committed-watermark visibility. YugabyteDB deployments must run `v2025.2.3+` with `LISTEN/NOTIFY` enabled. |
-
-For YugabyteDB, use the PostgreSQL-compatible backend and set:
-
-```bash
-ORISUN_BACKEND=postgres
-ORISUN_PG_DIALECT=yugabyte
-ORISUN_PG_PORT=5433
-ORISUN_PG_LISTEN_ENABLED=true
-```
-
-YugabyteDB must be `v2025.2.3` or later and must enable `LISTEN/NOTIFY` on both Masters and TServers:
-
-```bash
---master_flags=ysql_yb_enable_listen_notify=true
---tserver_flags=ysql_yb_enable_listen_notify=true
-```
-
-Orisun uses `pg_notify` for publisher wake-ups in YugabyteDB mode. Polling still protects delivery correctness, but writes require `pg_notify` to be available.
 
 For SQLite, set:
 
