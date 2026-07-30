@@ -37,6 +37,10 @@ const insertCanonicalEventRequestsWithConsistency = `
 SELECT * FROM %s.insert_canonical_event_requests_with_consistency_v1($1::text, $2::text, $3::jsonb)
 `
 
+const insertIndependentEventRequestsWithConsistency = `
+SELECT * FROM %s.insert_independent_event_requests_with_consistency_v1($1::text, $2::text, $3::text, $4::jsonb)
+`
+
 const selectMatchingEvents = `
 SELECT * FROM %s.get_matching_events_v3($1::text, $2::text, $3::jsonb, $4::jsonb, $5, $6::INT)
 `

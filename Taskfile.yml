@@ -205,6 +205,11 @@ tasks:
     cmds:
       - go vet ./...
 
+  benchmark:
+    desc: Build and run the benchmark client against a compiled Orisun server
+    cmds:
+      - ./collect_benchmarks.sh {{.CLI_ARGS}}
+
   check:
     desc: Run formatting, vet, and tests
     cmds:

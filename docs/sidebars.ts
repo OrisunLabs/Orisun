@@ -94,6 +94,7 @@ const sidebars: SidebarsConfig = {
         'operations/deployment',
         'operations/foundationdb',
         'operations/observability',
+        'operations/benchmarks',
         'operations/troubleshooting',
       ],
     },

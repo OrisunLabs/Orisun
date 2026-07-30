@@ -69,7 +69,7 @@ postgres:
   # Per-boundary group commit. Concurrent CCC saves are checked and applied in
   # queue order inside one transaction; unconditional saves use a set-based path.
   groupCommit:
-    maxBatchRequests: ${ORISUN_PG_GC_MAX_BATCH_REQUESTS:256}
+    maxBatchRequests: ${ORISUN_PG_GC_MAX_BATCH_REQUESTS:512}
     maxBatchEvents: ${ORISUN_PG_GC_MAX_BATCH_EVENTS:1024}
     maxDelay: ${ORISUN_PG_GC_MAX_DELAY:0s}
     maxPending: ${ORISUN_PG_GC_MAX_PENDING:4096}

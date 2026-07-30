@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/OrisunLabs/Orisun/boundary"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +26,7 @@ func TestBoundaryRegistryRegisterMakesQueriesAvailable(t *testing.T) {
 		t.Fatal("registered boundary was not found")
 	}
 	for name, query := range map[string]string{
-		"insert events":         entry.insertEvents,
+		"insert requests":       entry.insertEventRequests,
 		"select events":         entry.selectEvents,
 		"select latest":         entry.selectLatest,
 		"get last published":    entry.getLastPublished,
@@ -166,9 +167,9 @@ func TestPostgresBoundaryInstallerHandlesConcurrentDuplicateDeliveries(t *testin
 		calls.Add(1)
 		return nil
 	})
-	definition := orisun.BoundaryDefinition{
+	definition := boundary.Definition{
 		Name:      "sales",
-		Placement: orisun.BoundaryPlacement{Backend: "postgres", Namespace: "tenant_data"},
+		Placement: boundary.Placement{Backend: "postgres", Namespace: "tenant_data"},
 	}
 
 	var wait sync.WaitGroup

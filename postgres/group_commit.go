@@ -25,7 +25,7 @@ import (
 // earlier accepted writes in the same flush. The SQL function's advisory lock
 // remains the cross-process serialization boundary.
 const (
-	postgresGroupCommitMaxBatchRequests = 256
+	postgresGroupCommitMaxBatchRequests = 512
 	postgresGroupCommitMaxBatchEvents   = 1024
 	postgresGroupCommitMaxDelay         = 0
 	postgresGroupCommitMaxPending       = 4096
@@ -73,11 +73,12 @@ type postgresGroupCommit struct {
 	enqueueMu sync.RWMutex
 	workerWG  sync.WaitGroup
 
-	multiFlushes     atomic.Int64
-	singleFlushes    atomic.Int64
-	fastFlushes      atomic.Int64
-	canonicalFlushes atomic.Int64
-	testFlushHook    func(batchSize int)
+	multiFlushes       atomic.Int64
+	singleFlushes      atomic.Int64
+	fastFlushes        atomic.Int64
+	canonicalFlushes   atomic.Int64
+	independentFlushes atomic.Int64
+	testFlushHook      func(batchSize int)
 }
 
 func newPostgresGroupCommit(cfg config.PostgresGroupCommitConfig) postgresGroupCommit {
@@ -320,12 +321,6 @@ func (s *PostgresSaveEvents) runFlush(boundary string, batch []*postgresSaveRequ
 		s.gc.testFlushHook(len(live))
 	}
 	start := time.Now()
-	if len(live) == 1 {
-		transactionID, globalID, err := s.executeSave(flushCtx, s.db, boundary, live[0])
-		live[0].deliver(postgresSaveResult{transactionID: transactionID, globalID: globalID, err: err})
-		return
-	}
-
 	outcomes, flushErr := s.executeBatch(flushCtx, boundary, live)
 	if flushErr != nil {
 		failPostgresUndelivered(live, statuscode.Errorf(statuscode.Internal, "group commit flush: %v", flushErr))
@@ -419,19 +414,34 @@ func (s *PostgresSaveEvents) executeBatch(
 		return nil, fmt.Errorf("marshal group commit payload: %w", err)
 	}
 	insertQuery := entry.insertEventRequests
+	selectedPath := "isolated"
 	fastPath := canUseUnconditionalFastPath(requests)
-	canonicalPath := !fastPath && canUseCanonicalFastPath(requests)
+	independentKey, independentPath := independentCCCKey(requests)
+	canonicalPath := !fastPath && !independentPath && canUseCanonicalFastPath(requests)
+	queryArgs := []any{boundary, entry.mapping.Schema, payloadJSON}
 	if fastPath {
 		insertQuery = entry.insertUnconditional
+		selectedPath = "unconditional"
+	} else if independentPath {
+		insertQuery = entry.insertIndependent
+		queryArgs = []any{boundary, entry.mapping.Schema, independentKey, payloadJSON}
+		selectedPath = "independent-ccc"
 	} else if canonicalPath {
 		insertQuery = entry.insertCanonical
+		selectedPath = "criterion-state"
+	}
+	if s.logger.IsDebugEnabled() {
+		s.logger.Debugf(
+			"postgres group commit: boundary=%s path=%s requests=%d",
+			boundary,
+			selectedPath,
+			len(requests),
+		)
 	}
 	rows, err := s.db.QueryContext(
 		ctx,
 		insertQuery,
-		boundary,
-		entry.mapping.Schema,
-		payloadJSON,
+		queryArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -492,17 +502,19 @@ func (s *PostgresSaveEvents) executeBatch(
 	}
 	if fastPath {
 		s.gc.fastFlushes.Add(1)
+	} else if independentPath {
+		s.gc.independentFlushes.Add(1)
 	} else if canonicalPath {
 		s.gc.canonicalFlushes.Add(1)
 	}
 	return append(outcomes, sqlOutcomes...), nil
 }
 
-// The bulk SQL path is deliberately narrow. Canonical one-event requests with
-// no CCC query have no dependency on earlier requests, so PostgreSQL can assign
-// positions and insert the whole flush set-wise. Anything that needs ordered
-// observation, or could raise a request-local validation error in PostgreSQL,
-// stays on the subtransaction-isolated path.
+// Canonical requests with no CCC query have no dependency on earlier requests,
+// so PostgreSQL can assign positions and insert every event in the flush
+// set-wise. The criterion-state path handles ordered observation for queried
+// saves; requests that could raise a request-local validation error in
+// PostgreSQL stay on the subtransaction-isolated path.
 func canUseUnconditionalFastPath(requests []*postgresSaveRequest) bool {
 	for _, req := range requests {
 		if !isUnconditionalFastPathRequest(req.events, req.query) {
@@ -514,71 +526,79 @@ func canUseUnconditionalFastPath(requests []*postgresSaveRequest) bool {
 
 func canUseCanonicalFastPath(requests []*postgresSaveRequest) bool {
 	for _, req := range requests {
-		if !isCanonicalSingleEventRequest(req.events) {
+		if !isCanonicalEventBatchRequest(req.events) {
 			return false
 		}
 	}
 	return true
 }
 
+// independentCCCKey recognizes a common, fully independent CCC batch:
+// every request has one equality tag on the same field, all values are unique,
+// and each event belongs to its request's context. No accepted event can then
+// change another request's result, so the database can check every context
+// against one locked snapshot and bulk-insert the accepted rows.
+func independentCCCKey(requests []*postgresSaveRequest) (string, bool) {
+	var criterionKey string
+	values := make(map[string]struct{}, len(requests))
+	for _, req := range requests {
+		if !isCanonicalEventBatchRequest(req.events) ||
+			req.query == nil ||
+			len(req.query.Criteria) != 1 ||
+			req.query.Criteria[0] == nil ||
+			len(req.query.Criteria[0].Tags) != 1 ||
+			req.query.Criteria[0].Tags[0] == nil {
+			return "", false
+		}
+		tag := req.query.Criteria[0].Tags[0]
+		if tag.Key == "" {
+			return "", false
+		}
+		if criterionKey == "" {
+			criterionKey = tag.Key
+		} else if tag.Key != criterionKey {
+			return "", false
+		}
+		if _, duplicate := values[tag.Value]; duplicate {
+			return "", false
+		}
+		values[tag.Value] = struct{}{}
+
+		for _, event := range req.events {
+			var data map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(event.DataJSON), &data); err != nil {
+				return "", false
+			}
+			rawValue, exists := data[tag.Key]
+			if !exists {
+				return "", false
+			}
+			var eventValue string
+			if err := json.Unmarshal(rawValue, &eventValue); err != nil || eventValue != tag.Value {
+				return "", false
+			}
+		}
+	}
+	return criterionKey, criterionKey != ""
+}
+
 func isUnconditionalFastPathRequest(events eventstore.PreparedEventBatch, query *eventstore.Query) bool {
-	return query == nil && isCanonicalSingleEventRequest(events)
+	return query == nil && isCanonicalEventBatchRequest(events)
 }
 
-func isCanonicalSingleEventRequest(events eventstore.PreparedEventBatch) bool {
-	if len(events) != 1 {
+func isCanonicalEventBatchRequest(events eventstore.PreparedEventBatch) bool {
+	if len(events) == 0 {
 		return false
 	}
-	event := events[0]
-	if event.EventType == "" {
-		return false
+	for _, event := range events {
+		if event.EventType == "" {
+			return false
+		}
+		if _, err := uuid.Parse(event.EventId); err != nil {
+			return false
+		}
 	}
-	_, err := uuid.Parse(event.EventId)
-	return err == nil
-}
-
-type postgresSaveExecutor interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func (s *PostgresSaveEvents) executeSave(
-	ctx context.Context,
-	executor postgresSaveExecutor,
-	boundary string,
-	req *postgresSaveRequest,
-) (string, int64, error) {
-	entry, ok := s.registry.lookup(boundary)
-	if !ok {
-		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "no schema found for boundary: %s", boundary)
-	}
-	consistencyJSON, err := json.Marshal(getStreamSectionAsMap(req.expected, req.query))
-	if err != nil {
-		return "", 0, statuscode.Errorf(statuscode.Internal, "failed to marshal consistency condition: %v", err)
-	}
-	eventsJSON, err := json.Marshal(req.events)
-	if err != nil {
-		return "", 0, statuscode.Errorf(statuscode.Internal, "failed to marshal events: %v", err)
-	}
-	var (
-		newGlobalID   int64
-		transactionID string
-		globalID      int64
-	)
-	err = executor.QueryRowContext(
-		ctx,
-		entry.insertEvents,
-		boundary,
-		entry.mapping.Schema,
-		consistencyJSON,
-		eventsJSON,
-	).Scan(&newGlobalID, &transactionID, &globalID)
-	if err != nil {
-		return "", 0, s.mapSaveError(err)
-	}
-	if s.logger.IsDebugEnabled() {
-		s.logger.Debugf("PG save events: Transaction ID: %s, Global ID: %d", transactionID, globalID)
-	}
-	return transactionID, globalID, nil
+	return true
 }
 
 func (s *PostgresSaveEvents) mapSaveError(err error) error {

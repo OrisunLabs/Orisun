@@ -689,6 +689,66 @@ func TestYugabyteDialectUsesCommittedWatermark(t *testing.T) {
 	}, nil)
 	require.Equal(t, int64(1), groupSaver.gc.fastFlushes.Load())
 
+	multiTransactionID, multiGlobalID, err := groupSaver.Save(
+		t.Context(),
+		[]orisun.EventWithMapTags{
+			{
+				EventId:   uuid.NewString(),
+				EventType: "YugabyteFastMultiA",
+				Data:      `{"batch":"fast-multi"}`,
+				Metadata:  `{}`,
+			},
+			{
+				EventId:   uuid.NewString(),
+				EventType: "YugabyteFastMultiB",
+				Data:      `{"batch":"fast-multi"}`,
+				Metadata:  `{}`,
+			},
+			{
+				EventId:   uuid.NewString(),
+				EventType: "YugabyteFastMultiC",
+				Data:      `{"batch":"fast-multi"}`,
+				Metadata:  `{}`,
+			},
+		},
+		"test_boundary",
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(5), multiGlobalID)
+	require.Equal(t, "6", multiTransactionID)
+	require.Equal(t, int64(2), groupSaver.gc.fastFlushes.Load())
+
+	var (
+		multiEventCount        int
+		multiTransactionCount  int
+		multiMinimumGlobalID   int64
+		multiMaximumGlobalID   int64
+		multiNullPGXactIDCount int
+	)
+	err = db.QueryRow(`
+		SELECT COUNT(*),
+		       COUNT(DISTINCT transaction_id),
+		       MIN(global_id),
+		       MAX(global_id),
+		       COUNT(*) FILTER (WHERE pg_xact_id IS NULL)
+		FROM public.test_boundary_orisun_es_event
+		WHERE data->>'batch' = 'fast-multi'
+	`).Scan(
+		&multiEventCount,
+		&multiTransactionCount,
+		&multiMinimumGlobalID,
+		&multiMaximumGlobalID,
+		&multiNullPGXactIDCount,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 3, multiEventCount)
+	require.Equal(t, 1, multiTransactionCount)
+	require.Equal(t, int64(3), multiMinimumGlobalID)
+	require.Equal(t, int64(5), multiMaximumGlobalID)
+	require.Equal(t, 3, multiNullPGXactIDCount)
+
 	cccQueries := []*orisun.Query{
 		{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: "context", Value: "yb-a"}}}}},
 		{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: "context", Value: "yb-b"}}}}},
@@ -714,8 +774,8 @@ func TestYugabyteDialectUsesCommittedWatermark(t *testing.T) {
 		WHERE boundary = 'test_boundary'
 	`).Scan(&watermarkTransactionID, &watermarkGlobalID)
 	require.NoError(t, err)
-	require.Equal(t, int64(5), watermarkTransactionID)
-	require.Equal(t, int64(4), watermarkGlobalID)
+	require.Equal(t, int64(8), watermarkTransactionID)
+	require.Equal(t, int64(7), watermarkGlobalID)
 
 	// A Yugabyte writer must check its context only after it owns the boundary
 	// position lock. Otherwise a differently shaped, overlapping query can pass
@@ -762,7 +822,7 @@ func TestYugabyteDialectUsesCommittedWatermark(t *testing.T) {
 				WHERE pid <> pg_backend_pid()
 				  AND wait_event_type = 'Lock'
 				  AND wait_event = 'advisory'
-				  AND query LIKE '%insert_events_with_consistency_v3%'
+				  AND query LIKE '%insert_canonical_event_requests_with_consistency_v1%'
 			)
 		`).Scan(&waiting)
 		return waitErr == nil && waiting

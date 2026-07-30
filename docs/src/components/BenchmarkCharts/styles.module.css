@@ -1,0 +1,221 @@
+.root {
+  --benchmark-postgres: #2563eb;
+  --benchmark-sqlite: #ea580c;
+  --benchmark-foundationdb: #0f766e;
+  --benchmark-yugabyte: #a21caf;
+  margin: 1.25rem 0 2.5rem;
+}
+
+.workloadPicker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.button,
+.activeButton {
+  appearance: none;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.2;
+  padding: 0.5rem 0.75rem;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.button {
+  background: var(--ifm-background-surface-color);
+  color: var(--ifm-color-content-secondary);
+}
+
+.button:hover {
+  border-color: var(--ifm-color-primary);
+  color: var(--ifm-color-primary);
+  transform: translateY(-1px);
+}
+
+.activeButton {
+  background: var(--ifm-color-primary);
+  border-color: var(--ifm-color-primary);
+  color: white;
+}
+
+.button:focus-visible,
+.activeButton:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--ifm-color-primary) 30%, transparent);
+  outline-offset: 2px;
+}
+
+.legend {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1.25rem;
+  margin: 0 0 0.75rem;
+}
+
+.legend span {
+  align-items: center;
+  color: var(--ifm-color-content-secondary);
+  display: inline-flex;
+  font-size: 0.8rem;
+  font-weight: 600;
+  gap: 0.4rem;
+}
+
+.legend i {
+  border-radius: 999px;
+  display: inline-block;
+  height: 0.55rem;
+  width: 0.55rem;
+}
+
+.chartGrid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.chartCard {
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--ifm-color-primary) 5%, transparent),
+      transparent 42%
+    ),
+    var(--ifm-card-background-color);
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgb(15 23 42 / 7%);
+  min-width: 0;
+  padding: 1rem 1rem 0.75rem;
+}
+
+.chartHeading {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 0.25rem;
+}
+
+.chartHeading h3 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.chartHeading span {
+  color: var(--ifm-color-content-secondary);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chart {
+  display: block;
+  height: auto;
+  overflow: visible;
+  width: 100%;
+}
+
+.gridLine {
+  stroke: var(--ifm-color-emphasis-200);
+  stroke-width: 1;
+}
+
+.axisLine,
+.tickLine {
+  stroke: var(--ifm-color-emphasis-400);
+  stroke-width: 1;
+}
+
+.axisText,
+.axisLabel {
+  fill: var(--ifm-color-content-secondary);
+  font-family: var(--ifm-font-family-base);
+  font-size: 12px;
+}
+
+.axisLabel {
+  font-size: 11px;
+}
+
+.seriesLine {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+}
+
+.dataPoint {
+  cursor: crosshair;
+  stroke: var(--ifm-card-background-color);
+  stroke-width: 2;
+  transition: r 100ms ease;
+}
+
+.dataPoint:hover,
+.dataPoint:focus {
+  outline: none;
+  r: 7px;
+}
+
+.dataPoint:focus-visible {
+  stroke: var(--ifm-color-content);
+  stroke-width: 3;
+}
+
+.readout {
+  color: var(--ifm-color-content-secondary);
+  font-size: 0.75rem;
+  margin: -0.1rem 0 0;
+  min-height: 1.2rem;
+  text-align: center;
+}
+
+@media (max-width: 576px) {
+  .root {
+    --benchmark-postgres: #3b82f6;
+    --benchmark-sqlite: #f97316;
+    --benchmark-foundationdb: #14b8a6;
+    --benchmark-yugabyte: #d946ef;
+  }
+
+  .button,
+  .activeButton {
+    flex: 1 1 calc(50% - 0.5rem);
+    font-size: 0.72rem;
+  }
+
+  .chartCard {
+    border-radius: 10px;
+    padding: 0.8rem 0.5rem 0.65rem;
+  }
+
+  .axisText {
+    font-size: 20px;
+  }
+
+  .axisLabel {
+    font-size: 18px;
+  }
+}
+
+[data-theme='dark'] .root {
+  --benchmark-postgres: #60a5fa;
+  --benchmark-sqlite: #fb923c;
+  --benchmark-foundationdb: #2dd4bf;
+  --benchmark-yugabyte: #e879f9;
+}
+
+[data-theme='dark'] .chartCard {
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+}

@@ -506,10 +506,10 @@ END;
 $$;
 
 
--- Set-based fast path for canonical one-event requests without a CCC query.
--- The Go batcher only calls this function after validating event type, UUID,
--- canonical JSON, and the one-event/no-query shape. One advisory lock, sequence
--- scan, INSERT, notification, statement, and commit serve the whole flush.
+-- Set-based fast path for canonical requests without a CCC query. The Go
+-- batcher validates every event before selecting this function. One advisory
+-- lock, sequence scan, INSERT, notification, statement, and commit serve every
+-- request and event in the flush.
 CREATE OR REPLACE FUNCTION insert_unconditional_event_requests_v1(
     boundary_name TEXT,
     schema TEXT,
@@ -542,17 +542,30 @@ BEGIN
 
     RETURN QUERY EXECUTE format('
         WITH request_events AS MATERIALIZED (
-            SELECT (ordinality - 1)::INT AS request_index,
-                   request -> ''events'' -> 0 AS event
-            FROM jsonb_array_elements($1) WITH ORDINALITY AS requests(request, ordinality)
-            ORDER BY ordinality
+            SELECT (request_ordinality - 1)::INT AS request_index,
+                   (event_ordinality - 1)::INT AS event_index,
+                   event
+            FROM jsonb_array_elements($1) WITH ORDINALITY
+                AS requests(request, request_ordinality)
+            CROSS JOIN LATERAL jsonb_array_elements(request -> ''events'') WITH ORDINALITY
+                AS events(event, event_ordinality)
+            ORDER BY request_ordinality, event_ordinality
         ),
         events_with_ids AS MATERIALIZED (
             SELECT request_index,
+                   event_index,
                    event,
                    nextval(%L) AS global_id
             FROM request_events
-            ORDER BY request_index
+            ORDER BY request_index, event_index
+        ),
+        positioned_events AS MATERIALIZED (
+            SELECT request_index,
+                   event_index,
+                   event,
+                   global_id,
+                   MAX(global_id) OVER (PARTITION BY request_index) + 1 AS transaction_id
+            FROM events_with_ids
         ),
         inserted_events AS (
             INSERT INTO %I.%I (
@@ -563,10 +576,10 @@ BEGIN
                 data,
                 metadata
             )
-            SELECT events_with_ids.global_id + 1,
+            SELECT positioned_events.transaction_id,
                    NULL,
                    (event ->> ''event_id'')::UUID,
-                   events_with_ids.global_id,
+                   positioned_events.global_id,
                    jsonb_set(
                        COALESCE(event -> ''data'', ''{}''::JSONB),
                        ''{eventType}'',
@@ -574,19 +587,26 @@ BEGIN
                        true
                    ),
                    COALESCE(event -> ''metadata'', ''{}''::JSONB)
-            FROM events_with_ids
-            ORDER BY request_index
-            RETURNING transaction_id, global_id
+            FROM positioned_events
+            ORDER BY request_index, event_index
+            RETURNING global_id
+        ),
+        inserted_requests AS (
+            SELECT positioned_events.request_index,
+                   MAX(positioned_events.global_id) AS global_id,
+                   MAX(positioned_events.transaction_id) AS transaction_id
+            FROM positioned_events
+            JOIN inserted_events USING (global_id)
+            GROUP BY positioned_events.request_index
         )
-        SELECT events_with_ids.request_index,
-               inserted_events.global_id,
-               inserted_events.transaction_id,
-               inserted_events.global_id,
+        SELECT inserted_requests.request_index,
+               inserted_requests.global_id,
+               inserted_requests.transaction_id,
+               inserted_requests.global_id,
                NULL::TEXT,
                NULL::TEXT
-        FROM events_with_ids
-        JOIN inserted_events USING (global_id)
-        ORDER BY events_with_ids.request_index',
+        FROM inserted_requests
+        ORDER BY inserted_requests.request_index',
         prefixed_seq_name,
         schema,
         boundary_name || '_orisun_es_event'
@@ -604,6 +624,36 @@ BEGIN
         boundary_name || '_orisun_committed_position'
     ) USING boundary_name, last_global_id + 1, last_global_id;
     PERFORM pg_notify('orisun_events_' || md5(boundary_name), last_global_id::TEXT);
+END;
+$$;
+
+
+-- Yugabyte keeps the generic batch implementation for the independent-context
+-- entry point. It preserves the distributed criterion-lock hierarchy while
+-- PostgreSQL uses a set-based indexed implementation for this specialization.
+CREATE OR REPLACE FUNCTION insert_independent_event_requests_with_consistency_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    criterion_key TEXT,
+    requests JSONB
+)
+    RETURNS TABLE
+            (
+                request_index         INT,
+                new_global_id         BIGINT,
+                latest_transaction_id BIGINT,
+                latest_global_id      BIGINT,
+                error_code            TEXT,
+                error_message         TEXT
+            )
+    LANGUAGE plpgsql
+AS
+$$
+BEGIN
+    RETURN QUERY EXECUTE format(
+        'SELECT * FROM %I.insert_event_requests_with_consistency_v1($1, $2, $3)',
+        schema
+    ) USING boundary_name, schema, requests;
 END;
 $$;
 
