@@ -25,6 +25,22 @@ const insertEventsWithConsistency = `
 SELECT * FROM %s.insert_events_with_consistency_v3($1::text, $2::text, $3::jsonb, $4::jsonb)
 `
 
+const insertEventRequestsWithConsistency = `
+SELECT * FROM %s.insert_event_requests_with_consistency_v1($1::text, $2::text, $3::jsonb)
+`
+
+const insertUnconditionalEventRequests = `
+SELECT * FROM %s.insert_unconditional_event_requests_v1($1::text, $2::text, $3::jsonb)
+`
+
+const insertCanonicalEventRequestsWithConsistency = `
+SELECT * FROM %s.insert_canonical_event_requests_with_consistency_v1($1::text, $2::text, $3::jsonb)
+`
+
+const insertIndependentEventRequestsWithConsistency = `
+SELECT * FROM %s.insert_independent_event_requests_with_consistency_v1($1::text, $2::text, $3::text, $4::jsonb)
+`
+
 const selectMatchingEvents = `
 SELECT * FROM %s.get_matching_events_v3($1::text, $2::text, $3::jsonb, $4::jsonb, $5, $6::INT)
 `
@@ -39,6 +55,7 @@ type PostgresSaveEvents struct {
 	db       *sql.DB
 	logger   logging.Logger
 	registry *BoundaryRegistry
+	gc       postgresGroupCommit
 }
 
 func NewPostgresSaveEvents(
@@ -50,11 +67,47 @@ func NewPostgresSaveEvents(
 }
 
 func NewPostgresSaveEventsWithRegistry(ctx context.Context, db *sql.DB, logger logging.Logger, registry *BoundaryRegistry) *PostgresSaveEvents {
-	return &PostgresSaveEvents{
+	s, _ := newPostgresSaveEventsWithRegistry(ctx, db, logger, registry, config.PostgresGroupCommitConfig{})
+	return s
+}
+
+func NewPostgresSaveEventsWithConfig(
+	ctx context.Context,
+	db *sql.DB,
+	logger logging.Logger,
+	boundarySchemaMappings map[string]config.BoundaryToPostgresSchemaMapping,
+	gcCfg config.PostgresGroupCommitConfig,
+) (*PostgresSaveEvents, error) {
+	return newPostgresSaveEventsWithRegistry(ctx, db, logger, NewBoundaryRegistry(boundarySchemaMappings), gcCfg)
+}
+
+func newPostgresSaveEventsWithRegistry(
+	ctx context.Context,
+	db *sql.DB,
+	logger logging.Logger,
+	registry *BoundaryRegistry,
+	gcCfg config.PostgresGroupCommitConfig,
+) (*PostgresSaveEvents, error) {
+	gcCfg, err := normalizePostgresGroupCommitConfig(gcCfg)
+	if err != nil {
+		return nil, err
+	}
+	s := &PostgresSaveEvents{
 		db:       db,
 		logger:   logger,
 		registry: registry,
+		gc:       newPostgresGroupCommit(gcCfg),
 	}
+	for boundary := range registry.Mappings() {
+		s.ensureQueue(boundary)
+	}
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			<-ctx.Done()
+			s.close()
+		}()
+	}
+	return s, nil
 }
 
 func (s *PostgresSaveEvents) Schema(boundary string) (string, error) {
@@ -106,53 +159,10 @@ func (s *PostgresSaveEvents) SavePrepared(
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "events cannot be empty")
 	}
 
-	entry, ok := s.registry.lookup(boundary)
-	if !ok {
+	if _, ok := s.registry.lookup(boundary); !ok {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "no schema found for boundary: %s", boundary)
 	}
-	schema := entry.mapping.Schema
-	streamSubsetAsBytes, err := json.Marshal(getStreamSectionAsMap(expectedPosition, streamConsistencyCondition))
-	if err != nil {
-		return "", 0, statuscode.Errorf(statuscode.Internal, "failed to marshal consistency condition: %v", err)
-	}
-	if s.logger.IsDebugEnabled() {
-		s.logger.Debugf("streamSubsetAsJsonString: %v", string(streamSubsetAsBytes))
-	}
-
-	eventsJSON, err := json.Marshal(events)
-	if err != nil {
-		return "", 0, statuscode.Errorf(statuscode.Internal, "failed to marshal events: %v", err)
-	}
-	// s.logger.Infof("eventsJSON: %v", string(eventsJSON))
-
-	var tranID string
-	var globID int64
-	var newGlobalID int64
-
-	// Execute as one autocommit statement. The SQL function is already atomic,
-	// and transaction-scoped advisory locks release as soon as this statement's
-	// implicit transaction commits.
-	row := s.db.QueryRowContext(
-		ctx,
-		entry.insertEvents,
-		boundary,
-		schema,
-		streamSubsetAsBytes,
-		eventsJSON,
-	)
-	if err := row.Scan(&newGlobalID, &tranID, &globID); err != nil {
-		if strings.Contains(err.Error(), "OptimisticConcurrencyException") {
-			return "", 0, statuscode.New(statuscode.AlreadyExists, err.Error())
-		}
-		s.logger.Errorf("Error inserting events: %v", err)
-		return "", 0, statuscode.Errorf(statuscode.Internal, "failed to insert events: %v", err)
-	}
-
-	if s.logger.IsDebugEnabled() {
-		s.logger.Debugf("PG save events::::: Transaction ID: %v, Global ID: %v", tranID, globID)
-	}
-
-	return tranID, globID, nil
+	return s.enqueue(ctx, boundary, events, expectedPosition, streamConsistencyCondition)
 }
 
 func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEventsRequest) (eventstore.ReadEventBatch, error) {
@@ -1114,8 +1124,6 @@ func InitializePostgresDatabaseRuntime(
 		logger.Fatalf("Failed to inspect PostgreSQL catalog bootstrap marker: %v", err)
 	}
 	preexistingAdminStore = preexistingAdminStore && !catalogNative
-	dbDialect := postgresDBConfig.DatabaseDialect()
-
 	// Create PG LISTEN/NOTIFY listener if enabled.
 	var pgListener *PGNotifyListener
 	if postgresDBConfig.ListenEnabled {
@@ -1153,7 +1161,7 @@ func InitializePostgresDatabaseRuntime(
 	for boundary, mapping := range postgesBoundarySchemaMappings {
 		isAdminBoundary := boundary == adminConfig.Boundary
 		// Use write pool for database migrations (schema changes)
-		if err = RunDbScriptsWithDialect(writeDB, boundary, mapping.Schema, isAdminBoundary, dbDialect, ctx); err != nil {
+		if err = RunDbScripts(writeDB, boundary, mapping.Schema, isAdminBoundary, ctx); err != nil {
 			logger.Fatalf("Failed to run database migrations for boundary %s in schema %s: %v", boundary, mapping.Schema, err)
 		}
 
@@ -1166,7 +1174,16 @@ func InitializePostgresDatabaseRuntime(
 	boundaryRegistry := NewBoundaryRegistry(postgesBoundarySchemaMappings)
 
 	// Use write pool for save operations and read pool for get operations
-	saveEvents := NewPostgresSaveEventsWithRegistry(ctx, writeDB, logger, boundaryRegistry)
+	saveEvents, err := newPostgresSaveEventsWithRegistry(
+		ctx,
+		writeDB,
+		logger,
+		boundaryRegistry,
+		postgresDBConfig.GroupCommit,
+	)
+	if err != nil {
+		logger.Fatalf("Invalid PostgreSQL group commit configuration: %v", err)
+	}
 	getEvents := NewPostgresGetEventsWithRegistry(readDB, logger, boundaryRegistry)
 	lockProvider, err := eventstore.NewJetStreamLockProvider(ctx, js, logger)
 	if err != nil {
@@ -1188,7 +1205,7 @@ func InitializePostgresDatabaseRuntime(
 		logger,
 		boundaryRegistry,
 	)
-	provisioner := NewPostgresBoundaryProvisioner(writeDB, boundaryRegistry, dbDialect)
+	provisioner := NewPostgresBoundaryProvisioner(writeDB, boundaryRegistry)
 	installBoundary := provisioner.InstallBoundary
 	if pgListener != nil {
 		installBoundary = func(installCtx context.Context, definition boundarymodel.Definition) error {

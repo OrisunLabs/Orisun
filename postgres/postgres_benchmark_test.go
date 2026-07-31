@@ -433,3 +433,353 @@ func BenchmarkPostgres_Burst10000(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkPostgres_GroupCommitBatchSize measures the end-to-end concurrent
+// SaveEvents path while sweeping the maximum set-based flush size.
+func BenchmarkPostgres_GroupCommitBatchSize(b *testing.B) {
+	const burst = 10000
+
+	for _, batchSize := range []int{64, 128, 256, 512, 1024, 2048} {
+		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
+			for range b.N {
+				db, teardown := setupBenchmarkDB(b)
+				ctx := context.Background()
+				logger, err := logging.ZapLogger("warn")
+				require.NoError(b, err)
+				mapping := map[string]config.BoundaryToPostgresSchemaMapping{
+					"bench_boundary": {
+						Boundary: "bench_boundary",
+						Schema:   "public",
+					},
+				}
+				saveEvents, err := NewPostgresSaveEventsWithConfig(
+					ctx,
+					db,
+					logger,
+					mapping,
+					config.PostgresGroupCommitConfig{
+						MaxBatchRequests: batchSize,
+						MaxBatchEvents:   batchSize,
+						MaxPending:       burst,
+					},
+				)
+				require.NoError(b, err)
+
+				events := make([]orisun.EventWithMapTags, burst)
+				for i := range events {
+					eventID, err := uuid.NewV7()
+					require.NoError(b, err)
+					events[i] = orisun.EventWithMapTags{
+						EventId:   eventID.String(),
+						EventType: "BurstEvent",
+						Data:      `{"k":"v"}`,
+						Metadata:  `{}`,
+					}
+				}
+
+				var wg sync.WaitGroup
+				var succeeded, failed atomic.Int64
+				start := make(chan struct{})
+				wg.Add(burst)
+				for i := range events {
+					event := events[i]
+					go func() {
+						defer wg.Done()
+						<-start
+						if _, _, err := saveEvents.Save(
+							ctx,
+							[]orisun.EventWithMapTags{event},
+							"bench_boundary",
+							nil,
+							nil,
+						); err != nil {
+							failed.Add(1)
+							return
+						}
+						succeeded.Add(1)
+					}()
+				}
+
+				b.ResetTimer()
+				startedAt := time.Now()
+				close(start)
+				wg.Wait()
+				elapsed := time.Since(startedAt)
+				b.StopTimer()
+
+				b.ReportMetric(float64(succeeded.Load())/elapsed.Seconds(), "events/sec")
+				b.ReportMetric(float64(elapsed.Milliseconds()), "ms/burst")
+				require.Zero(b, failed.Load())
+				require.Equal(b, int64(burst), succeeded.Load())
+
+				saveEvents.close()
+				teardown()
+			}
+		})
+	}
+}
+
+// BenchmarkPostgres_GroupCommitCCC10000 measures concurrent independent CCC
+// contexts. No request conflicts because every content query targets a distinct
+// value of the same indexed key.
+func BenchmarkPostgres_GroupCommitCCC10000(b *testing.B) {
+	benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{}, false, false, 1)
+}
+
+func BenchmarkPostgres_GroupCommitCCCMultiEvent10000(b *testing.B) {
+	benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{
+		MaxBatchRequests: 512,
+		MaxBatchEvents:   1024,
+		MaxDelay:         time.Millisecond,
+	}, false, false, 2)
+}
+
+// BenchmarkPostgres_GroupCommitGeneralCCC10000 forces the general criterion
+// state resolver with mixed keys, two-tag AND, and two-criterion OR queries.
+func BenchmarkPostgres_GroupCommitGeneralCCC10000(b *testing.B) {
+	benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{}, true, true, 1)
+}
+
+// BenchmarkPostgres_GroupCommitGeneralCCCMultiEvent10000 measures 10,000
+// concurrent mixed-shape CCC saves with two events in every accepted request.
+func BenchmarkPostgres_GroupCommitGeneralCCCMultiEvent10000(b *testing.B) {
+	benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{
+		MaxBatchRequests: 512,
+		MaxBatchEvents:   1024,
+		MaxDelay:         time.Millisecond,
+	}, true, true, 2)
+}
+
+func BenchmarkPostgres_GroupCommitGeneralCCCMultiEventBatchSize(b *testing.B) {
+	const burst = 10000
+	for _, batchSize := range []int{128, 256, 512, 1024} {
+		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
+			benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{
+				MaxBatchRequests: batchSize,
+				MaxBatchEvents:   batchSize * 2,
+				MaxPending:       burst,
+			}, true, true, 2)
+		})
+	}
+}
+
+func BenchmarkPostgres_GroupCommitGeneralCCCMultiEventDelay(b *testing.B) {
+	const burst = 10000
+	for _, delay := range []time.Duration{
+		0,
+		100 * time.Microsecond,
+		250 * time.Microsecond,
+		500 * time.Microsecond,
+		time.Millisecond,
+	} {
+		b.Run(delay.String(), func(b *testing.B) {
+			benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{
+				MaxBatchRequests: 512,
+				MaxBatchEvents:   1024,
+				MaxDelay:         delay,
+				MaxPending:       burst,
+			}, true, true, 2)
+		})
+	}
+}
+
+func BenchmarkPostgres_GroupCommitMixedCCCBatchSize(b *testing.B) {
+	const burst = 10000
+	for _, batchSize := range []int{128, 256, 512, 1024} {
+		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
+			benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{
+				MaxBatchRequests: batchSize,
+				MaxBatchEvents:   batchSize,
+				MaxPending:       burst,
+			}, true, true, 1)
+		})
+	}
+}
+
+func BenchmarkPostgres_GroupCommitGeneralCCCBatchSize(b *testing.B) {
+	const burst = 10000
+	for _, batchSize := range []int{16, 32, 64, 128, 256, 512} {
+		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
+			benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{
+				MaxBatchRequests: batchSize,
+				MaxBatchEvents:   batchSize,
+				MaxPending:       burst,
+			}, true, false, 1)
+		})
+	}
+}
+
+// BenchmarkPostgres_GroupCommitCCCBatchSize sweeps the set-based CCC batch
+// size. Run with -benchtime=1x to measure one 10,000-request burst per size.
+func BenchmarkPostgres_GroupCommitCCCBatchSize(b *testing.B) {
+	const burst = 10000
+	for _, batchSize := range []int{64, 128, 256, 512, 1024, 2048} {
+		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
+			benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{
+				MaxBatchRequests: batchSize,
+				MaxBatchEvents:   batchSize,
+				MaxPending:       burst,
+			}, false, false, 1)
+		})
+	}
+}
+
+func benchmarkPostgresGroupCommitCCC10000(
+	b *testing.B,
+	groupCommitConfig config.PostgresGroupCommitConfig,
+	general bool,
+	mixedShapes bool,
+	eventsPerSave int,
+) {
+	const burst = 10000
+	if groupCommitConfig.MaxPending == 0 {
+		groupCommitConfig.MaxPending = burst
+	}
+
+	for range b.N {
+		db, teardown := setupBenchmarkDB(b)
+		ctx := context.Background()
+		logger, err := logging.ZapLogger("warn")
+		require.NoError(b, err)
+		mapping := map[string]config.BoundaryToPostgresSchemaMapping{
+			"bench_boundary": {
+				Boundary: "bench_boundary",
+				Schema:   "public",
+			},
+		}
+		saveEvents, err := NewPostgresSaveEventsWithConfig(
+			ctx,
+			db,
+			logger,
+			mapping,
+			groupCommitConfig,
+		)
+		require.NoError(b, err)
+		adminDB := NewPostgresAdminDB(db, logger, "public", "bench_boundary", mapping)
+		indexes := map[string][]common.IndexField{
+			"stream_context": {{JsonKey: "stream_id", ValueType: "text"}},
+		}
+		if general {
+			indexes["stream_context"] = append(indexes["stream_context"], common.IndexField{
+				JsonKey: "tenant_id", ValueType: "text",
+			})
+		}
+		if mixedShapes {
+			indexes = map[string][]common.IndexField{
+				"account_context": {{JsonKey: "account_id", ValueType: "text"}},
+				"stream_context": {
+					{JsonKey: "stream_id", ValueType: "text"},
+					{JsonKey: "tenant_id", ValueType: "text"},
+				},
+				"order_context":     {{JsonKey: "order_id", ValueType: "text"}},
+				"alternate_context": {{JsonKey: "alternate_id", ValueType: "text"}},
+			}
+		}
+		for indexName, indexFields := range indexes {
+			require.NoError(b, adminDB.CreateBoundaryIndex(
+				ctx,
+				"bench_boundary",
+				indexName,
+				indexFields,
+				nil,
+				"",
+			))
+		}
+
+		events := make([][]orisun.EventWithMapTags, burst)
+		queries := make([]*orisun.Query, burst)
+		for i := range burst {
+			streamID := fmt.Sprintf("stream-%d", i)
+			eventData := fmt.Sprintf(`{"stream_id":%q,"tenant_id":"benchmark"}`, streamID)
+			tags := []*orisun.Tag{{Key: "stream_id", Value: streamID}}
+			criteria := []*orisun.Criterion{{Tags: tags}}
+			if general {
+				tags = append(tags, &orisun.Tag{Key: "tenant_id", Value: "benchmark"})
+				criteria = []*orisun.Criterion{{Tags: tags}}
+			}
+			if mixedShapes {
+				switch i % 3 {
+				case 0:
+					eventData = fmt.Sprintf(`{"account_id":%q}`, streamID)
+					criteria = []*orisun.Criterion{{Tags: []*orisun.Tag{
+						{Key: "account_id", Value: streamID},
+					}}}
+				case 1:
+					eventData = fmt.Sprintf(
+						`{"stream_id":%q,"tenant_id":"benchmark"}`,
+						streamID,
+					)
+					criteria = []*orisun.Criterion{{Tags: []*orisun.Tag{
+						{Key: "stream_id", Value: streamID},
+						{Key: "tenant_id", Value: "benchmark"},
+					}}}
+				case 2:
+					eventData = fmt.Sprintf(`{"order_id":%q}`, streamID)
+					criteria = []*orisun.Criterion{
+						{Tags: []*orisun.Tag{{Key: "order_id", Value: streamID}}},
+						{Tags: []*orisun.Tag{{
+							Key:   "alternate_id",
+							Value: "missing-" + streamID,
+						}}},
+					}
+				}
+			}
+			events[i] = make([]orisun.EventWithMapTags, eventsPerSave)
+			for eventIndex := range eventsPerSave {
+				eventID, err := uuid.NewV7()
+				require.NoError(b, err)
+				events[i][eventIndex] = orisun.EventWithMapTags{
+					EventId:   eventID.String(),
+					EventType: fmt.Sprintf("BurstCCCEvent%d", eventIndex),
+					Data:      eventData,
+					Metadata:  `{}`,
+				}
+			}
+			queries[i] = &orisun.Query{Criteria: criteria}
+		}
+		notExists := orisun.NotExistsPosition()
+
+		var wg sync.WaitGroup
+		var succeeded, failed atomic.Int64
+		start := make(chan struct{})
+		wg.Add(burst)
+		for i := range events {
+			eventBatch := events[i]
+			query := queries[i]
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, _, err := saveEvents.Save(
+					ctx,
+					eventBatch,
+					"bench_boundary",
+					&notExists,
+					query,
+				); err != nil {
+					failed.Add(1)
+					return
+				}
+				succeeded.Add(1)
+			}()
+		}
+
+		b.ResetTimer()
+		startedAt := time.Now()
+		close(start)
+		wg.Wait()
+		elapsed := time.Since(startedAt)
+		b.StopTimer()
+
+		b.ReportMetric(float64(succeeded.Load())/elapsed.Seconds(), "saves/sec")
+		b.ReportMetric(
+			float64(succeeded.Load()*int64(eventsPerSave))/elapsed.Seconds(),
+			"events/sec",
+		)
+		b.ReportMetric(float64(elapsed.Milliseconds()), "ms/burst")
+		require.Zero(b, failed.Load())
+		require.Equal(b, int64(burst), succeeded.Load())
+
+		saveEvents.close()
+		teardown()
+	}
+}

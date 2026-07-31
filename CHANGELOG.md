@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-07-30
+
+### Breaking Changes
+
+- Removed YugabyteDB support and the `ORISUN_PG_DIALECT` configuration. The
+  PostgreSQL backend now targets PostgreSQL only. YugabyteDB deployments must
+  migrate to PostgreSQL, SQLite, or FoundationDB before upgrading to 0.10.0;
+  Orisun does not perform an in-place cross-backend migration.
+- Removed `PostgresDBConfig.Dialect` and `RunDbScriptsWithDialect`; the
+  `NewPostgresBoundaryProvisioner` constructor no longer accepts a dialect.
+
+### Added
+
+- Added a compiled end-to-end gRPC benchmark runner with configurable
+  workloads, concurrency sweeps, warm-up and measurement windows, mixed
+  reader/writer scenarios, reproducible server and runner build metadata, and
+  incremental JSON and CSV reports. `task benchmark` and
+  `collect_benchmarks.sh` expose the runner without using `go run`.
+- Published reproducible PostgreSQL, SQLite, and FoundationDB
+  benchmark results with raw CSV downloads and interactive throughput and p99
+  latency charts. The benchmark runner rejects development builds so published
+  results remain tied to identifiable server and runner artifacts.
+
+### Changed
+
+- PostgreSQL group commit now resolves canonical CCC batches set-wise while
+  preserving request-order semantics inside each transaction. It supports
+  duplicate contexts, mixed indexed key shapes, multi-tag AND criteria,
+  multi-criterion OR queries, query-less events that affect later checks, and
+  multi-event saves with consecutive global IDs.
+- PostgreSQL now uses specialized bulk paths for independent single-tag CCC
+  contexts and multi-event unconditional saves. Requests with validation
+  behavior that requires isolation continue through the ordered savepoint path.
+- Increased the default PostgreSQL group-commit request limit from 256 to 512.
+  Operators can still tune the request limit, event limit, queue capacity, and
+  optional coalescing delay for their workload.
+
+## 0.9.4 - 2026-07-25
+
 ### Fixed
 
 - PostgreSQL startup now runs the current boundary schema initializer before

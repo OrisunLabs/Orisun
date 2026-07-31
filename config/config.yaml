@@ -53,9 +53,6 @@ postgres:
   # mappings are treated as existing physical boundaries and imported into it.
   adminSchema: ${ORISUN_PG_ADMIN_SCHEMA:admin}
   sslmode: ${ORISUN_PG_SSLMODE:disable}
-  # Values: postgres (default) or yugabyte. Yugabyte uses an Orisun committed
-  # watermark instead of PostgreSQL xid snapshot visibility.
-  dialect: ${ORISUN_PG_DIALECT:postgres}
   # Pool sizing notes:
   # - MaxOpenConns caps total connections per pool. Sum of all pools must fit under PG max_connections
   #   (or pgbouncer pool size if fronted).
@@ -66,6 +63,14 @@ postgres:
   writeMaxIdleConns: ${ORISUN_PG_WRITE_MAX_IDLE_CONNS:10}
   writeConnMaxIdleTime: ${ORISUN_PG_WRITE_CONN_MAX_IDLE_TIME:5m}
   writeConnMaxLifetime: ${ORISUN_PG_WRITE_CONN_MAX_LIFETIME:30m}
+  # Per-boundary group commit. Concurrent CCC saves are checked and applied in
+  # queue order inside one transaction; unconditional saves use a set-based path.
+  groupCommit:
+    maxBatchRequests: ${ORISUN_PG_GC_MAX_BATCH_REQUESTS:512}
+    maxBatchEvents: ${ORISUN_PG_GC_MAX_BATCH_EVENTS:1024}
+    maxDelay: ${ORISUN_PG_GC_MAX_DELAY:0s}
+    maxPending: ${ORISUN_PG_GC_MAX_PENDING:4096}
+    flushTimeout: ${ORISUN_PG_GC_FLUSH_TIMEOUT:30s}
   # Read pool (Get path + projectors)
   readMaxOpenConns: ${ORISUN_PG_READ_MAX_OPEN_CONNS:50}
   readMaxIdleConns: ${ORISUN_PG_READ_MAX_IDLE_CONNS:25}

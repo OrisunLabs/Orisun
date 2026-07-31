@@ -1,51 +1,36 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Script to collect benchmark results and calculate RPS
-echo "Collecting Orisun Benchmark Results"
-echo "===================================="
+REPOSITORY_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# Function to run a single benchmark and extract results
-run_benchmark() {
-    local benchmark_name=$1
-    local benchtime=${2:-"3s"}
-    
-    echo "\nRunning $benchmark_name..."
-    # Run the benchmark and capture all output, then filter for benchmark results
-    output=$(go test -bench=$benchmark_name -benchtime=$benchtime -count=1 ./benchmark_test.go 2>&1)
-    
-    # Extract benchmark result lines (they contain ns/op and events/sec)
-    results=$(echo "$output" | grep -E "^Benchmark.*ns/op.*events/sec")
-    
-    if [ -n "$results" ]; then
-        echo "$results"
-        echo "\nSummary for $benchmark_name:"
-        # Count total benchmark lines
-        count=$(echo "$results" | wc -l | tr -d ' ')
-        echo "  - $count sub-benchmarks completed"
-        
-        # Extract and show the best performance (highest events/sec)
-        best_line=$(echo "$results" | awk '{print $NF, $0}' | sort -nr | head -1 | cut -d' ' -f2-)
-        if [ -n "$best_line" ]; then
-            best_events_sec=$(echo "$best_line" | awk '{print $NF}')
-            echo "  - Best performance: $best_events_sec"
-        fi
-    else
-        echo "$benchmark_name: No benchmark results found"
-        echo "Error output:"
-        echo "$output" | tail -10
-    fi
-}
-
-# Install bc if not available (for calculations)
-if ! command -v bc &> /dev/null; then
-    echo "Installing bc for calculations..."
-    brew install bc 2>/dev/null || echo "Please install bc manually"
+if [[ -n ${ORISUN_BENCHMARK_BINARY:-} ]]; then
+  if [[ ! -x "$ORISUN_BENCHMARK_BINARY" ]]; then
+    echo "ORISUN_BENCHMARK_BINARY is not executable: $ORISUN_BENCHMARK_BINARY" >&2
+    exit 1
+  fi
+  exec "$ORISUN_BENCHMARK_BINARY" "$@"
 fi
 
-# Run individual benchmarks
-run_benchmark "BenchmarkSaveEvents_Single" "1s"
-run_benchmark "BenchmarkSaveEvents_Batch" "1s"
-run_benchmark "BenchmarkGetEvents" "1s"
-run_benchmark "BenchmarkMemoryUsage" "1s"
+BENCHMARK_BIN_DIR=${ORISUN_BENCHMARK_BIN_DIR:-"$REPOSITORY_ROOT/tmp/benchmark-bin"}
+BENCHMARK_BINARY="$BENCHMARK_BIN_DIR/orisun-bench"
+BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+GIT_COMMIT=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
+VERSION=$(git -C "$REPOSITORY_ROOT" describe --tags --always)
+DIRTY=false
+if [[ -n $(git -C "$REPOSITORY_ROOT" status --porcelain) ]]; then
+  DIRTY=true
+fi
 
-echo "\nBenchmark collection complete!"
+mkdir -p "$BENCHMARK_BIN_DIR"
+
+go build \
+  -trimpath \
+  -ldflags="-s -w \
+    -X main.benchmarkVersion=$VERSION \
+    -X main.benchmarkGitCommit=$GIT_COMMIT \
+    -X main.benchmarkBuildTime=$BUILD_TIME \
+    -X main.benchmarkDirty=$DIRTY" \
+  -o "$BENCHMARK_BINARY" \
+  "$REPOSITORY_ROOT/cmd/orisun-bench"
+
+exec "$BENCHMARK_BINARY" "$@"

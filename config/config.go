@@ -144,7 +144,6 @@ type PostgresDBConfig struct {
 	Port        string
 	AdminSchema string
 	SSLMode     string
-	Dialect     string
 	// Write pool configuration (optimized for write operations)
 	WriteMaxOpenConns    int
 	WriteMaxIdleConns    int
@@ -161,13 +160,24 @@ type PostgresDBConfig struct {
 	AdminConnMaxIdleTime time.Duration
 	AdminConnMaxLifetime time.Duration
 	ListenEnabled        bool
+	GroupCommit          PostgresGroupCommitConfig
 }
 
-func (p PostgresDBConfig) DatabaseDialect() string {
-	if p.Dialect == "" {
-		return "postgres"
-	}
-	return strings.ToLower(strings.TrimSpace(p.Dialect))
+// PostgresGroupCommitConfig tunes the per-boundary PostgreSQL write batcher.
+// Zero values fall back to package defaults in postgres/group_commit.go;
+// negative values are rejected at startup.
+type PostgresGroupCommitConfig struct {
+	// MaxBatchRequests caps the number of SaveEvents calls in one transaction.
+	MaxBatchRequests int
+	// MaxBatchEvents caps the total events written by one transaction.
+	MaxBatchEvents int
+	// MaxDelay > 0 waits up to this long for more queued requests.
+	// 0 means opportunistic batching without an artificial delay.
+	MaxDelay time.Duration
+	// MaxPending bounds each boundary queue; a full queue applies backpressure.
+	MaxPending int
+	// FlushTimeout bounds one worker-owned batch transaction.
+	FlushTimeout time.Duration
 }
 
 type BoundaryToPostgresSchemaMapping struct {
@@ -218,6 +228,12 @@ func (c *NatsClusterConfig) GetRoutes() []string {
 var configData []byte
 
 func LoadConfig() (AppConfig, error) {
+	if _, configured := os.LookupEnv("ORISUN_PG_DIALECT"); configured {
+		return AppConfig{}, fmt.Errorf(
+			"ORISUN_PG_DIALECT was removed in Orisun 0.10.0; the PostgreSQL backend now supports PostgreSQL only",
+		)
+	}
+
 	viper.SetConfigType("yaml")
 
 	if err := viper.ReadConfig(bytes.NewReader(configData)); err != nil {
@@ -277,13 +293,6 @@ func validateConfig(config AppConfig) error {
 		}
 	default:
 		return fmt.Errorf("unknown backend type %q (expected 'postgres', 'sqlite', or 'foundationdb')", config.Backend.Type)
-	}
-
-	switch config.Postgres.DatabaseDialect() {
-	case "postgres", "yugabyte":
-		// ok
-	default:
-		return fmt.Errorf("unknown postgres dialect %q (expected 'postgres' or 'yugabyte')", config.Postgres.Dialect)
 	}
 
 	if err := validateBoundaryName(config.Admin.Boundary); err != nil {

@@ -244,6 +244,44 @@ func (s *ClusterTestSuite) createPostgresBoundary(t *testing.T, name, schema str
 			response.Boundary != nil &&
 			response.Boundary.Status == pb.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE
 	}, 15*time.Second, 50*time.Millisecond)
+	s.waitForBoundaryRuntimeOnAllNodes(t, ctx, name)
+}
+
+func (s *ClusterTestSuite) waitForBoundaryRuntimeOnAllNodes(
+	t *testing.T,
+	ctx context.Context,
+	name string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for {
+		allReady := true
+		for nodeIndex, node := range s.nodes {
+			attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			_, err := node.client.GetEvents(attemptCtx, &pb.GetEventsRequest{
+				Boundary: name,
+				Count:    1,
+			})
+			cancel()
+			if err != nil {
+				lastErr = fmt.Errorf("node %d: %w", nodeIndex, err)
+				allReady = false
+				break
+			}
+		}
+		if allReady {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"boundary %q runtime did not become active on every cluster node: %v",
+				name,
+				lastErr,
+			)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (s *ClusterTestSuite) teardown(t *testing.T) {

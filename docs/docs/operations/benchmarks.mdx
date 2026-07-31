@@ -1,0 +1,323 @@
+---
+title: Benchmarks
+description: Run and publish Orisun end-to-end throughput and latency benchmarks.
+---
+
+import BenchmarkCharts from '@site/src/components/BenchmarkCharts';
+
+Orisun includes a small external gRPC benchmark runner in `cmd/orisun-bench`.
+It measures the same path used by an application: client serialization, gRPC,
+authentication, server processing, durable storage, and the response.
+
+The runner must be a compiled binary, and it refuses to measure a server that
+reports development build metadata. This prevents accidentally publishing
+numbers from `go run`.
+
+## Results at a glance
+
+Choose a workload to compare backend throughput and p99 request latency across
+the concurrency sweep. Hover over or focus a point for its exact value. The
+complete result tables and test environments follow.
+
+<BenchmarkCharts />
+
+## PostgreSQL results
+
+The following results were recorded on July 30, 2026. All 30 measured points
+completed with zero foreground and background request errors.
+
+### Throughput
+
+Values are events per second. Conditional reads return ten events per request;
+projection reads return batches of up to 1,000 events.
+
+| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CCC append, 1 event | 507 | 1,078 | 3,600 | 9,496 | 16,988 |
+| CCC append, 100 events | 17,997 | 26,546 | **35,906** | 25,353 | 28,479 |
+| Unconditional append, 1 event | 494 | 1,063 | 3,686 | 10,747 | **19,889** |
+| Conditional read | 4,553 | 14,708 | 34,931 | 48,902 | **52,510** |
+| Projection read | 133,333 | 261,598 | **371,556** | 356,195 | 342,457 |
+| Append with four readers | 253 | 570 | 2,072 | 6,151 | **12,897** |
+
+Single-event CCC append throughput remained close to unconditional append
+throughout the concurrency sweep. The 100-event CCC workload peaked at 16
+clients; adding more concurrency increased latency without improving
+throughput. Projection reads also peaked at 16 clients.
+
+### Tail latency
+
+Values are foreground request p99 latency in milliseconds.
+
+| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CCC append, 1 event | 5.40 | 9.48 | 11.21 | 15.52 | 34.34 |
+| CCC append, 100 events | 13.63 | 42.42 | 89.55 | 498.84 | 1,323.52 |
+| Unconditional append, 1 event | 10.13 | 12.67 | 14.11 | 15.79 | 34.19 |
+| Conditional read | 7.35 | 7.88 | 14.84 | 44.52 | 208.30 |
+| Projection read | 21.89 | 45.03 | 120.11 | 379.09 | 2,946.76 |
+| Append with four readers | 12.96 | 20.89 | 21.76 | 28.20 | 52.55 |
+
+During the mixed workload, the four background readers sustained 267,866,
+276,132, 278,120, 256,387, and 205,975 events per second as foreground writer
+concurrency increased from 1 to 256.
+
+### Test environment
+
+- Orisun `v0.9.3-9-g53e5578`, built as PostgreSQL server and benchmark
+  binaries with Go 1.26.5
+- PostgreSQL 18.4 arm64 in Docker Desktop
+- `synchronous_commit=on`, `fsync=on`, and `full_page_writes=on`
+- Apple MacBook Pro arm64, 10 logical CPUs, 32 GB RAM, host SSD
+- benchmark runner and Orisun server on the host; PostgreSQL in local Docker
+- a fresh benchmark boundary in an existing PostgreSQL database
+- 1,000,000 seed events, 100,000 indexed contexts, and approximately 256 bytes
+  per event
+- 5-second warm-up and 30-second measurement per point
+
+[Download the raw PostgreSQL CSV](/benchmarks/postgres-2026-07-30.csv).
+This is a single-machine snapshot rather than a cross-product comparison.
+
+## SQLite results
+
+The SQLite results below use the same July 30, 2026 workload, client
+concurrency, dataset, payload, warm-up, and measurement duration. All 30
+measured points completed with zero foreground and background request errors.
+
+### Throughput
+
+Values are events per second.
+
+| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CCC append, 1 event | 2,480 | 6,296 | 12,930 | 17,166 | **18,542** |
+| CCC append, 100 events | 38,997 | 57,390 | **60,762** | 55,136 | 57,533 |
+| Unconditional append, 1 event | 2,065 | 6,688 | 13,979 | 22,838 | **27,280** |
+| Conditional read | 10,110 | 26,105 | 77,263 | 91,564 | **98,985** |
+| Projection read | 83,000 | 303,733 | 712,451 | 765,186 | **767,919** |
+| Append with four readers | 1,448 | 4,408 | 8,848 | 12,330 | **13,427** |
+
+SQLite's 100-event CCC workload peaked at 16 clients. Projection reads scaled
+through 256 clients, although the small gain beyond 16 readers came with a
+large increase in tail latency. Single-event CCC append remained close to
+unconditional append through 64 clients.
+
+### Tail latency
+
+Values are foreground request p99 latency in milliseconds.
+
+| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CCC append, 1 event | 1.17 | 2.25 | 3.61 | 10.92 | 40.42 |
+| CCC append, 100 events | 8.16 | 18.80 | 56.14 | 240.37 | 653.45 |
+| Unconditional append, 1 event | 2.23 | 1.97 | 4.41 | 8.84 | 24.11 |
+| Conditional read | 7.82 | 8.88 | 7.73 | 16.43 | 81.36 |
+| Projection read | 43.09 | 39.31 | 54.85 | 146.62 | 599.55 |
+| Append with four readers | 5.18 | 4.81 | 7.25 | 20.16 | 49.08 |
+
+During the mixed workload, the four background readers sustained 279,465,
+287,727, 288,907, 276,100, and 262,568 events per second as foreground writer
+concurrency increased from 1 to 256.
+
+### Test environment
+
+- Orisun `v0.9.3-9-g53e5578`, built as SQLite server and benchmark binaries
+  with Go 1.26.5
+- SQLite WAL journal mode with `synchronous=FULL`
+- Apple MacBook Pro arm64, 10 logical CPUs, 32 GB RAM, host SSD
+- benchmark runner, Orisun server, and fresh per-boundary SQLite files on the
+  host
+- 1,000,000 seed events, 100,000 indexed contexts, and approximately 256 bytes
+  per event
+- 5-second warm-up and 30-second measurement per point
+
+[Download the raw SQLite CSV](/benchmarks/sqlite-2026-07-30.csv).
+These results describe the single-node SQLite backend; SQLite clustering is
+not supported.
+
+## FoundationDB results
+
+The FoundationDB results below use the same July 30, 2026 workload, client
+concurrency, dataset, payload, warm-up, and measurement duration. All 30
+measured points completed with zero foreground and background request errors.
+
+### Throughput
+
+Values are events per second.
+
+| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CCC append, 1 event | 186 | 697 | 2,024 | 3,920 | **5,578** |
+| CCC append, 100 events | 8,473 | 14,267 | 20,013 | **20,323** | 18,503 |
+| Unconditional append, 1 event | 160 | 720 | 1,946 | 3,896 | **4,973** |
+| Conditional read | 973 | 3,945 | 9,805 | 14,785 | **20,421** |
+| Projection read | 49,900 | 143,197 | 235,730 | 260,228 | **264,529** |
+| Append with four readers | 118 | 504 | 1,576 | 3,955 | **6,303** |
+
+The 100-event CCC workload saturated around 16 to 64 clients. Projection
+throughput continued to increase through 256 clients, but the final step added
+little throughput and substantially more latency.
+
+### Tail latency
+
+Values are foreground request p99 latency in milliseconds.
+
+| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CCC append, 1 event | 16.80 | 16.10 | 22.24 | 53.93 | 219.64 |
+| CCC append, 100 events | 55.13 | 115.16 | 302.97 | 1,436.64 | 3,271.17 |
+| Unconditional append, 1 event | 36.09 | 18.03 | 30.72 | 68.58 | 313.91 |
+| Conditional read | 30.19 | 21.24 | 49.83 | 124.75 | 278.63 |
+| Projection read | 52.62 | 101.21 | 203.87 | 486.89 | 1,696.57 |
+| Append with four readers | 21.63 | 17.39 | 26.43 | 44.31 | 98.58 |
+
+During the mixed workload, the four background readers sustained 180,167,
+200,799, 170,998, 111,998, and 43,930 events per second as foreground writer
+concurrency increased from 1 to 256.
+
+### Test environment
+
+- Orisun commit `53e5578`, built as FoundationDB server and benchmark binaries
+  with Go 1.26.5
+- FoundationDB 7.3.77 arm64 in Docker Desktop, with one `fdbserver` process
+- `ssd-2` storage and log engines, single redundancy, and no machine fault
+  tolerance
+- Apple MacBook Pro arm64, 10 logical CPUs, 32 GB RAM, host SSD
+- benchmark runner and Orisun server on the host; FoundationDB in local Docker
+- a fresh FoundationDB root and benchmark boundary
+- 1,000,000 seed events, 100,000 indexed contexts, and approximately 256 bytes
+  per event
+- 5-second warm-up and 30-second measurement per point
+
+[Download the raw FoundationDB CSV](/benchmarks/foundationdb-2026-07-30.csv).
+This is a single-process FoundationDB baseline. It does not represent a
+fault-tolerant FoundationDB cluster.
+
+
+## Default benchmark
+
+The default run pre-populates one clean boundary with 1,000,000 events spread
+over 100,000 indexed `benchmark_context` values. Events are approximately 256
+bytes. Each point has a 5-second warm-up and a 30-second measurement at 1, 4,
+16, 64, and 256 concurrent clients.
+
+It covers six representative workloads:
+
+| Workload | What it represents |
+| --- | --- |
+| Conditional append, 1 event | A normal command using CCC |
+| Conditional append, 100 events | A large command using CCC |
+| Unconditional append, 1 event | An ingestion-style write |
+| Conditional read | Building a decision model from a content query |
+| Unconditional read | Rebuilding a projection |
+| Append with four readers | Read/write interference |
+
+Every point reports requests/second, events/second, request errors, and p50,
+p95, p99, and maximum latency. Mixed workloads also report the background
+read rate and errors.
+
+## Build the server
+
+Do not start the server with `go run`. Build a backend-specific binary with
+version, commit, and build-time metadata:
+
+```bash
+./build.sh \
+  "$(go env GOOS)" \
+  "$(go env GOARCH)" \
+  "$(git describe --tags --always)" \
+  pg
+```
+
+Start the generated binary in `build/` with the production configuration you
+want to measure. Use `sqlite` instead of `pg` for the SQLite binary.
+
+Release binaries and immutable release container images already contain the
+required build metadata.
+
+## Run
+
+Use a unique boundary and namespace so the runner starts with a clean dataset:
+
+```bash
+./collect_benchmarks.sh \
+  --address 127.0.0.1:5005 \
+  --boundary benchmark_20260730 \
+  --backend postgres \
+  --namespace benchmark_20260730 \
+  --create-boundary \
+  --label 'machine=MacBook Pro M4 Pro, 48 GB' \
+  --label 'database=PostgreSQL 18, synchronous_commit=on' \
+  --label 'topology=client, server, and database on one host'
+```
+
+`collect_benchmarks.sh` compiles the benchmark runner and then executes that
+binary. It never uses `go run`.
+
+The run writes two portable files:
+
+```text
+benchmark-results/<UTC timestamp>/
+├── results.json
+└── results.csv
+```
+
+`results.json` contains the full method, server and runner build metadata,
+machine information, optional labels, and results. `results.csv` is convenient
+for plotting.
+
+The command exits non-zero if any foreground or background request fails, but
+still writes the results collected up to that point.
+
+## Smoke test
+
+Use the same compiled server binary and add `--smoke`:
+
+```bash
+./collect_benchmarks.sh \
+  --address 127.0.0.1:5005 \
+  --boundary benchmark_smoke_20260730 \
+  --backend postgres \
+  --namespace benchmark_smoke_20260730 \
+  --create-boundary \
+  --smoke
+```
+
+Smoke mode uses 1,000 seed events, two workloads, two concurrency points, and a
+one-second measurement. It checks the harness; its results are not suitable for
+performance claims.
+
+## Optional workloads
+
+The runner also includes conditional and unconditional append sizes of 1, 10,
+100, and (for unconditional writes) 1,000 events, a rate-limited projection
+read, and read-with-writers. Run the complete set with:
+
+```bash
+./collect_benchmarks.sh --scenarios all <connection and boundary arguments>
+```
+
+Or select individual workloads:
+
+```bash
+./collect_benchmarks.sh \
+  --scenarios write-conditional-1,write-conditional-10,read-conditional \
+  --concurrency 1,8,32,128 \
+  <connection and boundary arguments>
+```
+
+Use `./collect_benchmarks.sh --help` for all configuration flags.
+
+## Publishing results
+
+Keep the chart and its setup together. At minimum, state the Orisun version,
+backend and database version, durability settings, machine, storage, topology,
+dataset size, payload size, warm-up, measurement duration, and error count.
+The report captures most of this automatically; use repeatable `--label`
+arguments for the deployment details it cannot discover.
+
+For comparisons, keep durability, consistency, dataset, payload, transport,
+and concurrency identical. If you need confidence intervals or run-to-run
+variance, repeat the same command and calculate them from the CSV files. The
+runner deliberately does not turn that publication workflow into another
+benchmark profile.

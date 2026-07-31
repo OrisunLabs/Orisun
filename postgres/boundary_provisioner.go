@@ -19,9 +19,9 @@ type PostgresBoundaryProvisioner struct {
 	migrated map[string]string
 }
 
-func NewPostgresBoundaryProvisioner(db *sql.DB, registry *BoundaryRegistry, dialect string) *PostgresBoundaryProvisioner {
+func NewPostgresBoundaryProvisioner(db *sql.DB, registry *BoundaryRegistry) *PostgresBoundaryProvisioner {
 	return newPostgresBoundaryProvisioner(registry, func(ctx context.Context, boundary, schema string) error {
-		return RunDbScriptsWithDialect(db, boundary, schema, false, dialect, ctx)
+		return RunDbScripts(db, boundary, schema, false, ctx)
 	})
 }
 

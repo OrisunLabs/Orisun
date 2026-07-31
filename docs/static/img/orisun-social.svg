@@ -25,5 +25,5 @@
   <circle cx="318" cy="281" r="20" fill="#0B1110" stroke="#68CFA9" stroke-width="12"/>
   <text x="430" y="282" fill="#ECF4F0" font-family="Inter, Helvetica, Arial, sans-serif" font-size="112" font-weight="850">Orisun</text>
   <text x="434" y="356" fill="#A8BDB5" font-family="Inter, Helvetica, Arial, sans-serif" font-size="34">Decisions that stay correct as facts change</text>
-  <text x="96" y="532" fill="#5F756D" font-family="Inter, Helvetica, Arial, sans-serif" font-size="26">PostgreSQL · YugabyteDB · SQLite · FoundationDB beta &#160;&#160;|&#160;&#160; gRPC + embedded JetStream</text>
+  <text x="96" y="532" fill="#5F756D" font-family="Inter, Helvetica, Arial, sans-serif" font-size="26">PostgreSQL · SQLite · FoundationDB beta &#160;&#160;|&#160;&#160; gRPC + embedded JetStream</text>
 </svg>

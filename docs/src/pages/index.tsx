@@ -85,12 +85,6 @@ const backends = [
     details: ['cluster locks', 'schema boundaries', 'PgBouncer'],
   },
   {
-    name: 'YugabyteDB',
-    href: '/docs/getting-started#run-yugabytedb-from-a-binary',
-    summary: 'Distributed SQL through the PostgreSQL-compatible backend and committed-watermark reads.',
-    details: ['YSQL', 'advisory locks', 'stable-prefix reads'],
-  },
-  {
     name: 'FoundationDB',
     href: '/docs/operations/foundationdb',
     summary: 'Beta clustered backend with ordered key ranges and parallel commits.',
@@ -383,8 +377,8 @@ export default function Home(): ReactNode {
               <span className={styles.eyebrow}>Deploy your way</span>
               <h2>Keep the API. Change the operational shape.</h2>
               <p>
-                Start with a complete SQLite server, then use PostgreSQL, YugabyteDB, or the
-                FoundationDB beta backend when the deployment needs multiple nodes or distributed storage.
+                Start with a complete SQLite server, then use PostgreSQL or the FoundationDB
+                beta backend when the deployment needs multiple nodes or distributed storage.
               </p>
             </div>
             <div className={styles.backendGrid}>

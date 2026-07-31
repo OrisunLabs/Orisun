@@ -39,7 +39,10 @@ const config: Config = {
     [
       '@docusaurus/plugin-client-redirects',
       {
-        redirects: [{from: '/docs/start-here', to: '/docs'}],
+        redirects: [
+          {from: '/docs/start-here', to: '/docs'},
+          {from: '/benchmarks', to: '/docs/operations/benchmarks'},
+        ],
       },
     ],
   ],
@@ -54,7 +57,7 @@ const config: Config = {
           editUrl: 'https://github.com/OrisunLabs/Orisun/tree/main/docs/',
           // The newest cut version serves at /docs; in-progress docs for the
           // next release live at /docs/next with an "unreleased" banner.
-          lastVersion: '0.9.4',
+          lastVersion: '0.10.0',
           versions: {
             current: {
               label: 'Next 🚧',
@@ -128,6 +131,7 @@ const config: Config = {
             {label: 'Security', to: '/docs/operations/security'},
             {label: 'Deployment', to: '/docs/operations/deployment'},
             {label: 'Observability', to: '/docs/operations/observability'},
+            {label: 'Benchmarks', to: '/docs/operations/benchmarks'},
             {label: 'Troubleshooting', to: '/docs/operations/troubleshooting'},
           ],
         },
