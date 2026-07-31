@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -1227,6 +1228,527 @@ func TestPostgresGroupCommit_GeneralCriterionStateResolver_MultipleMultiEventReq
 		 FROM public.test_boundary_orisun_es_event_global_id_seq`,
 	).Scan(&sequenceLast))
 	require.Equal(t, firstGlobalID+6, sequenceLast)
+}
+
+func TestPostgresGroupCommit_DifferentialAgainstSequentialWrites(t *testing.T) {
+	container, err := setupTestContainer(t)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, container.container.Terminate(context.Background()))
+	}()
+
+	db, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, RunDbScripts(
+		db,
+		"reference_boundary",
+		"public",
+		false,
+		t.Context(),
+	))
+
+	logger, err := logging.ZapLogger("error")
+	require.NoError(t, err)
+	saver := NewPostgresSaveEvents(
+		t.Context(),
+		db,
+		logger,
+		map[string]config.BoundaryToPostgresSchemaMapping{
+			"test_boundary": {Boundary: "test_boundary", Schema: "public"},
+		},
+	)
+	defer saver.close()
+
+	type storedEvent struct {
+		data     map[string]string
+		position orisun.Position
+	}
+	type persistedEvent struct {
+		transactionID int64
+		globalID      int64
+		eventID       string
+		data          string
+		metadata      string
+	}
+
+	legacySave := func(
+		boundary string,
+		request *postgresSaveRequest,
+	) postgresBatchOutcome {
+		consistencyJSON, marshalErr := json.Marshal(
+			getStreamSectionAsMap(request.expected, request.query),
+		)
+		require.NoError(t, marshalErr)
+		eventsJSON, marshalErr := json.Marshal(request.events)
+		require.NoError(t, marshalErr)
+
+		var newGlobalID, transactionID, globalID int64
+		saveErr := db.QueryRowContext(
+			t.Context(),
+			fmt.Sprintf(insertEventsWithConsistency, "public"),
+			boundary,
+			"public",
+			consistencyJSON,
+			eventsJSON,
+		).Scan(&newGlobalID, &transactionID, &globalID)
+		outcome := postgresBatchOutcome{req: request}
+		if saveErr != nil {
+			outcome.err = saver.mapSaveError(saveErr)
+			return outcome
+		}
+		outcome.transactionID = strconv.FormatInt(transactionID, 10)
+		outcome.globalID = globalID
+		return outcome
+	}
+
+	readPersisted := func(boundary string) []persistedEvent {
+		rows, queryErr := db.QueryContext(
+			t.Context(),
+			fmt.Sprintf(
+				`SELECT transaction_id, global_id, event_id::TEXT, data::TEXT, metadata::TEXT
+				 FROM public.%s_orisun_es_event
+				 ORDER BY global_id`,
+				boundary,
+			),
+		)
+		require.NoError(t, queryErr)
+		defer rows.Close()
+
+		var events []persistedEvent
+		for rows.Next() {
+			var event persistedEvent
+			require.NoError(t, rows.Scan(
+				&event.transactionID,
+				&event.globalID,
+				&event.eventID,
+				&event.data,
+				&event.metadata,
+			))
+			events = append(events, event)
+		}
+		require.NoError(t, rows.Err())
+		return events
+	}
+
+	queryFromMaps := func(criteria ...map[string]string) *orisun.Query {
+		query := &orisun.Query{
+			Criteria: make([]*orisun.Criterion, 0, len(criteria)),
+		}
+		for _, tags := range criteria {
+			criterion := &orisun.Criterion{
+				Tags: make([]*orisun.Tag, 0, len(tags)),
+			}
+			for key, value := range tags {
+				criterion.Tags = append(
+					criterion.Tags,
+					&orisun.Tag{Key: key, Value: value},
+				)
+			}
+			query.Criteria = append(query.Criteria, criterion)
+		}
+		return query
+	}
+
+	matches := func(data map[string]string, query *orisun.Query) bool {
+		if query == nil {
+			return false
+		}
+		hasNonEmptyCriterion := false
+		for _, criterion := range query.Criteria {
+			if criterion == nil || len(criterion.Tags) == 0 {
+				continue
+			}
+			hasNonEmptyCriterion = true
+			criterionMatches := true
+			for _, tag := range criterion.Tags {
+				if tag == nil || data[tag.Key] != tag.Value {
+					criterionMatches = false
+					break
+				}
+			}
+			if criterionMatches {
+				return true
+			}
+		}
+		return !hasNonEmptyCriterion
+	}
+
+	latestPosition := func(
+		stored []storedEvent,
+		query *orisun.Query,
+	) orisun.Position {
+		latest := orisun.NotExistsPosition()
+		for _, event := range stored {
+			if matches(event.data, query) {
+				latest = event.position
+			}
+		}
+		return latest
+	}
+
+	const trials = 40
+	random := rand.New(rand.NewSource(0x0C0C0C))
+	keys := []string{"account", "kind", "region"}
+	values := []string{"a", "b", "c"}
+
+	for trial := range trials {
+		t.Run(fmt.Sprintf("trial_%02d", trial), func(t *testing.T) {
+			_, err := db.ExecContext(
+				t.Context(),
+				`TRUNCATE TABLE
+					public.test_boundary_orisun_es_event,
+					public.reference_boundary_orisun_es_event
+					RESTART IDENTITY`,
+			)
+			require.NoError(t, err)
+
+			var stored []storedEvent
+			for seedIndex := range 4 {
+				data := map[string]string{
+					"account": values[seedIndex%len(values)],
+					"kind":    values[(seedIndex+1)%len(values)],
+					"region":  values[(seedIndex+2)%len(values)],
+				}
+				event := orisun.EventWithMapTags{
+					EventId:   uuid.NewString(),
+					EventType: fmt.Sprintf("Seed%02d", seedIndex),
+					Data:      data,
+					Metadata:  map[string]string{"source": "seed"},
+				}
+				prepared, prepareErr := orisun.PrepareEventsForSave(
+					[]orisun.EventWithMapTags{event},
+				)
+				require.NoError(t, prepareErr)
+				request := &postgresSaveRequest{
+					ctx:    t.Context(),
+					events: prepared,
+				}
+				groupSeed := legacySave("test_boundary", request)
+				referenceSeed := legacySave("reference_boundary", request)
+				require.NoError(t, groupSeed.err)
+				require.NoError(t, referenceSeed.err)
+				require.Equal(t, referenceSeed.transactionID, groupSeed.transactionID)
+				require.Equal(t, referenceSeed.globalID, groupSeed.globalID)
+				transactionID, parseErr := strconv.ParseInt(
+					groupSeed.transactionID,
+					10,
+					64,
+				)
+				require.NoError(t, parseErr)
+				stored = append(stored, storedEvent{
+					data: data,
+					position: orisun.Position{
+						CommitPosition:  transactionID,
+						PreparePosition: groupSeed.globalID,
+					},
+				})
+			}
+
+			requestCount := 2 + random.Intn(7)
+			requests := make([]*postgresSaveRequest, 0, requestCount)
+			mode := trial % 5
+			for requestIndex := range requestCount {
+				var query *orisun.Query
+				switch mode {
+				case 0:
+					query = nil
+				case 1:
+					contextValue := fmt.Sprintf("independent-%02d", requestIndex)
+					query = queryFromMaps(map[string]string{
+						"account": contextValue,
+					})
+				case 2:
+					query = queryFromMaps(map[string]string{
+						"account": "overlapping",
+					})
+				default:
+					switch random.Intn(5) {
+					case 0:
+						query = nil
+					case 1:
+						query = &orisun.Query{}
+					case 2:
+						query = queryFromMaps(map[string]string{
+							keys[random.Intn(len(keys))]: values[random.Intn(len(values))],
+						})
+					case 3:
+						firstKey := keys[random.Intn(len(keys))]
+						secondKey := firstKey
+						for secondKey == firstKey {
+							secondKey = keys[random.Intn(len(keys))]
+						}
+						query = queryFromMaps(map[string]string{
+							firstKey:  values[random.Intn(len(values))],
+							secondKey: values[random.Intn(len(values))],
+						})
+					default:
+						query = queryFromMaps(
+							map[string]string{
+								keys[random.Intn(len(keys))]: values[random.Intn(len(values))],
+							},
+							map[string]string{
+								keys[random.Intn(len(keys))]: values[random.Intn(len(values))],
+							},
+						)
+					}
+				}
+
+				eventCount := 1 + random.Intn(3)
+				events := make([]orisun.EventWithMapTags, 0, eventCount)
+				for eventIndex := range eventCount {
+					data := map[string]string{
+						"account": values[random.Intn(len(values))],
+						"kind":    values[random.Intn(len(values))],
+						"region":  values[random.Intn(len(values))],
+					}
+					if mode == 1 {
+						data["account"] = fmt.Sprintf(
+							"independent-%02d",
+							requestIndex,
+						)
+					} else if mode == 2 {
+						data["account"] = "overlapping"
+					} else if query != nil &&
+						len(query.Criteria) > 0 &&
+						len(query.Criteria[0].Tags) > 0 &&
+						(eventIndex == 0 || random.Intn(2) == 0) {
+						for _, tag := range query.Criteria[0].Tags {
+							data[tag.Key] = tag.Value
+						}
+					}
+					events = append(events, orisun.EventWithMapTags{
+						EventId: uuid.NewString(),
+						EventType: fmt.Sprintf(
+							"Trial%02dRequest%02dEvent%02d",
+							trial,
+							requestIndex,
+							eventIndex,
+						),
+						Data: data,
+						Metadata: map[string]any{
+							"trial":   trial,
+							"request": requestIndex,
+							"event":   eventIndex,
+						},
+					})
+				}
+				prepared, prepareErr := orisun.PrepareEventsForSave(events)
+				require.NoError(t, prepareErr)
+
+				var expected *orisun.Position
+				if query != nil {
+					position := latestPosition(stored, query)
+					switch random.Intn(5) {
+					case 0:
+						position = orisun.Position{
+							CommitPosition:  999_999,
+							PreparePosition: 999_998,
+						}
+					case 1:
+						position = orisun.NotExistsPosition()
+					}
+					expected = &position
+				}
+				requests = append(requests, &postgresSaveRequest{
+					ctx:      t.Context(),
+					events:   prepared,
+					expected: expected,
+					query:    query,
+				})
+			}
+
+			groupOutcomes, executeErr := saver.executeBatch(
+				t.Context(),
+				"test_boundary",
+				requests,
+			)
+			require.NoError(t, executeErr)
+			require.Len(t, groupOutcomes, len(requests))
+
+			referenceOutcomes := make([]postgresBatchOutcome, 0, len(requests))
+			for _, request := range requests {
+				referenceOutcomes = append(
+					referenceOutcomes,
+					legacySave("reference_boundary", request),
+				)
+			}
+			for outcomeIndex := range groupOutcomes {
+				require.Equal(
+					t,
+					statuscode.CodeOf(referenceOutcomes[outcomeIndex].err),
+					statuscode.CodeOf(groupOutcomes[outcomeIndex].err),
+					"request %d returned a different status",
+					outcomeIndex,
+				)
+				if referenceOutcomes[outcomeIndex].err == nil {
+					require.Equal(
+						t,
+						referenceOutcomes[outcomeIndex].transactionID,
+						groupOutcomes[outcomeIndex].transactionID,
+					)
+					require.Equal(
+						t,
+						referenceOutcomes[outcomeIndex].globalID,
+						groupOutcomes[outcomeIndex].globalID,
+					)
+				}
+			}
+			require.Equal(
+				t,
+				readPersisted("reference_boundary"),
+				readPersisted("test_boundary"),
+			)
+		})
+	}
+
+	require.Positive(t, saver.gc.fastFlushes.Load())
+	require.Positive(t, saver.gc.independentFlushes.Load())
+	require.Positive(t, saver.gc.canonicalFlushes.Load())
+}
+
+func TestPostgresGroupCommit_TwoSaversContendOnSameContexts(t *testing.T) {
+	container, err := setupTestContainer(t)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, container.container.Terminate(context.Background()))
+	}()
+
+	db, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	defer db.Close()
+	secondDB, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	defer secondDB.Close()
+
+	logger, err := logging.ZapLogger("error")
+	require.NoError(t, err)
+	mapping := map[string]config.BoundaryToPostgresSchemaMapping{
+		"test_boundary": {Boundary: "test_boundary", Schema: "public"},
+	}
+	groupCommitConfig := config.PostgresGroupCommitConfig{
+		MaxBatchRequests: 64,
+		MaxBatchEvents:   64,
+		MaxDelay:         25 * time.Millisecond,
+	}
+	firstSaver, err := NewPostgresSaveEventsWithConfig(
+		t.Context(),
+		db,
+		logger,
+		mapping,
+		groupCommitConfig,
+	)
+	require.NoError(t, err)
+	defer firstSaver.close()
+	secondSaver, err := NewPostgresSaveEventsWithConfig(
+		t.Context(),
+		secondDB,
+		logger,
+		mapping,
+		groupCommitConfig,
+	)
+	require.NoError(t, err)
+	defer secondSaver.close()
+
+	const (
+		contextCount       = 32
+		attemptsPerContext = 8
+	)
+	type contentionResult struct {
+		contextValue string
+		globalID     int64
+		err          error
+	}
+	start := make(chan struct{})
+	results := make(
+		chan contentionResult,
+		contextCount*attemptsPerContext,
+	)
+	var waitGroup sync.WaitGroup
+	for contextIndex := range contextCount {
+		contextValue := fmt.Sprintf("contention-%02d", contextIndex)
+		for attempt := range attemptsPerContext {
+			saver := firstSaver
+			if attempt%2 == 1 {
+				saver = secondSaver
+			}
+			event := postgresIndependentCCCEvent(
+				t,
+				"Contention",
+				contextValue,
+			)
+			waitGroup.Add(1)
+			go func() {
+				defer waitGroup.Done()
+				<-start
+				expected := orisun.NotExistsPosition()
+				_, globalID, saveErr := saver.Save(
+					context.Background(),
+					[]orisun.EventWithMapTags{event},
+					"test_boundary",
+					&expected,
+					postgresIndependentCCCQuery(
+						"stream_id",
+						contextValue,
+					),
+				)
+				results <- contentionResult{
+					contextValue: contextValue,
+					globalID:     globalID,
+					err:          saveErr,
+				}
+			}()
+		}
+	}
+	close(start)
+	waitGroup.Wait()
+	close(results)
+
+	successes := make(map[string]int, contextCount)
+	globalIDs := make(map[int64]struct{}, contextCount)
+	var conflicts int
+	for result := range results {
+		switch statuscode.CodeOf(result.err) {
+		case statuscode.OK:
+			successes[result.contextValue]++
+			globalIDs[result.globalID] = struct{}{}
+		case statuscode.AlreadyExists:
+			conflicts++
+		default:
+			t.Fatalf(
+				"context %s returned unexpected result: %v",
+				result.contextValue,
+				result.err,
+			)
+		}
+	}
+	require.Len(t, successes, contextCount)
+	require.Len(t, globalIDs, contextCount)
+	require.Equal(
+		t,
+		contextCount*(attemptsPerContext-1),
+		conflicts,
+	)
+	for contextIndex := range contextCount {
+		require.Equal(
+			t,
+			1,
+			successes[fmt.Sprintf("contention-%02d", contextIndex)],
+		)
+	}
+
+	var persistedCount, distinctContextCount, maxGlobalID int64
+	require.NoError(t, db.QueryRowContext(
+		t.Context(),
+		`SELECT COUNT(*),
+		        COUNT(DISTINCT data->>'stream_id'),
+		        MAX(global_id)
+		 FROM public.test_boundary_orisun_es_event
+		 WHERE data->>'eventType' = 'Contention'`,
+	).Scan(&persistedCount, &distinctContextCount, &maxGlobalID))
+	require.Equal(t, int64(contextCount), persistedCount)
+	require.Equal(t, int64(contextCount), distinctContextCount)
+	require.Equal(t, int64(contextCount-1), maxGlobalID)
 }
 
 func TestPostgresGroupCommit_CancellationAndFlushTimeout(t *testing.T) {
