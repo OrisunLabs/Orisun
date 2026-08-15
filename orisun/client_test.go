@@ -128,7 +128,7 @@ func TestOrisunServerGetEventsReturnsPackedBatch(t *testing.T) {
 	retriever := &captureEventsRetriever{batch: ReadEventBatch{{
 		EventId:         "event-1",
 		EventType:       "OrderPlaced",
-		Data:            `{"eventType":"OrderPlaced"}`,
+		Data:            `{"eventType":"OrderPlaced","orderId":"order-1"}`,
 		Metadata:        `{}`,
 		CommitPosition:  7,
 		PreparePosition: 8,
@@ -145,6 +145,22 @@ func TestOrisunServerGetEventsReturnsPackedBatch(t *testing.T) {
 	}
 	if got := batch[0].DateCreated; !got.Equal(created) {
 		t.Fatalf("unexpected creation time: %v", got)
+	}
+	if batch[0].EventType != "OrderPlaced" {
+		t.Fatalf("unexpected event type: %q", batch[0].EventType)
+	}
+	var publicData map[string]any
+	if err := json.Unmarshal([]byte(batch[0].Data), &publicData); err != nil {
+		t.Fatal(err)
+	}
+	if publicData["orderId"] != "order-1" {
+		t.Fatalf("unexpected public data: %#v", publicData)
+	}
+	if _, leaked := publicData["eventType"]; leaked {
+		t.Fatalf("storage eventType leaked into public data: %#v", publicData)
+	}
+	if retriever.batch[0].Data != `{"eventType":"OrderPlaced","orderId":"order-1"}` {
+		t.Fatalf("public translation mutated backend batch: %s", retriever.batch[0].Data)
 	}
 }
 
@@ -165,7 +181,7 @@ func TestOrisunServerGetLatestByCriteriaUsesPackedTypes(t *testing.T) {
 	retriever := &captureEventsRetriever{latestBatch: LatestByCriteriaBatch{
 		Matches: []LatestCriterionMatch{{
 			Found: true,
-			Event: ReadEvent{EventId: "event-1", CommitPosition: 7, PreparePosition: 8},
+			Event: ReadEvent{EventId: "event-1", EventType: "OrderPlaced", Data: `{"eventType":"OrderPlaced","orderId":"order-1"}`, CommitPosition: 7, PreparePosition: 8},
 		}},
 		ContextCommitPosition:  7,
 		ContextPreparePosition: 8,
@@ -182,6 +198,16 @@ func TestOrisunServerGetLatestByCriteriaUsesPackedTypes(t *testing.T) {
 	}
 	if len(batch.Matches) != 1 || !batch.Matches[0].Found || batch.Matches[0].Event.EventId != "event-1" {
 		t.Fatalf("unexpected packed latest result: %+v", batch)
+	}
+	var publicData map[string]any
+	if err := json.Unmarshal([]byte(batch.Matches[0].Event.Data), &publicData); err != nil {
+		t.Fatal(err)
+	}
+	if publicData["orderId"] != "order-1" {
+		t.Fatalf("unexpected public latest data: %#v", publicData)
+	}
+	if _, leaked := publicData["eventType"]; leaked {
+		t.Fatalf("storage eventType leaked into public latest data: %#v", publicData)
 	}
 	if retriever.latestQuery.Boundary != "orders" || retriever.latestQuery.Criteria[0].Tags[0].Value != "order-1" {
 		t.Fatalf("unexpected packed latest query: %+v", retriever.latestQuery)

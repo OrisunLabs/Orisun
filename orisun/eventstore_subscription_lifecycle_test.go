@@ -69,7 +69,7 @@ func TestSubscribeToAllEventsDeliversNeutralEventAndPropagatesHandlerError(t *te
 	retriever.add(ReadEvent{
 		EventId:         "event-1",
 		EventType:       "OrderPlaced",
-		Data:            `{"orderId":"o-1"}`,
+		Data:            `{"eventType":"OrderPlaced","orderId":"o-1"}`,
 		Metadata:        `{}`,
 		CommitPosition:  1,
 		PreparePosition: 1,
@@ -101,5 +101,22 @@ func TestSubscribeToAllEventsDeliversNeutralEventAndPropagatesHandlerError(t *te
 	if received.EventID != "event-1" ||
 		received.Position != (coreeventstore.Position{CommitPosition: 1, PreparePosition: 1}) {
 		t.Fatalf("received event = %#v", received)
+	}
+	if received.EventType != "OrderPlaced" || received.Data != `{"orderId":"o-1"}` {
+		t.Fatalf("received event leaked storage data = %#v", received)
+	}
+}
+
+func TestNeutralPublishedEventExcludesStorageEventTypeFromData(t *testing.T) {
+	event := Event{
+		EventId:   "event-1",
+		EventType: "OrderPlaced",
+		Data:      `{"eventType":"OrderPlaced","orderId":"o-1"}`,
+	}
+
+	got := neutralPublishedEvent(event)
+
+	if got.EventType != "OrderPlaced" || got.Data != `{"orderId":"o-1"}` {
+		t.Fatalf("neutralPublishedEvent() = %#v", got)
 	}
 }
