@@ -109,7 +109,7 @@ func (c *OrisunServer) GetEvents(ctx context.Context, req *GetEventsRequest) (Re
 		return nil, fmt.Errorf("failed to get events: %w", err)
 	}
 
-	return batch, nil
+	return publicReadEventBatch(batch), nil
 }
 
 // GetLatestByCriteria returns the latest event per criterion from one backend
@@ -124,7 +124,7 @@ func (c *OrisunServer) GetLatestByCriteria(ctx context.Context, query LatestByCr
 		return LatestByCriteriaBatch{}, fmt.Errorf("failed to get latest by criteria: %w", err)
 	}
 
-	return batch, nil
+	return publicLatestByCriteriaBatch(batch), nil
 }
 
 // SubscribeToEvents subscribes to events from a boundary with the given handler

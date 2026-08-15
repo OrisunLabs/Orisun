@@ -49,13 +49,13 @@ func TestAdapterConvertsNeutralReads(t *testing.T) {
 	created := time.Date(2026, time.July, 23, 10, 0, 0, 0, time.UTC)
 	legacy := &captureLegacyStore{
 		readBatch: orisun.ReadEventBatch{{
-			EventId: "event-1", EventType: "$BoundaryCreated", Data: `{}`,
+			EventId: "event-1", EventType: "$BoundaryCreated", Data: `{"eventType":"$BoundaryCreated","boundary":"orders"}`,
 			CommitPosition: 5, PreparePosition: 6, DateCreated: created,
 		}},
 		latestBatch: orisun.LatestByCriteriaBatch{
 			Matches: []orisun.LatestCriterionMatch{{
 				Found: true,
-				Event: orisun.ReadEvent{EventId: "event-2", CommitPosition: 7, PreparePosition: 8},
+				Event: orisun.ReadEvent{EventId: "event-2", EventType: "$BoundaryActivated", Data: `{"eventType":"$BoundaryActivated","boundary":"orders"}`, CommitPosition: 7, PreparePosition: 8},
 			}},
 			ContextCommitPosition:  7,
 			ContextPreparePosition: 8,
@@ -77,6 +77,9 @@ func TestAdapterConvertsNeutralReads(t *testing.T) {
 	if len(read) != 1 || read[0].EventID != "event-1" || read[0].Position.CommitPosition != 5 || !read[0].DateCreated.Equal(created) {
 		t.Fatalf("Read() = %#v", read)
 	}
+	if read[0].Data != `{"boundary":"orders"}` {
+		t.Fatalf("Read() leaked storage eventType: %s", read[0].Data)
+	}
 	if legacy.readRequest.Direction != orisun.Direction_DESC || legacy.readRequest.FromPosition.PreparePosition != 2 {
 		t.Fatalf("legacy read request = %#v", legacy.readRequest)
 	}
@@ -91,6 +94,9 @@ func TestAdapterConvertsNeutralReads(t *testing.T) {
 	if !latest.Matches[0].Found || latest.Matches[0].Event.EventID != "event-2" ||
 		latest.ContextPosition != (coreeventstore.Position{CommitPosition: 7, PreparePosition: 8}) {
 		t.Fatalf("LatestByCriteria() = %#v", latest)
+	}
+	if latest.Matches[0].Event.Data != `{"boundary":"orders"}` {
+		t.Fatalf("LatestByCriteria() leaked storage eventType: %s", latest.Matches[0].Event.Data)
 	}
 }
 

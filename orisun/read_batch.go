@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"time"
 	"unicode/utf8"
+
+	"github.com/OrisunLabs/Orisun/internal/eventdata"
 )
 
 const (
@@ -31,6 +33,31 @@ type ReadEvent struct {
 // ReadEventBatch keeps database results in one value slab.
 type ReadEventBatch []ReadEvent
 
+func publicReadEvent(event ReadEvent) ReadEvent {
+	event.Data = eventdata.WithoutStorageEventType(event.Data)
+	return event
+}
+
+func publicReadEventBatch(batch ReadEventBatch) ReadEventBatch {
+	publicBatch := make(ReadEventBatch, len(batch))
+	for index, event := range batch {
+		publicBatch[index] = publicReadEvent(event)
+	}
+	return publicBatch
+}
+
+func publicLatestByCriteriaBatch(batch LatestByCriteriaBatch) LatestByCriteriaBatch {
+	publicBatch := batch
+	publicBatch.Matches = make([]LatestCriterionMatch, len(batch.Matches))
+	copy(publicBatch.Matches, batch.Matches)
+	for index := range publicBatch.Matches {
+		if publicBatch.Matches[index].Found {
+			publicBatch.Matches[index].Event = publicReadEvent(publicBatch.Matches[index].Event)
+		}
+	}
+	return publicBatch
+}
+
 // Event materializes the legacy in-process event representation.
 func (e *ReadEvent) Event() *Event {
 	if e == nil {
@@ -47,7 +74,7 @@ func fillEvent(event *Event, read *ReadEvent) {
 	}
 	event.EventId = read.EventId
 	event.EventType = read.EventType
-	event.Data = read.Data
+	event.Data = eventdata.WithoutStorageEventType(read.Data)
 	event.Metadata = read.Metadata
 	event.Position = &Position{
 		CommitPosition:  read.CommitPosition,

@@ -78,8 +78,24 @@ func TestReadEventBatchResponsePreservesRows(t *testing.T) {
 	assert.Equal(t, int64(4), resp.Events[0].Position.CommitPosition)
 	assert.Equal(t, int64(9), resp.Events[0].Position.PreparePosition)
 	assert.Equal(t, created, resp.Events[0].DateCreated)
+	assert.JSONEq(t, `{}`, resp.Events[0].Data)
 	assert.Equal(t, `{"reason":"done"}`, resp.Events[1].Metadata)
+	assert.JSONEq(t, `{}`, resp.Events[1].Data)
 	assert.Equal(t, int64(10), resp.Events[1].Position.PreparePosition)
+}
+
+func TestReadEventMaterializationExcludesStorageEventType(t *testing.T) {
+	read := ReadEvent{
+		EventId:   "event-1",
+		EventType: "AccountCredited",
+		Data:      `{"eventType":"AccountCredited","accountId":"account-1"}`,
+	}
+
+	event := read.Event()
+	require.NotNil(t, event)
+	assert.Equal(t, "AccountCredited", event.EventType)
+	assert.JSONEq(t, `{"accountId":"account-1"}`, event.Data)
+	assert.JSONEq(t, `{"eventType":"AccountCredited","accountId":"account-1"}`, read.Data)
 }
 
 func BenchmarkPublisherEventMarshal(b *testing.B) {
