@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +73,55 @@ func readSeqNextID(t *testing.T, bp *BoundaryPools) int64 {
 		t.Fatalf("read seq: %v", err)
 	}
 	return next
+}
+
+func TestSQLiteStatementCacheIsBoundedAndUsesLRU(t *testing.T) {
+	_, bp, cleanup := newGCTestSaver(t)
+	defer cleanup()
+
+	conn, err := bp.Write.Take(context.Background())
+	if err != nil {
+		t.Fatalf("take write conn: %v", err)
+	}
+	defer bp.Write.Put(conn)
+
+	cache := newSQLiteStatementCache(2)
+	execute := func(query string, want int64) {
+		t.Helper()
+		var got int64
+		if err := cache.execute(conn, query, &sqlitex.ExecOptions{
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				got = stmt.ColumnInt64(0)
+				return nil
+			},
+		}); err != nil {
+			t.Fatalf("execute %q: %v", query, err)
+		}
+		if got != want {
+			t.Fatalf("execute %q = %d, want %d", query, got, want)
+		}
+	}
+
+	execute("SELECT 1", 1)
+	execute("SELECT 2", 2)
+	execute("SELECT 1", 1) // make SELECT 2 least-recently used
+	execute("SELECT 3", 3)
+	if len(cache.entries) != 2 {
+		t.Fatalf("cache size = %d, want 2", len(cache.entries))
+	}
+	if cache.entries["SELECT 1"] == nil || cache.entries["SELECT 3"] == nil {
+		t.Fatalf("unexpected cache contents after eviction: %v", cache.entries)
+	}
+	if cache.entries["SELECT 2"] != nil {
+		t.Fatal("least-recently used statement was not evicted")
+	}
+
+	// An evicted statement can be prepared and executed again, evicting the
+	// current least-recently used entry without growing the cache.
+	execute("SELECT 2", 2)
+	if len(cache.entries) != 2 || cache.entries["SELECT 1"] != nil {
+		t.Fatalf("cache did not remain bounded after reprepare: %v", cache.entries)
+	}
 }
 
 func countEventsMatching(t *testing.T, bp *BoundaryPools, criteria map[string]any) int {
@@ -262,6 +312,9 @@ func TestGroupCommit_CoalescesConcurrentSavesIntoOneFlush(t *testing.T) {
 	if got := saver.gcMultiFlushes.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 multi-request flush, got %d", got)
 	}
+	if got := saver.gcUnconditionalFlushes.Load(); got != 1 {
+		t.Fatalf("expected unconditional fast path, got %d fast flushes", got)
+	}
 	seenGids := make(map[int64]bool, n)
 	for i, o := range outcomes {
 		if o.err != nil {
@@ -283,6 +336,318 @@ func TestGroupCommit_CoalescesConcurrentSavesIntoOneFlush(t *testing.T) {
 	}
 	if next := readSeqNextID(t, bp); next != int64(n+2) {
 		t.Errorf("expected seq next_id %d, got %d", n+2, next)
+	}
+}
+
+func TestGroupCommit_UnconditionalFastPathPreservesMultiEventRequestPositions(t *testing.T) {
+	saver, bp, cleanup := newGCTestSaver(t)
+	defer cleanup()
+	logger, _ := logging.ZapLogger("error")
+	getter := NewSqliteGetEvents(map[string]*BoundaryPools{gcBoundary: bp}, logger)
+
+	outcomes := make([]saveOutcome, 2)
+	var wg sync.WaitGroup
+	blockWorkerThenQueue(t, saver, bp, 2, func() {
+		for requestIndex, eventCount := range []int{2, 3} {
+			requestIndex, eventCount := requestIndex, eventCount
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				events := make([]eventstore.EventWithMapTags, eventCount)
+				for eventIndex := range events {
+					events[eventIndex] = mustEvent(t, "Multi", map[string]any{
+						"request": strconv.Itoa(requestIndex),
+						"event":   strconv.Itoa(eventIndex),
+					}, map[string]any{})
+				}
+				tx, gid, err := saver.Save(context.Background(), events, gcBoundary, nil, nil)
+				outcomes[requestIndex] = saveOutcome{tx: tx, gid: gid, err: err}
+			}()
+		}
+	})
+	wg.Wait()
+
+	if got := saver.gcUnconditionalFlushes.Load(); got != 1 {
+		t.Fatalf("expected one unconditional fast flush, got %d", got)
+	}
+	for requestIndex, outcome := range outcomes {
+		if outcome.err != nil {
+			t.Fatalf("request %d: %v", requestIndex, outcome.err)
+		}
+		if outcome.tx != strconv.FormatInt(outcome.gid, 10) {
+			t.Fatalf("request %d: tx=%s gid=%d", requestIndex, outcome.tx, outcome.gid)
+		}
+		batch, err := getter.GetBatch(context.Background(), &eventstore.GetEventsRequest{
+			Boundary:  gcBoundary,
+			Direction: eventstore.Direction_ASC,
+			Count:     10,
+			Query: &eventstore.Query{Criteria: []*eventstore.Criterion{{Tags: []*eventstore.Tag{
+				{Key: "request", Value: strconv.Itoa(requestIndex)},
+			}}}},
+		})
+		if err != nil {
+			t.Fatalf("read request %d: %v", requestIndex, err)
+		}
+		wantEvents := requestIndex + 2
+		if len(batch) != wantEvents {
+			t.Fatalf("request %d: got %d events, want %d", requestIndex, len(batch), wantEvents)
+		}
+		for _, event := range batch {
+			if event.CommitPosition != outcome.gid {
+				t.Errorf("request %d: event gid=%d has tx=%d, want %d",
+					requestIndex, event.PreparePosition, event.CommitPosition, outcome.gid)
+			}
+		}
+		if batch[len(batch)-1].PreparePosition != outcome.gid {
+			t.Errorf("request %d: last stored gid=%d, returned gid=%d",
+				requestIndex, batch[len(batch)-1].PreparePosition, outcome.gid)
+		}
+	}
+}
+
+func TestCanUseUnconditionalFastPath(t *testing.T) {
+	valid := eventstore.PreparedEventBatch{{DataJSON: `{}`}}
+	requests := []*sqliteSaveRequest{
+		{inserts: valid},
+		{inserts: valid},
+	}
+	if !canUseUnconditionalFastPath(requests) {
+		t.Fatal("expected valid query-less requests to use fast path")
+	}
+
+	withQuery := []*sqliteSaveRequest{{inserts: valid, query: &eventstore.Query{}}}
+	if !canUseUnconditionalFastPath(withQuery) {
+		t.Fatal("SQLite treats a present empty query as unconditional")
+	}
+	if canUseUnconditionalFastPath([]*sqliteSaveRequest{{inserts: nil}}) {
+		t.Fatal("empty event batch must not use fast path")
+	}
+	if canUseUnconditionalFastPath([]*sqliteSaveRequest{{
+		inserts: eventstore.PreparedEventBatch{{DataJSON: `{"broken":`}},
+	}}) {
+		t.Fatal("invalid event JSON must retain request-local isolation")
+	}
+}
+
+func TestGroupCommit_UnconditionalFastPathFallsBackForInvalidPreparedData(t *testing.T) {
+	saver, bp, cleanup := newGCTestSaver(t)
+	defer cleanup()
+
+	valid, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		mustEvent(t, "Valid", map[string]any{"valid": "yes"}, map[string]any{}),
+	})
+	if err != nil {
+		t.Fatalf("prepare valid event: %v", err)
+	}
+	invalid := eventstore.PreparedEventBatch{{
+		EventId:      "invalid-json",
+		EventType:    "Invalid",
+		DataJSON:     `{"broken":`,
+		MetadataJSON: `{}`,
+	}}
+
+	var invalidErr, validErr error
+	var wg sync.WaitGroup
+	blockWorkerThenQueue(t, saver, bp, 2, func() {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _, invalidErr = saver.SavePrepared(context.Background(), invalid, gcBoundary, nil, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, validErr = saver.SavePrepared(context.Background(), valid, gcBoundary, nil, nil)
+		}()
+	})
+	wg.Wait()
+
+	if statuscode.CodeOf(invalidErr) != statuscode.Internal {
+		t.Fatalf("invalid prepared request: expected Internal, got %v", invalidErr)
+	}
+	if validErr != nil {
+		t.Fatalf("valid request should survive isolated fallback: %v", validErr)
+	}
+	if got := saver.gcUnconditionalFlushes.Load(); got != 0 {
+		t.Fatalf("invalid batch must not use unconditional fast path, got %d", got)
+	}
+	if next := readSeqNextID(t, bp); next != 3 {
+		t.Fatalf("expected blocker and valid request only, next_id=%d", next)
+	}
+}
+
+func TestGroupCommit_IndependentCCCFastPath(t *testing.T) {
+	saver, bp, cleanup := newGCTestSaver(t)
+	defer cleanup()
+
+	type seededContext struct {
+		position eventstore.Position
+	}
+	seeded := make(map[string]seededContext, 2)
+	for _, contextValue := range []string{"seed-good", "seed-stale"} {
+		tx, gid, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
+			mustEvent(t, "Seed", map[string]any{"stream_id": contextValue}, map[string]any{}),
+		}, gcBoundary, nil, nil)
+		if err != nil {
+			t.Fatalf("seed %s: %v", contextValue, err)
+		}
+		commitPosition, err := strconv.ParseInt(tx, 10, 64)
+		if err != nil {
+			t.Fatalf("parse seed position: %v", err)
+		}
+		seeded[contextValue] = seededContext{position: eventstore.Position{
+			CommitPosition:  commitPosition,
+			PreparePosition: gid,
+		}}
+	}
+
+	type independentOutcome struct {
+		contextValue string
+		saveOutcome
+	}
+	contexts := []string{"new", "seed-good", "seed-stale"}
+	outcomes := make([]independentOutcome, len(contexts))
+	var wg sync.WaitGroup
+	blockWorkerThenQueue(t, saver, bp, len(contexts), func() {
+		for i, contextValue := range contexts {
+			i, contextValue := i, contextValue
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var expected *eventstore.Position
+				if contextValue == "seed-good" {
+					position := seeded[contextValue].position
+					expected = &position
+				}
+				query := &eventstore.Query{Criteria: []*eventstore.Criterion{{Tags: []*eventstore.Tag{
+					{Key: "stream_id", Value: contextValue},
+				}}}}
+				events := []eventstore.EventWithMapTags{
+					mustEvent(t, "Independent", map[string]any{"stream_id": contextValue}, map[string]any{}),
+				}
+				if contextValue == "new" {
+					events = append(events,
+						mustEvent(t, "IndependentSecond", map[string]any{"stream_id": contextValue}, map[string]any{}))
+				}
+				tx, gid, err := saver.Save(context.Background(), events, gcBoundary, expected, query)
+				outcomes[i] = independentOutcome{
+					contextValue: contextValue,
+					saveOutcome:  saveOutcome{tx: tx, gid: gid, err: err},
+				}
+			}()
+		}
+	})
+	wg.Wait()
+
+	for _, outcome := range outcomes {
+		if outcome.contextValue == "seed-stale" {
+			if statuscode.CodeOf(outcome.err) != statuscode.AlreadyExists {
+				t.Fatalf("stale context: expected AlreadyExists, got %v", outcome.err)
+			}
+			continue
+		}
+		if outcome.err != nil {
+			t.Fatalf("context %s: %v", outcome.contextValue, outcome.err)
+		}
+		if outcome.tx != strconv.FormatInt(outcome.gid, 10) {
+			t.Errorf("context %s: tx=%s gid=%d", outcome.contextValue, outcome.tx, outcome.gid)
+		}
+	}
+	if got := saver.gcIndependentFlushes.Load(); got != 1 {
+		t.Fatalf("expected one independent CCC flush, got %d", got)
+	}
+	if next := readSeqNextID(t, bp); next != 7 {
+		t.Fatalf("expected two seeds, blocker, and three accepted events, next_id=%d", next)
+	}
+	if count := countEventsMatching(t, bp, map[string]any{"stream_id": "seed-stale"}); count != 1 {
+		t.Fatalf("stale context wrote an event, count=%d", count)
+	}
+	logger, _ := logging.ZapLogger("error")
+	getter := NewSqliteGetEvents(map[string]*BoundaryPools{gcBoundary: bp}, logger)
+	batch, err := getter.GetBatch(context.Background(), &eventstore.GetEventsRequest{
+		Boundary:  gcBoundary,
+		Direction: eventstore.Direction_ASC,
+		Count:     10,
+		Query: &eventstore.Query{Criteria: []*eventstore.Criterion{{Tags: []*eventstore.Tag{
+			{Key: "stream_id", Value: "new"},
+		}}}},
+	})
+	if err != nil {
+		t.Fatalf("read multi-event context: %v", err)
+	}
+	if len(batch) != 2 {
+		t.Fatalf("multi-event context: got %d events", len(batch))
+	}
+	newOutcome := outcomes[0]
+	for _, event := range batch {
+		if event.CommitPosition != newOutcome.gid {
+			t.Errorf("multi-event context: event gid=%d tx=%d, want tx=%d",
+				event.PreparePosition, event.CommitPosition, newOutcome.gid)
+		}
+	}
+	if batch[1].PreparePosition != newOutcome.gid {
+		t.Errorf("multi-event context: last gid=%d, returned=%d", batch[1].PreparePosition, newOutcome.gid)
+	}
+}
+
+func TestIndependentCCCContextsRejectsOverlappingOrAmbiguousShapes(t *testing.T) {
+	_, bp, cleanup := newGCTestSaver(t)
+	defer cleanup()
+
+	request := func(key, queryValue, eventValue string) *sqliteSaveRequest {
+		prepared, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+			mustEvent(t, "Independent", map[string]any{key: eventValue}, map[string]any{}),
+		})
+		if err != nil {
+			t.Fatalf("prepare event: %v", err)
+		}
+		return &sqliteSaveRequest{
+			inserts: prepared,
+			query: &eventstore.Query{Criteria: []*eventstore.Criterion{{Tags: []*eventstore.Tag{
+				{Key: key, Value: queryValue},
+			}}}},
+		}
+	}
+
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
+		request("stream_id", "a", "a"),
+		request("stream_id", "b", "b"),
+	}, bp, gcBoundary); !ok {
+		t.Fatal("expected distinct matching string contexts to qualify")
+	}
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
+		request("stream_id", "same", "same"),
+		request("stream_id", "same", "same"),
+	}, bp, gcBoundary); ok {
+		t.Fatal("duplicate contexts can invalidate one another")
+	}
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
+		request("stream_id", "a", "b"),
+		request("stream_id", "b", "b"),
+	}, bp, gcBoundary); ok {
+		t.Fatal("cross-context event must use isolated path")
+	}
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
+		request("stream_id", "a", "a"),
+		request("account_id", "b", "b"),
+	}, bp, gcBoundary); ok {
+		t.Fatal("different keys must use isolated path")
+	}
+
+	complex := request("stream_id", "a", "a")
+	complex.query.Criteria[0].Tags = append(complex.query.Criteria[0].Tags,
+		&eventstore.Tag{Key: "kind", Value: "credit"})
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{complex}, bp, gcBoundary); ok {
+		t.Fatal("multi-tag criterion must use isolated path")
+	}
+
+	bp.indexes.replaceBoundaryFields(gcBoundary, map[string]sqliteFieldInfo{
+		"stream_id": {valueType: "numeric", declaredField: true},
+	})
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
+		request("stream_id", "42", "42"),
+		request("stream_id", "43", "43"),
+	}, bp, gcBoundary); ok {
+		t.Fatal("numeric contexts can alias after casts and must use isolated path")
 	}
 }
 
@@ -338,6 +703,7 @@ func TestGroupCommit_ResultsRouteToTheRightCallers(t *testing.T) {
 func TestGroupCommit_InBatchConflictEarlierWinsLaterAlreadyExists(t *testing.T) {
 	saver, bp, cleanup := newGCTestSaver(t)
 	defer cleanup()
+	saver.gcCriterionMinBatchRequests = 2
 
 	criteria := &eventstore.Query{Criteria: []*eventstore.Criterion{
 		{Tags: []*eventstore.Tag{{Key: "agg", Value: "conflict-1"}}},
@@ -365,6 +731,9 @@ func TestGroupCommit_InBatchConflictEarlierWinsLaterAlreadyExists(t *testing.T) 
 	if saver.gcMultiFlushes.Load() != 1 {
 		t.Fatalf("expected the conflicting saves to share one flush, got %d", saver.gcMultiFlushes.Load())
 	}
+	if saver.gcCriterionFlushes.Load() != 1 {
+		t.Fatalf("expected overlapping contexts to use criterion-state, got %d", saver.gcCriterionFlushes.Load())
+	}
 	succeeded, rejected := 0, 0
 	for _, err := range []error{errB, errC} {
 		switch statuscode.CodeOf(err) {
@@ -384,6 +753,192 @@ func TestGroupCommit_InBatchConflictEarlierWinsLaterAlreadyExists(t *testing.T) 
 	if next := readSeqNextID(t, bp); next != 3 {
 		t.Errorf("expected gap-free seq next_id 3, got %d", next)
 	}
+}
+
+func TestGroupCommit_CriterionStateGeneralQueries(t *testing.T) {
+	t.Run("OR of AND criteria preserves ordered multi-event state", func(t *testing.T) {
+		saver, bp, cleanup := newGCTestSaver(t)
+		defer cleanup()
+		saver.gcCriterionMinBatchRequests = 2
+
+		_, c1GID, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
+			mustEvent(t, "SeedC1", map[string]any{
+				"tenant_id": "t1",
+				"kind":      "credit",
+			}, map[string]any{}),
+		}, gcBoundary, nil, nil)
+		if err != nil {
+			t.Fatalf("seed C1: %v", err)
+		}
+		_, c2GID, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
+			mustEvent(t, "SeedC2", map[string]any{"order_id": "o9"}, map[string]any{}),
+		}, gcBoundary, nil, nil)
+		if err != nil {
+			t.Fatalf("seed C2: %v", err)
+		}
+
+		c1 := &eventstore.Criterion{Tags: []*eventstore.Tag{
+			{Key: "tenant_id", Value: "t1"},
+			{Key: "kind", Value: "credit"},
+		}}
+		c2 := &eventstore.Criterion{Tags: []*eventstore.Tag{{Key: "order_id", Value: "o9"}}}
+		firstEvents, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+			mustEvent(t, "FirstMatch", map[string]any{
+				"tenant_id": "t1",
+				"kind":      "credit",
+			}, map[string]any{}),
+			mustEvent(t, "FirstTail", map[string]any{"other": "value"}, map[string]any{}),
+		})
+		if err != nil {
+			t.Fatalf("prepare first: %v", err)
+		}
+		secondEvents, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+			mustEvent(t, "Second", map[string]any{
+				"tenant_id": "t1",
+				"kind":      "credit",
+			}, map[string]any{}),
+		})
+		if err != nil {
+			t.Fatalf("prepare second: %v", err)
+		}
+		firstExpected := eventstore.Position{CommitPosition: c2GID, PreparePosition: c2GID}
+		secondExpected := eventstore.Position{CommitPosition: c1GID, PreparePosition: c1GID}
+		requests := []*sqliteSaveRequest{
+			{
+				ctx:      context.Background(),
+				inserts:  firstEvents,
+				expected: &firstExpected,
+				query:    &eventstore.Query{Criteria: []*eventstore.Criterion{c1, c2}},
+				result:   make(chan sqliteSaveResult, 1),
+			},
+			{
+				ctx:      context.Background(),
+				inserts:  secondEvents,
+				expected: &secondExpected,
+				query:    &eventstore.Query{Criteria: []*eventstore.Criterion{c1}},
+				result:   make(chan sqliteSaveResult, 1),
+			},
+		}
+		saver.runFlush(gcBoundary, bp, requests)
+		firstResult := <-requests[0].result
+		secondResult := <-requests[1].result
+
+		if firstResult.err != nil {
+			t.Fatalf("first request: %v", firstResult.err)
+		}
+		if firstResult.transactionID != "4" || firstResult.globalID != 4 {
+			t.Fatalf("first position = (%s,%d), want (4,4)", firstResult.transactionID, firstResult.globalID)
+		}
+		if statuscode.CodeOf(secondResult.err) != statuscode.AlreadyExists {
+			t.Fatalf("second request should observe first and conflict: %v", secondResult.err)
+		}
+		if !strings.Contains(secondResult.err.Error(), "Actual (4, 3)") {
+			t.Fatalf("second request observed wrong criterion position: %v", secondResult.err)
+		}
+		if saver.gcCriterionFlushes.Load() != 1 {
+			t.Fatalf("expected criterion-state flush, got %d", saver.gcCriterionFlushes.Load())
+		}
+		if next := readSeqNextID(t, bp); next != 5 {
+			t.Fatalf("expected two seeds and two accepted events, next_id=%d", next)
+		}
+		if count := countEventsMatching(t, bp, map[string]any{
+			"tenant_id": "t1",
+			"kind":      "credit",
+		}); count != 2 {
+			t.Fatalf("expected seed plus first matching event, count=%d", count)
+		}
+	})
+
+	t.Run("queryless write invalidates later queried request", func(t *testing.T) {
+		saver, bp, cleanup := newGCTestSaver(t)
+		defer cleanup()
+		saver.gcCriterionMinBatchRequests = 2
+
+		firstEvents, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+			mustEvent(t, "Unconditional", map[string]any{"account_id": "a1"}, map[string]any{}),
+		})
+		if err != nil {
+			t.Fatalf("prepare first: %v", err)
+		}
+		secondEvents, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+			mustEvent(t, "Conditional", map[string]any{"account_id": "a1"}, map[string]any{}),
+		})
+		if err != nil {
+			t.Fatalf("prepare second: %v", err)
+		}
+		requests := []*sqliteSaveRequest{
+			{
+				ctx:     context.Background(),
+				inserts: firstEvents,
+				result:  make(chan sqliteSaveResult, 1),
+			},
+			{
+				ctx:     context.Background(),
+				inserts: secondEvents,
+				query: &eventstore.Query{Criteria: []*eventstore.Criterion{{Tags: []*eventstore.Tag{
+					{Key: "account_id", Value: "a1"},
+				}}}},
+				result: make(chan sqliteSaveResult, 1),
+			},
+		}
+		saver.runFlush(gcBoundary, bp, requests)
+		firstResult := <-requests[0].result
+		secondResult := <-requests[1].result
+		if firstResult.err != nil {
+			t.Fatalf("queryless request: %v", firstResult.err)
+		}
+		if statuscode.CodeOf(secondResult.err) != statuscode.AlreadyExists {
+			t.Fatalf("later request should conflict: %v", secondResult.err)
+		}
+		if saver.gcCriterionFlushes.Load() != 1 {
+			t.Fatalf("expected criterion-state flush, got %d", saver.gcCriterionFlushes.Load())
+		}
+		if next := readSeqNextID(t, bp); next != 2 {
+			t.Fatalf("only queryless request should allocate an ID, next_id=%d", next)
+		}
+	})
+
+	t.Run("typed numeric dependency uses SQLite comparison semantics", func(t *testing.T) {
+		saver, bp, cleanup := newGCTestSaver(t)
+		defer cleanup()
+		saver.gcCriterionMinBatchRequests = 2
+		bp.indexes.replaceBoundaryFields(gcBoundary, map[string]sqliteFieldInfo{
+			"score": {valueType: "numeric", declaredField: true},
+		})
+
+		firstEvents, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+			mustEvent(t, "Numeric", map[string]any{"score": 42}, map[string]any{}),
+		})
+		if err != nil {
+			t.Fatalf("prepare first: %v", err)
+		}
+		secondEvents, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+			mustEvent(t, "NumericLater", map[string]any{"score": 42.0}, map[string]any{}),
+		})
+		if err != nil {
+			t.Fatalf("prepare second: %v", err)
+		}
+		requests := []*sqliteSaveRequest{
+			{ctx: context.Background(), inserts: firstEvents, result: make(chan sqliteSaveResult, 1)},
+			{
+				ctx:     context.Background(),
+				inserts: secondEvents,
+				query: &eventstore.Query{Criteria: []*eventstore.Criterion{{Tags: []*eventstore.Tag{
+					{Key: "score", Value: "42.0"},
+				}}}},
+				result: make(chan sqliteSaveResult, 1),
+			},
+		}
+		saver.runFlush(gcBoundary, bp, requests)
+		firstResult := <-requests[0].result
+		secondResult := <-requests[1].result
+		if firstResult.err != nil || statuscode.CodeOf(secondResult.err) != statuscode.AlreadyExists {
+			t.Fatalf("typed dependency results: first=%v second=%v", firstResult.err, secondResult.err)
+		}
+		if saver.gcCriterionFlushes.Load() != 1 {
+			t.Fatalf("expected criterion-state flush, got %d", saver.gcCriterionFlushes.Load())
+		}
+	})
 }
 
 func TestGroupCommit_InBatchSameExpectedPositionOnlyOneWins(t *testing.T) {

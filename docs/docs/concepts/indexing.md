@@ -30,10 +30,10 @@ grpcurl -H "$AUTH" \
   localhost:5005 orisun.EventStore/CreateIndex
 ```
 
-### High-throughput PostgreSQL CCC
+### High-throughput CCC
 
-PostgreSQL group commit resolves canonical CCC event batches as criterion state
-rather than issuing one database query per request. It:
+PostgreSQL and SQLite group commit resolve eligible CCC event batches as
+criterion state rather than issuing one database query per request. They:
 
 - deduplicates the batch's AND criteria
 - groups criteria by their indexed key shape
@@ -156,7 +156,16 @@ continue during creation. Orisun verifies `pg_index.indisvalid` before reporting
 an index as `READY`. If a concurrent build fails or a retry finds an invalid
 physical index, Orisun drops that invalid index and leaves the logical
 definition `BUILDING` so the operation can be retried cleanly. SQLite uses JSON
-expression indexes.
+expression indexes and automatically appends descending event-position columns
+to API-managed indexes. An equality lookup on the full declared field shape can
+therefore find its latest matching event without sorting the context's complete
+history.
+
+On the first SQLite startup after upgrading from an older physical index shape,
+Orisun atomically rebuilds API-managed indexes from their stored definitions.
+Large boundary files can make that first startup take longer and temporarily
+require space for rebuilding; later startups detect the position-ordered shape
+and skip this work.
 
 ## Naming and safety
 

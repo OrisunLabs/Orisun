@@ -785,6 +785,45 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		}, nil, ""); err != nil {
 			t.Fatalf("create composite index: %v", err)
 		}
+		conn, err := pools["test"].Read.Take(ctx)
+		if err != nil {
+			t.Fatalf("take read conn: %v", err)
+		}
+		var ddl, plan strings.Builder
+		err = sqlitex.Execute(conn,
+			"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'cat_prio_idx'",
+			&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+				ddl.WriteString(stmt.ColumnText(0))
+				return nil
+			}})
+		if err == nil {
+			where, buildErr := buildCriteriaSQLForBoundary([]map[string]any{{
+				"category": "orders",
+				"priority": "high",
+			}}, pools["test"].indexes, "test")
+			if buildErr != nil {
+				err = buildErr
+			} else {
+				err = sqlitex.ExecuteTransient(conn,
+					"EXPLAIN QUERY PLAN SELECT transaction_id, global_id FROM orisun_es_event WHERE "+where+
+						" ORDER BY transaction_id DESC, global_id DESC LIMIT 1",
+					&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+						plan.WriteString(stmt.ColumnText(3))
+						plan.WriteByte('\n')
+						return nil
+					}})
+			}
+		}
+		pools["test"].Read.Put(conn)
+		if err != nil {
+			t.Fatalf("inspect composite index: %v", err)
+		}
+		if !sqliteIndexOrdersByPosition(ddl.String()) {
+			t.Fatalf("index does not end in position order: %s", ddl.String())
+		}
+		if !strings.Contains(plan.String(), "cat_prio_idx") || strings.Contains(plan.String(), "USE TEMP B-TREE") {
+			t.Fatalf("latest lookup does not use index ordering:\n%s", plan.String())
+		}
 		if err := admin.DropBoundaryIndex(ctx, "test", "cat_prio"); err != nil {
 			t.Fatalf("drop composite index: %v", err)
 		}
