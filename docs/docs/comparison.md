@@ -11,7 +11,7 @@ Orisun sits at a specific point on a tradeoff curve: an event database for decis
 
 Two properties define Orisun's position:
 
-1. **Consistency is scoped by event content, not by a fixed stream.** A command declares the event subset it depends on with JSON criteria, then saves only if that subset is still at the expected position. This is Orisun's [Command Context Consistency](./concepts/command-context-consistency) model.
+1. **Consistency is scoped by event content, not by a fixed stream.** A command preserves every complete event query it depended on together with that query's latest matching position, then saves only if all of those observations are still current. This is Orisun's [Command Context Consistency](./concepts/command-context-consistency) model.
 2. **The event store and the delivery layer are one system.** The durable log
    in PostgreSQL, SQLite, or FoundationDB is the source of truth; embedded NATS
    JetStream is the live-delivery buffer; durable publisher checkpoints

@@ -82,14 +82,20 @@ ORISUN_FDB_SOAK=1 TEST_PKGS=./cmd/ \
 
 ## Indexes And Query Shape
 
-FoundationDB criteria reads and consistency checks require ready covering indexes. Unindexed criteria fail with `FAILED_PRECONDITION` instead of scanning a whole boundary.
+FoundationDB criteria reads and consistency checks require ready covering
+indexes. For `SaveEventsV2`, every criterion in every observation must be
+covered by an index whose state is `INDEX_STATE_READY`. If even one criterion
+is unindexed or its index is still building, Orisun rejects the whole request
+with `FAILED_PRECONDITION` instead of scanning a boundary or partially checking
+the command context.
 
 Before using a criterion in production traffic:
 
 1. Create the boundary index through `EventStore/CreateIndex`.
 2. Poll `EventStore/GetIndex` (or inspect `ListIndexes`) until its state is
    `INDEX_STATE_READY`.
-3. Deploy writers that use that criterion for CCC checks.
+3. Repeat this for every criterion in every query the writer will observe.
+4. Deploy writers that use those criteria for CCC checks.
 
 This keeps conflict ranges narrow: commands that touch different indexed subsets can commit concurrently.
 
@@ -124,7 +130,10 @@ Export `fdbcli status json` or an equivalent FoundationDB exporter. Alert on:
 - unavailable or degraded cluster status,
 - Orisun publish/checkpoint errors and publisher lock churn.
 
-High conflict rate on a small set of criteria usually means application commands are contending on the same consistency context. That is expected for hot aggregates, but it should show up as retry pressure rather than invariant drift.
+High conflict rate on a small set of criteria usually means application
+commands are contending on the same consistency context. That is expected for
+hot domain invariants, but it should show up as retry pressure rather than
+invariant drift.
 
 ## Release Checklist
 

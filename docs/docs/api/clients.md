@@ -8,6 +8,17 @@ import TabItem from '@theme/TabItem';
 
 Orisun exposes gRPC services. You can use the official typed clients, `grpcurl`, or generate bindings for another language from the protobuf files.
 
+:::note
+The examples on this page target client builds that include `SaveEventsV2`.
+Older client releases continue to work through the deprecated `SaveEvents` RPC,
+but they cannot send more than one query-level observation. Upgrade the client
+before migrating a command that depends on multiple independent reads.
+
+Until V2 client releases are published, build the client repository revision
+referenced by the current Orisun source checkout. The package-manager commands
+below install the latest published clients, which may still expose only V1.
+:::
+
 ## Official Clients
 
 | Language | Package | Repository |
@@ -218,14 +229,32 @@ func main() {
 		Position: latest.ContextPosition,
 	}
 
-	// 3. Subscribe a projector (catch-up then live).
+	// 3. Save a decision only while that exact context is current.
+	write, err := client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
+		Boundary:    "accounts",
+		Consistency: []*eventstore.ConsistencyObservation{observed},
+		Events: []*eventstore.EventToSave{{
+			EventId:   "018f2d5e-0002-7000-8000-000000000002",
+			EventType: "AccountReviewed",
+			Data:      `{"scopes.accountOpenedId":"018f2d5e-0001-7000-8000-000000000001"}`,
+		}},
+	})
+	if err != nil {
+		var conflict *orisun.OptimisticConcurrencyException
+		if errors.As(err, &conflict) {
+			// Re-read and re-decide. Do not retry this stale observation.
+		}
+		log.Fatal(err)
+	}
+
+	// 4. Subscribe a projector after the command just committed.
 	handler := orisun.NewSimpleEventHandler().
 		WithOnEvent(func(e *eventstore.Event) error { return nil }).
 		WithOnError(func(e error) { log.Printf("subscription: %v", e) })
 	sub, err := client.SubscribeToEvents(ctx, &eventstore.CatchUpSubscribeToEventStoreRequest{
 		Boundary:       "accounts",
 		SubscriberName: "balance-projector",
-		AfterPosition:  observed.Position,
+		AfterPosition:  write.LogPosition,
 	}, handler)
 	if err != nil {
 		log.Fatal(err)
@@ -298,10 +327,21 @@ const observation = {
   position: latest.contextPosition,
 };
 
-// 3. Subscribe a projector (catch-up then live).
+// 3. Save a decision only while that exact context is current.
+const write = await client.saveEventsV2({
+  boundary: 'accounts',
+  consistency: [observation],
+  events: [{
+    eventId: '018f2d5e-0002-7000-8000-000000000002',
+    eventType: 'AccountReviewed',
+    data: { 'scopes.accountOpenedId': accountOpenedId, balanceObserved: balance },
+  }],
+});
+
+// 4. Subscribe a projector after the command just committed.
 const subscription = client.subscribeToEvents(
-  { subscriberName: 'balance-projector', boundary: 'accounts', afterPosition: observation.position },
-  (event) => { /* apply event, then checkpoint event.position */ },
+  { subscriberName: 'balance-projector', boundary: 'accounts', afterPosition: write.logPosition },
+  async (event) => { /* apply event, then checkpoint event.position */ },
   (error) => console.error('subscription error:', error),
 );
 
@@ -367,12 +407,24 @@ try (OrisunClient client = OrisunClient.newBuilder()
       .setPosition(latest.getContextPosition())
       .build();
 
-  // 3. Subscribe a projector (catch-up then live).
+  // 3. Save a decision only while that exact context is current.
+  Eventstore.WriteResult write = client.saveEventsV2(
+      Eventstore.SaveEventsV2Request.newBuilder()
+          .setBoundary("accounts")
+          .addConsistency(observation)
+          .addEvents(Eventstore.EventToSave.newBuilder()
+              .setEventId("018f2d5e-0002-7000-8000-000000000002")
+              .setEventType("AccountReviewed")
+              .setData("{\"scopes.accountOpenedId\":\"018f2d5e-0001-7000-8000-000000000001\"}")
+              .build())
+          .build());
+
+  // 4. Subscribe a projector after the command just committed.
   EventSubscription sub = client.subscribeToEvents(
       Eventstore.CatchUpSubscribeToEventStoreRequest.newBuilder()
           .setBoundary("accounts")
           .setSubscriberName("balance-projector")
-          .setAfterPosition(observation.getPosition())
+          .setAfterPosition(write.getLogPosition())
           .build(),
       new EventSubscription.EventHandler() {
           public void onEvent(Eventstore.Event event) { /* apply + checkpoint */ }

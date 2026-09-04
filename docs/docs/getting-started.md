@@ -7,7 +7,8 @@ slug: /getting-started
 
 Orisun is an event database for decisions that must stay correct as facts change: preserve the event history a command depends on, commit only when its declared context is still current, and publish committed events sequentially within each boundary without running a separate broker.
 
-This guide targets Orisun `0.6.1`.
+This guide follows the current `main` branch. The latest tagged release is
+`0.10.0`; `SaveEventsV2` is documented here for the upcoming release.
 
 You can run Orisun as a release binary, a Docker image, or an embedded Go package. Docker Compose is convenient for trying the full stack, but production deployments can run the binary directly under systemd, Nomad, Kubernetes, Fly, Render, or any process supervisor.
 
@@ -31,9 +32,11 @@ The examples use:
 
 ## Fastest local path
 
-Use SQLite first when you want the shortest feedback loop:
+Use SQLite first when you want the shortest feedback loop. Until
+`SaveEventsV2` has a tagged release, follow this page from a current `main`
+checkout:
 
-1. Download `orisun-sqlite` from [GitHub Releases](https://github.com/OrisunLabs/Orisun/releases).
+1. Build `orisun-sqlite` with the commands under [Install a binary](#install-a-binary).
 2. Start it with the [SQLite binary example](#run-sqlite-from-a-binary).
 3. Verify the server with [grpcurl](#verify-the-api).
 4. Create the `orders` boundary with [Create the application boundary](#create-the-application-boundary).
@@ -48,6 +51,12 @@ You can move to PostgreSQL later without changing the EventStore API.
 | Release binary | You want to deploy Orisun directly as a server process. | [Install a binary](#install-a-binary) |
 | Docker image | You want a packaged container or Docker Compose for local setup. | [Run SQLite with Docker](#run-sqlite-with-docker) |
 | Embedded Go package | You want Orisun inside your service process. | [Go Embedding](./embedding/go) |
+
+:::note
+Release downloads and the unversioned registry tags currently resolve to the
+0.10 line, before `SaveEventsV2`. Use a current source build for the V2 steps
+until the next release is published.
+:::
 
 ## Choose a backend
 
@@ -94,7 +103,7 @@ Download a release asset for your OS, architecture, and backend from [GitHub Rel
 For example, on Linux amd64:
 
 ```bash
-VERSION=0.6.1
+VERSION=0.10.0
 
 curl -L \
   "https://github.com/OrisunLabs/Orisun/releases/download/v${VERSION}/orisun-sqlite-linux-amd64" \
@@ -103,7 +112,10 @@ curl -L \
 chmod +x ./orisun-sqlite
 ```
 
-You can also build locally:
+The `v0.10.0` binary is the current stable server and predates
+`SaveEventsV2`. Use it only with the deprecated V1 write shape. To follow the
+V2 write examples on this page before the next release, build a current `main`
+checkout:
 
 ```bash
 ./build.sh linux amd64 dev pg
@@ -288,6 +300,8 @@ through environment mappings.
 
 ## Save your first event
 
+This first write is deliberately unconditional, so it omits `consistency`:
+
 ```bash
 grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
@@ -317,6 +331,10 @@ The response contains the committed log position:
 
 Orisun stores the API `event_type` value in event `data` as the canonical `eventType` JSON key and derives returned event types from that key. You do not need to duplicate it in your payload, and later queries or indexes can match `eventType` with normal content criteria.
 
+Application commands that read before writing should not remain
+unconditional. Preserve each complete query and its latest matching position
+in `SaveEventsV2.consistency`; the [Tutorial](./tutorial) builds that full loop.
+
 ## Release artifacts
 
 Orisun publishes both release binaries and Docker images.
@@ -340,7 +358,7 @@ Docker images are published to Docker Hub and GitHub Container Registry with the
 | `orisunlabs/orisun:<version>-sqlite` | SQLite-only release |
 | `orisunlabs/orisun:<version>-fdb` | FoundationDB-only release |
 
-Use the same tag names under `ghcr.io/orisunlabs/orisun`, for example `ghcr.io/orisunlabs/orisun:0.6.1-fdb`.
+Use the same tag names under `ghcr.io/orisunlabs/orisun`, for example `ghcr.io/orisunlabs/orisun:0.10.0-fdb`.
 
 ## Next steps
 

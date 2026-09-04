@@ -40,6 +40,8 @@ type EventStoreClient interface {
 	// Deprecated compatibility RPC. The server translates this request into one
 	// SaveEventsV2 operation.
 	SaveEvents(ctx context.Context, in *SaveEventsRequest, opts ...grpc.CallOption) (*WriteResult, error)
+	// Atomically validate every query-level observation and append the event
+	// batch. An empty consistency list is an unconditional append.
 	SaveEventsV2(ctx context.Context, in *SaveEventsV2Request, opts ...grpc.CallOption) (*WriteResult, error)
 	GetEvents(ctx context.Context, in *GetEventsRequest, opts ...grpc.CallOption) (*GetEventsResponse, error)
 	GetLatestByCriteria(ctx context.Context, in *GetLatestByCriteriaRequest, opts ...grpc.CallOption) (*GetLatestByCriteriaResponse, error)
@@ -188,6 +190,8 @@ type EventStoreServer interface {
 	// Deprecated compatibility RPC. The server translates this request into one
 	// SaveEventsV2 operation.
 	SaveEvents(context.Context, *SaveEventsRequest) (*WriteResult, error)
+	// Atomically validate every query-level observation and append the event
+	// batch. An empty consistency list is an unconditional append.
 	SaveEventsV2(context.Context, *SaveEventsV2Request) (*WriteResult, error)
 	GetEvents(context.Context, *GetEventsRequest) (*GetEventsResponse, error)
 	GetLatestByCriteria(context.Context, *GetLatestByCriteriaRequest) (*GetLatestByCriteriaResponse, error)

@@ -7,7 +7,8 @@ slug: /
 
 Orisun is an open-source event database for decisions that must stay correct as facts change. It preserves complete event history and lets applications declare the events a command depends on. Orisun commits the resulting events only if that declared context is still current, then publishes committed events sequentially within each boundary.
 
-This documentation targets Orisun `0.6.1`.
+This documentation follows the current `main` branch. The latest tagged
+release is `0.10.0`; APIs marked as upcoming are part of the next release.
 
 The mechanism behind that promise is **Command Context Consistency**: commands query the exact events they depend on, and writes succeed only if that context has not changed.
 
@@ -18,7 +19,7 @@ publishing, indexes, auth, and gRPC APIs ship as one deployable server.
 
 ## Guarantees
 
-- **Decisions scoped to real context.** A write declares the event subset it depends on with JSON criteria and commits only if that subset is unchanged. You do not need to force every invariant into a single stream.
+- **Decisions scoped to real context.** A write carries every query-level observation the command depended on and commits only if all of those contexts are unchanged. You do not need to force every invariant into a single stream.
 - **Content-scoped consistency checks.** Carry query-level observations into `SaveEventsV2` and save only while every context the command read is current.
 - **No skipped committed events.** A durable per-boundary checkpoint drives at-least-once publishing. Wake-up signals can be missed; committed events still drain sequentially within the boundary.
 - **Per-boundary ordering.** Events publish in ascending log position within each boundary.

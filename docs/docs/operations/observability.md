@@ -146,4 +146,4 @@ Leave pprof disabled in production unless you are actively profiling, and never 
   `last_error`, `placement`, and `status_position` in diagnostics.
 - **Publisher lag** measures the gap between committed and published positions. Investigate with the [Troubleshooting](./troubleshooting#publisher-lag) steps.
 - **Catch-up vs live** tells you whether subscribers are repeatedly falling out of live delivery. If they are, the JetStream retention window may be too small for their pace. See [Delivery Guarantees](../concepts/delivery-guarantees#jetstream-retention-is-in-memory).
-- **Consistency conflicts** show a high `ALREADY_EXISTS` rate, which is a domain hotspot, not an error. Narrow the consistency context or add an [index](../concepts/indexing).
+- **Consistency conflicts** show a high `ALREADY_EXISTS` rate, which is a domain hotspot, not a storage error. Confirm that the queries describe the intended invariants before narrowing them. An [index](../concepts/indexing) improves query cost but does not reduce genuine contention.

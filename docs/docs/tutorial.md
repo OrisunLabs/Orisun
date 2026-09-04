@@ -350,6 +350,46 @@ EOF
 
 The `scopes.accountOpenedId` criterion deliberately omits an `eventType` tag: it matches any later event scoped to that account, regardless of whether it is a debit or a credit, so the response always carries that account's freshest movement. The application derives each balance, decides whether the transfer is valid, and constructs an observation from the request criteria and returned `context_position`. Its one position belongs to the complete four-criterion OR query.
 
+### When the command performs another read
+
+The four account criteria above came from one `GetLatestByCriteria` request, so
+they form one observation. If the transfer also reads a daily-limit policy in a
+separate request, preserve that second read separately:
+
+```json
+{
+  "consistency": [
+    {
+      "query": {"criteria": [
+        {"tags": [
+          {"key": "eventType", "value": "AccountOpened"},
+          {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
+        ]},
+        {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]},
+        {"tags": [
+          {"key": "eventType", "value": "AccountOpened"},
+          {"key": "accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}
+        ]},
+        {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}]}
+      ]},
+      "position": {"commit_position": 2, "prepare_position": 1}
+    },
+    {
+      "query": {"criteria": [{"tags": [
+        {"key": "eventType", "value": "DailyTransferLimitChanged"},
+        {"key": "customerId", "value": "customer-7"}
+      ]}]},
+      "position": {"commit_position": 5, "prepare_position": 0}
+    }
+  ]
+}
+```
+
+Do not merge positions, assign positions to individual criteria, or keep only
+the newest of the two positions. Each position describes only its own complete
+query. `SaveEventsV2` checks both in the write transaction and rejects the
+whole transfer if either changed.
+
 ## 3. Transfer with a double-entry write
 
 The transfer decision, such as `fromBalance >= amount`, lives in application code. The write itself posts both legs, `MoneyDebited` scoped to the source account and `MoneyCredited` scoped to the destination account, as one atomic `SaveEventsV2` call carrying the observation from step 2. Either both events commit or neither does; the ledger can never observe a debit without its matching credit. The credit also backlinks to the debit's own event id via `scopes.moneyDebitedId`, so the two legs of one transfer can be found from either side without an invented "transfer id."
@@ -696,7 +736,7 @@ const subscription = client.subscribeToEvents(
     boundary: 'accounts',
     afterPosition: { commitPosition: -1, preparePosition: -1 },
   },
-  (event) => {
+  async (event) => {
     // apply the event, persist side effects, then checkpoint event.position
   },
   (error) => console.error('subscription error:', error),

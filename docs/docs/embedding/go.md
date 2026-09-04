@@ -5,11 +5,17 @@ description: Run Orisun directly inside a Go service.
 
 Go services can embed Orisun directly instead of running the gRPC server as a separate process.
 
-This guide targets Orisun `0.8.0`. Install the canonical module path with:
+This guide follows the current `main` branch and includes the upcoming
+`SaveEventsV2` API. To build against that API before its first tagged release,
+install the canonical module path from `main`:
 
 ```bash
-go get github.com/OrisunLabs/Orisun@v0.8.0
+go get github.com/OrisunLabs/Orisun@main
 ```
+
+For production, pin the exact release version that contains the APIs you use
+instead of leaving a branch selector in `go.mod`. The latest tagged server
+release is `v0.10.0`, which predates `SaveEventsV2`.
 
 If you are upgrading from `v0.7.0`, follow the
 [0.7.0 to 0.8.0 upgrade guide](../operations/upgrading-0.7-to-0.8#embedded-go-changes)
@@ -262,7 +268,7 @@ mapping list.
 
 ## Reading events in-process
 
-Embedded reads skip protobuf materialization. In Orisun `0.6.1`, `GetEvents` returns a packed `ReadEventBatch` whose events carry scalar `CommitPosition` and `PreparePosition` fields and a `time.Time` `DateCreated`:
+Embedded reads skip protobuf materialization. `GetEvents` returns a packed `ReadEventBatch` whose events carry scalar `CommitPosition` and `PreparePosition` fields and a `time.Time` `DateCreated`:
 
 ```go
 batch, err := store.GetEvents(ctx, &orisun.GetEventsRequest{
@@ -299,9 +305,41 @@ if latest.Matches[0].Found {
 }
 ```
 
-For the next `SaveEventsV2`, construct one `ConsistencyObservation` from the same complete query and a `Position` containing `latest.ContextCommitPosition` and `latest.ContextPreparePosition`. The position belongs to the whole OR query.
+For the next `SaveEventsV2`, construct one `ConsistencyObservation` from the same complete query and a `Position` containing `latest.ContextCommitPosition` and `latest.ContextPreparePosition`. The position belongs to the whole OR query:
 
-The public gRPC and protobuf contract is unchanged; these packed types apply only to in-process callers.
+```go
+_, err = store.SaveEventsV2(
+	ctx,
+	[]orisun.EventWithMapTags{{
+		EventId:   "018f2d5e-0002-7000-8000-000000000002",
+		EventType: "OrderConfirmed",
+		Data: map[string]any{
+			"orderId": "o-1",
+		},
+		Metadata: map[string]any{},
+	}},
+	"orders",
+	[]*orisun.ConsistencyObservation{{
+		Query: &orisun.Query{Criteria: []*orisun.Criterion{{
+			Tags: []*orisun.Tag{
+				{Key: "eventType", Value: "OrderPlaced"},
+				{Key: "orderId", Value: "o-1"},
+			},
+		}}},
+		Position: &orisun.Position{
+			CommitPosition:  latest.ContextCommitPosition,
+			PreparePosition: latest.ContextPreparePosition,
+		},
+	}},
+)
+```
+
+Supply more observations when the command performed more independent complete
+reads. Pass `nil` as the final argument only for a deliberately unconditional
+append.
+
+The public gRPC API uses generated protobuf request and response types. These
+packed read types apply only to in-process callers.
 
 ## Embedded Subscriptions
 

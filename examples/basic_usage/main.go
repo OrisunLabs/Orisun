@@ -108,14 +108,13 @@ func main() {
 	}
 
 	// Save events to the event store
-	position := orisun.NotExistsPosition()
-	// Save events
-	newPosition, err := store.SaveEvents(
+	// This example is an unconditional append. Commands that read before writing
+	// should pass their query-level observations instead of nil.
+	newPosition, err := store.SaveEventsV2(
 		ctx,
 		events,
 		boundary,
-		&position, // No expected position for new stream
-		nil,       // No subset query
+		nil,
 	)
 	if err != nil {
 		logger.Fatalf("Failed to save events: %v", err)
@@ -127,7 +126,7 @@ func main() {
 	// Example 2: Get events from the event store
 	logger.Info("=== Getting Events Example ===")
 
-	// Get events from the stream
+	// Get events from the boundary
 	getEventsReq := &orisun.GetEventsRequest{
 		Count:     10,
 		Direction: orisun.Direction_ASC,
