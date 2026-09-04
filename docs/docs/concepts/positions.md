@@ -55,7 +55,7 @@ No event is assigned the exact position `{0, 0}`. The first event in a boundary 
 
 - all N share one `commit_position`,
 - each gets an increasing `prepare_position`,
-- the `WriteResult.log_position` returns the position of the batch.
+- the `WriteResult.log_position` returns the position of the last event in the batch.
 
 This is why a single account, processed one command at a time, advances through ordered positions while `prepare_position` identifies the event within that ordering. Do not rely on positions increasing by exactly one.
 
@@ -63,7 +63,11 @@ This is why a single account, processed one command at a time, advances through 
 
 [Command Context Consistency](./command-context-consistency) uses query-level observations as optimistic-lock tokens. You preserve each context query with its latest matching position and pass the observations to `SaveEventsV2`. If any query no longer has exactly that latest position, the save is rejected with `ALREADY_EXISTS`.
 
-For a complete `GetEvents` history read, the observed position is the latest matching event's position. `GetLatestByCriteria` returns the latest matching `context_position` for its complete criteria list from one snapshot. Pair that position with the exact request criteria to construct a V2 observation. Separate complete reads can each contribute an observation because `SaveEventsV2` validates every one atomically.
+For a complete `GetEvents` history read, the observed position is the greatest position among the matching events. `GetLatestByCriteria` returns the latest matching `context_position` for its complete criteria list from one snapshot. Pair that position with the exact request criteria to construct a V2 observation. Separate complete reads can each contribute an observation because `SaveEventsV2` validates every one atomically.
+
+Do not substitute `WriteResult.log_position`, a boundary head, or the newest
+event from an unrelated query. A position is meaningful for CCC only when it
+is paired with the exact query whose latest match it describes.
 
 PostgreSQL serializes position assignment per boundary from position draw through commit. That keeps public positions commit-ordered, so an observed context position is a valid stable upper bound for later consistency checks. SQLite naturally has one writer per boundary file.
 

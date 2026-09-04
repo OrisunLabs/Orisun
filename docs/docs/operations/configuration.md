@@ -121,10 +121,10 @@ with `existed_before_catalog: true`.
 | `ORISUN_SQLITE_WAL_AUTO_CHECKPOINT` | `0` | SQLite WAL auto-checkpoint override. |
 | `ORISUN_SQLITE_TEMP_STORE` | `MEMORY` | SQLite temp-store mode. |
 | `ORISUN_SQLITE_PUBLISHER_WAKE_DELAY` | `5ms` | Coalesce publisher wake-ups after SQLite commits so write bursts can drain before publisher read/checkpoint work starts. Set `0s` for immediate wake-ups; polling still protects delivery correctness. |
-| `ORISUN_SQLITE_GC_MAX_BATCH_REQUESTS` | `128` | Maximum `SaveEvents` requests flushed by one SQLite group-commit batch. |
+| `ORISUN_SQLITE_GC_MAX_BATCH_REQUESTS` | `128` | Maximum save requests flushed by one SQLite group-commit batch. Applies to both V2 calls and translated legacy requests. |
 | `ORISUN_SQLITE_GC_MAX_BATCH_EVENTS` | `1024` | Maximum events flushed by one SQLite group-commit batch. A request that would exceed the cap is carried to the next flush. |
 | `ORISUN_SQLITE_GC_MAX_DELAY` | `0s` | Optional wait to fill a SQLite group-commit batch. `0s` keeps batching opportunistic. |
-| `ORISUN_SQLITE_GC_MAX_PENDING` | `4096` | Per-boundary queued `SaveEvents` request capacity before callers block. |
+| `ORISUN_SQLITE_GC_MAX_PENDING` | `4096` | Per-boundary queued save-request capacity before callers block. |
 | `ORISUN_SQLITE_GC_FLUSH_TIMEOUT` | `30s` | Timeout for one SQLite group-commit flush. |
 
 ## PostgreSQL-compatible settings
@@ -138,10 +138,10 @@ Orisun uses per-boundary group commit plus separate PostgreSQL-compatible pools 
 | `ORISUN_PG_WRITE_MAX_IDLE_CONNS` | `10`    | Write pool idle-connection cap. |
 | `ORISUN_PG_WRITE_CONN_MAX_IDLE_TIME` | `5m`    | Write pool idle lifetime. |
 | `ORISUN_PG_WRITE_CONN_MAX_LIFETIME` | `30m`   | Write pool max connection lifetime. |
-| `ORISUN_PG_GC_MAX_BATCH_REQUESTS` | `512`   | Maximum `SaveEvents` requests committed in one PostgreSQL group-commit transaction. |
+| `ORISUN_PG_GC_MAX_BATCH_REQUESTS` | `512`   | Maximum save requests committed in one PostgreSQL group-commit transaction. Applies to both V2 calls and translated legacy requests. |
 | `ORISUN_PG_GC_MAX_BATCH_EVENTS` | `1024`  | Maximum events committed in one PostgreSQL group-commit transaction. A request that would exceed the cap is carried to the next flush. |
 | `ORISUN_PG_GC_MAX_DELAY` | `0s`    | Optional wait to fill a PostgreSQL group-commit batch. `0s` keeps batching opportunistic. |
-| `ORISUN_PG_GC_MAX_PENDING` | `4096`  | Per-boundary queued `SaveEvents` request capacity before callers block. |
+| `ORISUN_PG_GC_MAX_PENDING` | `4096`  | Per-boundary queued save-request capacity before callers block. |
 | `ORISUN_PG_GC_FLUSH_TIMEOUT` | `30s`   | Timeout for one PostgreSQL group-commit flush. |
 | `ORISUN_PG_READ_MAX_OPEN_CONNS` | `50`    | Read pool open-connection cap. |
 | `ORISUN_PG_READ_MAX_IDLE_CONNS` | `25`    | Read pool idle-connection cap. |

@@ -1,7 +1,7 @@
 .root {
-  --benchmark-postgres: #2563eb;
-  --benchmark-sqlite: #ea580c;
-  --benchmark-foundationdb: #0f766e;
+  --benchmark-postgres: #08745f;
+  --benchmark-sqlite: #b2762c;
+  --benchmark-foundationdb: #60756e;
   margin: 1.25rem 0 2.5rem;
 }
 
@@ -16,7 +16,7 @@
 .activeButton {
   appearance: none;
   border: 1px solid var(--ifm-color-emphasis-300);
-  border-radius: 999px;
+  border-radius: 0.35rem;
   cursor: pointer;
   font: inherit;
   font-size: 0.78rem;
@@ -24,10 +24,10 @@
   line-height: 1.2;
   padding: 0.5rem 0.75rem;
   transition:
-    background-color 120ms ease,
-    border-color 120ms ease,
-    color 120ms ease,
-    transform 120ms ease;
+    background-color 200ms ease,
+    border-color 200ms ease,
+    color 200ms ease,
+    transform 200ms ease;
 }
 
 .button {
@@ -38,7 +38,12 @@
 .button:hover {
   border-color: var(--ifm-color-primary);
   color: var(--ifm-color-primary);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+}
+
+.button:active,
+.activeButton:active {
+  transform: translateY(0) scale(0.985);
 }
 
 .activeButton {
@@ -71,7 +76,7 @@
 }
 
 .legend i {
-  border-radius: 999px;
+  border-radius: 0.12rem;
   display: inline-block;
   height: 0.55rem;
   width: 0.55rem;
@@ -91,9 +96,10 @@
       transparent 42%
     ),
     var(--ifm-card-background-color);
-  border: 1px solid var(--ifm-color-emphasis-200);
-  border-radius: 14px;
-  box-shadow: 0 8px 28px rgb(15 23 42 / 7%);
+  border: 0;
+  border-top: 2px solid var(--ifm-color-emphasis-300);
+  border-radius: 0 0 0.9rem 0.9rem;
+  box-shadow: 0 16px 42px rgb(29 52 44 / 8%);
   min-width: 0;
   padding: 1rem 1rem 0.75rem;
 }
@@ -182,9 +188,9 @@
 
 @media (max-width: 576px) {
   .root {
-    --benchmark-postgres: #3b82f6;
-    --benchmark-sqlite: #f97316;
-    --benchmark-foundationdb: #14b8a6;
+    --benchmark-postgres: #0b9d80;
+    --benchmark-sqlite: #d3a058;
+    --benchmark-foundationdb: #80978f;
   }
 
   .button,
@@ -208,11 +214,22 @@
 }
 
 [data-theme='dark'] .root {
-  --benchmark-postgres: #60a5fa;
-  --benchmark-sqlite: #fb923c;
-  --benchmark-foundationdb: #2dd4bf;
+  --benchmark-postgres: #68cfa9;
+  --benchmark-sqlite: #f3c35e;
+  --benchmark-foundationdb: #8ba49b;
 }
 
 [data-theme='dark'] .chartCard {
   box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  .activeButton {
+    transition: none;
+  }
+
+  .button:hover {
+    transform: none;
+  }
 }

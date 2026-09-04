@@ -126,6 +126,35 @@ Orisun also stores a durable `position` and `date_created` on committed events.
 
 `SaveEventsV2` atomically appends one or more events. Its `consistency` list contains the complete query and latest matching position for every context the command read. Orisun validates all observations in the write transaction before inserting any event.
 
+Atomicity is scoped to the request's one boundary. Orisun does not provide a
+cross-boundary transaction; events that must commit together belong in the
+same boundary and the same request.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `boundary` | Yes | Active boundary receiving the complete event batch. |
+| `events` | Yes | One or more events committed atomically. |
+| `consistency` | No | Query-level observations that must all still be current. Omit it for an unconditional append. |
+
+Each observation has one non-empty `query` and one `position`. Tags inside a
+criterion are **AND** predicates; criteria inside a query are **OR**
+alternatives. The position belongs to that whole OR query. It is never a
+position per criterion.
+
+The command lifecycle is:
+
+1. Read each complete context needed for the decision.
+2. Preserve each exact query with that query's latest matching position.
+3. Apply domain validation in the command handler.
+4. Send the new events and all preserved observations in one `SaveEventsV2`
+   request.
+5. On `ALREADY_EXISTS`, re-read every context and make the decision again.
+
+The reads may be separate. The save is the synchronization point: every
+observation is rechecked atomically with the append.
+
+### Preserve a `GetLatestByCriteria` read
+
 ```go
 criteria := []*eventstore.Criterion{
 	{Tags: []*eventstore.Tag{{Key: "scopes.orderId", Value: "order-17"}}},
@@ -147,7 +176,7 @@ _, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 	Events: []*eventstore.EventToSave{{
 		EventId:   "018f2d5e-0002-7000-8000-000000000002",
 		EventType: "OrderConfirmed",
-		Data:      `{"orderId":"order-17","customerId":"customer-4"}`,
+		Data:      `{"orderId":"order-17","customerId":"customer-4","scopes.orderId":"order-17"}`,
 		Metadata:  `{}`,
 	}},
 	Consistency: []*eventstore.ConsistencyObservation{{
@@ -159,6 +188,8 @@ _, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 
 `GetLatestByCriteria` remains unchanged: combine the exact criteria sent to it with its existing `context_position` to construct the V2 observation. One position belongs to the complete OR query, not to each criterion.
 
+### Preserve multiple independent reads
+
 For multiple independently read contexts, include multiple observations:
 
 ```bash
@@ -168,7 +199,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
   "events": [{
     "event_id": "018f2d5e-0002-7000-8000-000000000002",
     "event_type": "OrderConfirmed",
-    "data": "{\"orderId\":\"order-17\",\"customerId\":\"customer-4\"}",
+    "data": "{\"orderId\":\"order-17\",\"customerId\":\"customer-4\",\"scopes.orderId\":\"order-17\"}",
     "metadata": "{}"
   }],
   "consistency": [
@@ -204,34 +235,53 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 EOF
 ```
 
-Every observation is required to contain a non-empty query and a position. Criteria are OR alternatives; tags in one criterion are AND predicates. Duplicate equivalent observations are normalized, contradictory positions for the same query are rejected, and requests with excessive observation fan-out fail closed.
-
-Omit `consistency` for an unconditional append. Use `{-1, -1}` for a query observed to have no matches. The response contains the committed log position:
-
-```json
-{
-  "log_position": {
-    "commit_position": 13,
-    "prepare_position": 0
-  }
-}
-```
+Every observation is required to contain a non-empty query and a position. Use
+`{-1, -1}` for a query observed to have no matches. Duplicate equivalent
+observations are normalized, contradictory positions for the same query are
+rejected, and requests with excessive observation fan-out fail closed.
 
 Batches are atomic. Events in one batch share the same commit position and receive increasing prepare positions. If any observation is stale, Orisun returns `ALREADY_EXISTS` and appends none of the events.
 
-## SaveEvents (deprecated)
+`WriteResult.log_position` is the position of the last event in the committed
+batch. It is a write receipt, not a general-purpose CCC token. Reuse it as an
+observation position only when you can prove that the same complete query was
+observed and the last event in the batch is its latest match. Normally, derive
+positions from `GetLatestByCriteria` or a complete `GetEvents` read.
 
-`SaveEvents` and `SaveQuery` are retained for wire compatibility. The server converts the legacy request into a `SaveEventsV2Request` with at most one consistency observation, then uses the V2 implementation. New code should call `SaveEventsV2`.
+### Validation and limits
+
+The server rejects the entire request with `INVALID_ARGUMENT` before touching
+storage when any of these rules fail:
+
+- `boundary` is empty, `events` is empty, or event JSON is invalid;
+- an observation has no query or position;
+- a query has no criteria, a criterion has no tags, or a tag has no key;
+- a position is neither exactly `{-1, -1}` nor a pair of non-negative values;
+- one criterion repeats a key with different values; or
+- equivalent observations claim different positions.
+
+Equivalent criteria, repeated identical tags, and duplicate observations with
+the same position are normalized rather than evaluated repeatedly. One request
+may contain at most 1,024 observations, 4,096 criteria across those
+observations, and 16,384 tags across those criteria. These bounds prevent an
+individual write from creating unbounded query fan-out.
+
+PostgreSQL and SQLite can evaluate an unindexed equality query correctly by
+scanning. FoundationDB requires every criterion to have a ready covering index
+and returns `FAILED_PRECONDITION` otherwise. See [Indexing](../concepts/indexing).
+
+### Unconditional append
+
+Omit `consistency` when the command did not read any event context. This is the
+correct shape for ingestion, replay into a new boundary, and other deliberately
+unconditional writes. Do not send an empty query or a position by itself.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
 
 ```go
-result, err := client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
+result, err := client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 	Boundary: "orders",
-	Query: &eventstore.SaveQuery{
-		ExpectedPosition: &eventstore.Position{CommitPosition: -1, PreparePosition: -1},
-	},
 	Events: []*eventstore.EventToSave{
 		{
 			EventId:   "018f2d5e-0001-7000-8000-000000000001",
@@ -249,11 +299,8 @@ result, err := client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
   <TabItem value="node" label="Node.js">
 
 ```typescript
-const result = await client.saveEvents({
+const result = await client.saveEventsV2({
   boundary: 'orders',
-  query: {
-    expectedPosition: { commitPosition: -1, preparePosition: -1 },
-  },
   events: [
     {
       eventId: '018f2d5e-0001-7000-8000-000000000001',
@@ -271,13 +318,9 @@ const result = await client.saveEvents({
   <TabItem value="java" label="Java">
 
 ```java
-Eventstore.WriteResult result = client.saveEvents(
-    Eventstore.SaveEventsRequest.newBuilder()
+Eventstore.WriteResult result = client.saveEventsV2(
+    Eventstore.SaveEventsV2Request.newBuilder()
         .setBoundary("orders")
-        .setQuery(Eventstore.SaveQuery.newBuilder()
-            .setExpectedPosition(Eventstore.Position.newBuilder()
-                .setCommitPosition(-1).setPreparePosition(-1).build())
-            .build())
         .addEvents(Eventstore.EventToSave.newBuilder()
             .setEventId("018f2d5e-0001-7000-8000-000000000001")
             .setEventType("OrderPlaced")
@@ -293,15 +336,9 @@ Eventstore.WriteResult result = client.saveEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
+grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
-  "query": {
-    "expected_position": {
-      "commit_position": -1,
-      "prepare_position": -1
-    }
-  },
   "events": [
     {
       "event_id": "018f2d5e-0001-7000-8000-000000000001",
@@ -317,7 +354,7 @@ EOF
   </TabItem>
 </Tabs>
 
-The response contains the committed log position:
+The response contains the position of the last committed event in the batch:
 
 ```json
 {
@@ -334,26 +371,28 @@ For event-scoped models, put queryable scope keys in `data` as normal JSON keys,
 
 Batches are atomic. Events in one batch share the same commit position and receive increasing prepare positions.
 
-### Save with a consistency subset
+### Save with one observed query
 
-Use `query.subsetQuery` to enforce Command Context Consistency for a specific event subset:
-
-`subsetQuery` defines the dynamic set of events the command depends on, and `expected_position` is the position of the latest matching event observed when that set was read. The append succeeds only if the latest event matching `subsetQuery` is still at exactly `expected_position`. Use the `context_position` returned by `GetLatestByCriteria`, or the latest matching position from a complete `GetEvents` read; an arbitrary later position such as the store head is not a valid substitute.
+Put the exact query the command read and that query's latest matching position
+in one observation. Use the `context_position` returned by
+`GetLatestByCriteria`, or the latest matching position from a complete
+`GetEvents` read. A store-head position or the position returned by an unrelated
+save is not a substitute.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
 
 ```go
-_, err := client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
+_, err := client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 	Boundary: "orders",
-	Query: &eventstore.SaveQuery{
-		ExpectedPosition: &eventstore.Position{CommitPosition: 12, PreparePosition: 8},
-		SubsetQuery: &eventstore.Query{
+	Consistency: []*eventstore.ConsistencyObservation{{
+		Position: &eventstore.Position{CommitPosition: 12, PreparePosition: 8},
+		Query: &eventstore.Query{
 			Criteria: []*eventstore.Criterion{{
 				Tags: []*eventstore.Tag{{Key: "customer_id", Value: "c-1"}},
 			}},
 		},
-	},
+	}},
 	Events: []*eventstore.EventToSave{{
 		EventId:   "018f2d5e-0002-7000-8000-000000000002",
 		EventType: "OrderConfirmed",
@@ -367,16 +406,16 @@ _, err := client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
   <TabItem value="node" label="Node.js">
 
 ```typescript
-await client.saveEvents({
+await client.saveEventsV2({
   boundary: 'orders',
-  query: {
-    expectedPosition: { commitPosition: 12, preparePosition: 8 },
-    subsetQuery: {
+  consistency: [{
+    position: { commitPosition: 12, preparePosition: 8 },
+    query: {
       criteria: [
         { tags: [{ key: 'customer_id', value: 'c-1' }] },
       ],
     },
-  },
+  }],
   events: [
     {
       eventId: '018f2d5e-0002-7000-8000-000000000002',
@@ -391,18 +430,17 @@ await client.saveEvents({
   <TabItem value="java" label="Java">
 
 ```java
-client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
+client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
     .setBoundary("orders")
-    .setQuery(Eventstore.SaveQuery.newBuilder()
-        .setExpectedPosition(Eventstore.Position.newBuilder()
-            .setCommitPosition(12).setPreparePosition(8).build())
-        .setSubsetQuery(Eventstore.Query.newBuilder()
+    .addConsistency(Eventstore.ConsistencyObservation.newBuilder()
+        .setPosition(Eventstore.Position.newBuilder()
+            .setCommitPosition(12).setPreparePosition(8))
+        .setQuery(Eventstore.Query.newBuilder()
             .addCriteria(Eventstore.Criterion.newBuilder()
                 .addTags(Eventstore.Tag.newBuilder()
                     .setKey("customer_id").setValue("c-1").build())
                 .build())
-            .build())
-        .build())
+            .build()))
     .addEvents(Eventstore.EventToSave.newBuilder()
         .setEventId("018f2d5e-0002-7000-8000-000000000002")
         .setEventType("OrderConfirmed")
@@ -415,15 +453,15 @@ client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
+grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
-  "query": {
-    "expected_position": {
+  "consistency": [{
+    "position": {
       "commit_position": 12,
       "prepare_position": 8
     },
-    "subsetQuery": {
+    "query": {
       "criteria": [
         {
           "tags": [
@@ -432,7 +470,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
         }
       ]
     }
-  },
+  }],
   "events": [
     {
       "event_id": "018f2d5e-0002-7000-8000-000000000002",
@@ -448,7 +486,36 @@ EOF
   </TabItem>
 </Tabs>
 
-If the latest event matching the subset is no longer at the expected position, Orisun returns `ALREADY_EXISTS`. Treat that as a CCC conflict: re-read the context, decide again, and retry only if the command is still valid.
+If the latest event matching the query is no longer at the observed position,
+Orisun returns `ALREADY_EXISTS`. Treat that as a CCC conflict: re-read every
+context used by the command, decide again, and retry only if the command is
+still valid.
+
+## SaveEvents (deprecated)
+
+`SaveEvents` and `SaveQuery` remain wire-compatible for existing clients, but
+new code should use `SaveEventsV2`. The server translates a legacy request with
+a non-empty `subsetQuery` into one V2 observation and executes the same save
+implementation.
+
+| Deprecated V1 field | V2 replacement |
+| --- | --- |
+| `SaveEventsRequest.boundary` | `SaveEventsV2Request.boundary` |
+| `SaveEventsRequest.events` | `SaveEventsV2Request.events` |
+| `query.subsetQuery` | `consistency[0].query` |
+| `query.expected_position` | `consistency[0].position` |
+
+:::warning
+In the compatibility API, `expected_position` without a non-empty
+`subsetQuery` does not protect anything and is translated as an unconditional
+append. Do not use an expected position as a stream revision. To assert that a
+query is still empty, send that query in a V2 observation with position
+`{-1, -1}`.
+:::
+
+V1 can represent at most one observed query. If a command read more than one
+independent context, migrate it to V2 and preserve every complete query as a
+separate observation. `GetLatestByCriteria` itself is unchanged.
 
 ## GetEvents
 
@@ -685,6 +752,20 @@ EOF
 
 Keep the consumer idempotent and deduplicate by `event_id` rather than assuming exactly-once paging. The position model behind `from_position` and `direction` is described in [Positions and Ordering](../concepts/positions).
 
+### Use `GetEvents` as a command context
+
+`GetEvents` does not return a separate context position. When a command truly
+needs the matching history, finish reading the complete queried context and
+retain the greatest event position returned. Pair that position with the exact
+same query in one `SaveEventsV2` observation. If the query returned no events,
+use `{-1, -1}`.
+
+Do not build an observation from a truncated page, a page that stopped before
+the newest match, or a boundary-wide read paired with a narrower query. For
+carried-state models that need only the newest match per criterion, prefer
+`GetLatestByCriteria`; it returns `context_position` directly from the same
+snapshot as its results.
+
 ## GetLatestByCriteria
 
 `GetLatestByCriteria` returns the latest event matching each criterion, assembled by the server from **one consistent read snapshot**, plus a `context_position`. It is the command-side read for the carried-state pattern: store the resulting state on each event, then a command needs only the latest event per criterion rather than a history replay.
@@ -845,7 +926,7 @@ const subscription = client.subscribeToEvents(
     boundary: 'orders',
     afterPosition: { commitPosition: 0, preparePosition: 0 },
   },
-  (event) => {
+  async (event) => {
     // persist side effects, then checkpoint event.position
     console.log('event:', event.eventType, event.data);
   },
@@ -929,7 +1010,7 @@ const subscription = client.subscribeToEvents(
       ],
     },
   },
-  (event) => { /* ... */ },
+  async (event) => { /* ... */ },
 );
 ```
 
@@ -1297,5 +1378,6 @@ The EventStore protobuf source lives at [`proto/eventstore.proto`](https://githu
 | `INVALID_ARGUMENT` | The request is malformed, uses invalid JSON, or references invalid index fields. |
 | `UNAUTHENTICATED` | Missing or invalid credentials. |
 | `PERMISSION_DENIED` | Authenticated user does not have a required role. |
+| `FAILED_PRECONDITION` | The boundary is not active, or FoundationDB lacks a ready covering index for a queried criterion. |
 | `ALREADY_EXISTS` | One or more observations changed during `SaveEventsV2`; re-query and retry if still valid. |
 | `INTERNAL` | Storage, publishing, or unexpected server failure. |

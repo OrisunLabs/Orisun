@@ -1,17 +1,33 @@
 import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import Layout from '@theme/Layout';
+import {useGSAP} from '@gsap/react';
 import clsx from 'clsx';
-import type {ReactNode} from 'react';
+import gsap from 'gsap';
+import {ScrollTrigger} from 'gsap/ScrollTrigger';
+import {type ReactNode, useRef, useState} from 'react';
 import styles from './index.module.css';
+
+if (typeof window !== 'undefined') {
+  gsap.registerPlugin(useGSAP, ScrollTrigger);
+}
 
 type LinkItem = readonly [title: string, href: string, description: string];
 type FlowStep = readonly [number: string, title: string, description: string];
 
-const heroFacts = [
-  ['History', 'Complete transactional event log'],
-  ['Decisions', 'Declared context checked at commit'],
-  ['Delivery', 'Catch-up plus live JetStream'],
+const guaranteeNotes = [
+  {
+    title: 'Stale context is a failed write',
+    detail: 'The write contract rejects a command when the event subset behind its decision has changed.',
+  },
+  {
+    title: 'Storage remains the durable truth',
+    detail: 'Publisher checkpoints recover from storage before subscribers return to live JetStream delivery.',
+  },
+  {
+    title: 'Ordering belongs to the boundary',
+    detail: 'Committed events publish sequentially by transaction and global position within each boundary.',
+  },
 ];
 
 const outcomes = [
@@ -146,55 +162,104 @@ const dockerExample = `docker run --rm \\
 
 export default function Home(): ReactNode {
   const diagramUrl = useBaseUrl('/img/orisun-flow.svg');
+  const pageRef = useRef<HTMLElement>(null);
+  const [activeGuarantee, setActiveGuarantee] = useState(0);
+  const guarantee = guaranteeNotes[activeGuarantee];
+
+  useGSAP(
+    () => {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+      gsap.utils
+        .toArray<HTMLElement>('[data-scale-reveal]')
+        .forEach((element) => {
+          gsap
+            .timeline({
+              scrollTrigger: {
+                trigger: element,
+                start: 'top bottom',
+                end: 'bottom top',
+                scrub: 1,
+              },
+            })
+            .fromTo(
+              element,
+              {scale: 0.82, opacity: 0.2, filter: 'brightness(0.6)'},
+              {scale: 1, opacity: 1, filter: 'brightness(1)', duration: 0.45},
+            )
+            .to(element, {
+              scale: 0.94,
+              opacity: 0.22,
+              filter: 'brightness(0.55)',
+              duration: 0.55,
+            });
+        });
+
+      gsap.utils.toArray<HTMLElement>('[data-stack-card]').forEach((card, index) => {
+        gsap.fromTo(
+          card,
+          {y: 110 + index * 26, scale: 0.92},
+          {
+            y: 0,
+            scale: 1,
+            ease: 'none',
+            scrollTrigger: {
+              trigger: card,
+              start: 'top 92%',
+              end: 'top 48%',
+              scrub: 1,
+            },
+          },
+        );
+      });
+    },
+    {scope: pageRef},
+  );
 
   return (
     <Layout
       title="The Event Database for Decisions That Must Stay Correct"
       description="Orisun preserves complete event history, validates each declared command context at commit time, and publishes committed events sequentially within each boundary."
     >
-      <header className={styles.hero}>
-        <div className={styles.heroGrid} />
-        <div className={styles.heroTrace} aria-hidden="true">
-          <span>40</span><strong>AccountOpened</strong>
-          <span>41</span><strong>MoneyCredited</strong>
-          <span>42</span><strong>LimitChanged</strong>
-          <span>43</span><strong>MoneyDebited</strong>
-          <span>44</span><strong>TransferRecorded</strong>
-        </div>
-        <div className={clsx('container', styles.heroInner)}>
-          <div className={styles.badges}>
-            <a className={styles.badgeLink} href="https://github.com/OrisunLabs/Orisun/releases/latest">
-              Latest release
-            </a>
-            <span className={styles.badge}>MIT open source</span>
-            <span className={styles.badge}>gRPC API</span>
-          </div>
-          <h1>The event database for decisions that stay correct.</h1>
-          <p>
-            Orisun preserves complete event history and lets a command declare the facts behind
-            its decision. At commit time, Orisun checks that context again. Changed facts reject
-            the write; a valid decision commits atomically and moves to catch-up plus live delivery.
-          </p>
-          <div className={styles.actions}>
-            <Link className="button button--primary button--lg" to="/docs/getting-started">
-              Start with SQLite
-            </Link>
-            <Link className="button button--secondary button--lg" to="/docs/tutorial">
-              See the ledger tutorial
-            </Link>
-          </div>
-          <dl className={styles.heroFacts}>
-            {heroFacts.map(([label, value]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value}</dd>
+      <main ref={pageRef} className={styles.page}>
+        <header className={styles.hero}>
+          <div className={styles.heroGrid} aria-hidden="true" />
+          <div className={clsx('container', styles.heroInner)}>
+            <div className={styles.heroCopy}>
+              <h1>
+                The event{' '}
+                {/*<span className={styles.inlineSignal} aria-hidden="true">*/}
+                {/*  <img src={diagramUrl} alt="" />*/}
+                {/*</span>{' '}*/}
+                database for decisions that stay correct.
+              </h1>
+              <p>
+                Orisun preserves complete event history and lets a command declare the facts behind
+                its decision. At commit time, Orisun checks that context again. Changed facts reject
+                the write; a valid decision commits atomically and moves to catch-up plus live delivery.
+              </p>
+              <div className={styles.actions}>
+                <Link className="button button--primary button--lg" to="/docs/getting-started">
+                  Start with SQLite
+                </Link>
+                <Link className="button button--secondary button--lg" to="/docs/tutorial">
+                  See the ledger tutorial
+                </Link>
               </div>
-            ))}
-          </dl>
-        </div>
-      </header>
+            </div>
+            <div className={styles.heroVisual} data-scale-reveal>
+              <div className={styles.heroTrace} aria-hidden="true">
+                <span>40</span><strong>AccountOpened</strong>
+                <span>41</span><strong>MoneyCredited</strong>
+                <span>42</span><strong>LimitChanged</strong>
+                <span>43</span><strong>MoneyDebited</strong>
+                <span>44</span><strong>TransferRecorded</strong>
+              </div>
+              <p>One ordered history.<br />Every decision checked against the facts it used.</p>
+            </div>
+          </div>
+        </header>
 
-      <main>
         <section id="stale-decision" className={clsx('section', styles.problemSection)}>
           <div className="container">
             <div className={styles.sectionHeader}>
@@ -286,9 +351,8 @@ export default function Home(): ReactNode {
               </p>
             </div>
             <div className={styles.useCaseGrid}>
-              {useCases.map((useCase, index) => (
-                <article className={styles.useCaseCard} key={useCase.title}>
-                  <span>{String(index + 1).padStart(2, '0')}</span>
+              {useCases.map((useCase) => (
+                <article className={styles.useCaseCard} key={useCase.title} tabIndex={0}>
                   <h3>{useCase.title}</h3>
                   <p>{useCase.tension}</p>
                   <strong>{useCase.context}</strong>
@@ -336,7 +400,7 @@ export default function Home(): ReactNode {
                 <Link to="/docs/api/eventstore">Use the EventStore API</Link>
               </div>
             </div>
-            <div className={styles.codePanel}>
+            <div className={styles.codePanel} data-scale-reveal>
               <div className={styles.codePanelHeader}>
                 <span>Node.js</span>
                 <strong>Read and save with the same criteria</strong>
@@ -348,7 +412,7 @@ export default function Home(): ReactNode {
 
         <section id="architecture" className="section">
           <div className={clsx('container', styles.architectureGrid)}>
-            <div className={styles.architectureMedia}>
+            <div className={styles.architectureMedia} data-scale-reveal>
               <img src={diagramUrl} alt="Command, Orisun storage, and JetStream delivery flow" />
             </div>
             <div className={styles.architectureCopy}>
@@ -366,6 +430,45 @@ export default function Home(): ReactNode {
                 <li>Storage-backed catch-up before live delivery</li>
                 <li>gRPC, auth, indexes, telemetry, and admin APIs</li>
               </ul>
+              <aside
+                className={styles.guaranteeCarousel}
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <div>
+                  <strong>{guarantee.title}</strong>
+                  <p>{guarantee.detail}</p>
+                </div>
+                <div className={styles.carouselControls}>
+                  <button
+                    type="button"
+                    aria-label="Previous guarantee"
+                    onClick={() =>
+                      setActiveGuarantee(
+                        (current) =>
+                          (current - 1 + guaranteeNotes.length) %
+                          guaranteeNotes.length,
+                      )
+                    }
+                  >
+                    Previous
+                  </button>
+                  <span>
+                    {activeGuarantee + 1} / {guaranteeNotes.length}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Next guarantee"
+                    onClick={() =>
+                      setActiveGuarantee(
+                        (current) => (current + 1) % guaranteeNotes.length,
+                      )
+                    }
+                  >
+                    Next
+                  </button>
+                </div>
+              </aside>
               <Link to="/docs/concepts/delivery-guarantees">Read the delivery guarantees</Link>
             </div>
           </div>
@@ -383,7 +486,12 @@ export default function Home(): ReactNode {
             </div>
             <div className={styles.backendGrid}>
               {backends.map((backend) => (
-                <Link className={styles.backendCard} to={backend.href} key={backend.name}>
+                <Link
+                  className={styles.backendCard}
+                  to={backend.href}
+                  key={backend.name}
+                  data-stack-card
+                >
                   <div className={styles.backendHeader}>
                     <h3>{backend.name}</h3>
                     <span>Open guide</span>

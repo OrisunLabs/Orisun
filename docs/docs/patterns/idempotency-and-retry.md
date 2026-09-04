@@ -11,18 +11,29 @@ Orisun gives you two distinct idempotency problems to solve, and a mechanism for
 - **Write side:** a command may need to be retried (network blip, contention, or a lost response). Retrying must not double-apply the business decision.
 - **Read side:** delivery is [at least once](../concepts/delivery-guarantees#at-least-once-delivery), so a projector can see the same event more than once. Reprocessing must not double-apply a side effect.
 
-## Write side: the CCC check is your idempotency guard
+## Write side: CCC can make a retry self-conflicting
 
-The primary idempotency mechanism is the Command Context Consistency observation, not the `event_id`:
+Orisun does not provide an event-id uniqueness constraint or an idempotency-key
+table. A CCC observation makes a retry self-conflicting only when the committed
+command advanced at least one of its observed queries:
 
 1. Read the command context (`GetLatestByCriteria` or a complete `GetEvents` query), then retain its exact query and latest matching position as one observation.
 2. Pass every observation to `SaveEventsV2.consistency`.
-3. If the save **committed** and you retry with the same observations, Orisun returns `ALREADY_EXISTS` because at least one context advanced, rather than writing a duplicate.
+3. Make sure at least one event produced by the command matches an observed query.
+4. If the save committed and the exact request is retried, that observation is now stale, so Orisun returns `ALREADY_EXISTS` rather than writing a duplicate.
 
-So `ALREADY_EXISTS` after a retry means *"something already moved this context."* Very often, that was your own first attempt.
+If none of the written events match any observed query, the observations remain
+current and the same request can commit again. In that shape, CCC still protects
+the business decision against concurrent context changes, but it is not a retry
+deduplicator. Add an explicit command-id criterion to the context or perform an
+application-level idempotency check.
+
+So `ALREADY_EXISTS` after a retry means *"something moved this context."* That
+may be the first attempt, or it may be a competing command; always re-read and
+inspect the resulting state before deciding what happened.
 
 :::note
-The store does **not** deduplicate by `event_id`. There is no unique constraint on `event_id` (the primary key is the per-boundary `global_id`). A stable `event_id` is for *detection* and *consumer dedup*; the CCC check is what prevents duplicate writes.
+The store does **not** deduplicate by `event_id`. There is no unique constraint on `event_id` (the primary key is the per-boundary `global_id`). A stable `event_id` is for *detection* and *consumer dedup*. CCC prevents a repeated write only under the matching-query condition described above.
 :::
 
 ### Use a command-stable event_id
@@ -64,7 +75,10 @@ for {
 
 	_, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 		Boundary: "accounts",
-		Consistency: []*eventstore.ConsistencyObservation{latest.Observation},
+		Consistency: []*eventstore.ConsistencyObservation{{
+			Query:    &eventstore.Query{Criteria: accountCriteria},
+			Position: latest.ContextPosition,
+		}},
 		Events: []*eventstore.EventToSave{{
 			EventId:   eventID,
 			EventType: "MoneyDebited",
@@ -212,7 +226,7 @@ EOF
 
 ### Ambiguous failures: "maybe it committed"
 
-A timeout *after* the server received the save but *before* you got the response is ambiguous because the command may have committed. Treat it like a conflict: re-read the context. If the carried state already reflects your decision, your first attempt committed; do not apply it again. A command-stable `event_id` makes this check recognizable downstream.
+A timeout *after* the server received the save but *before* you got the response is ambiguous because the command may have committed. Treat it like a conflict: re-read the context. If the carried state already reflects your stable command or event id, your first attempt committed; do not apply it again. If it does not, re-run business validation before retrying. A blind retry is safe only when the original write necessarily advanced one of the reused observations.
 
 ## Read side: deduplicate by event_id in the projector
 
@@ -227,7 +241,7 @@ Persist the projector checkpoint **after** the side effect is durable, so a rest
 
 | Concern | Mechanism |
 | --- | --- |
-| Don't write a duplicate on retry | Reuse CCC observations → `ALREADY_EXISTS` |
+| Make a committed retry conflict | Write into at least one reused CCC observation query |
 | Recognize a retried command | Command-stable `event_id` |
 | Don't double-apply on redelivery | Consumer dedup by `event_id` |
 | Recover from a lost response | Re-read the context before retrying |

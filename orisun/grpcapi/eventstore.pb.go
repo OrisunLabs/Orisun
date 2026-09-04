@@ -325,6 +325,8 @@ func (IndexState) EnumDescriptor() ([]byte, []int) {
 	return file_eventstore_proto_rawDescGZIP(), []int{5}
 }
 
+// Position identifies one event in a boundary's total order. For consistency,
+// (-1, -1) means that the observed query had no match.
 type Position struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	CommitPosition  int64                  `protobuf:"varint,1,opt,name=commit_position,json=commitPosition,proto3" json:"commit_position,omitempty"`
@@ -672,8 +674,9 @@ func (x *Event) GetDateCreated() *timestamppb.Timestamp {
 }
 
 type WriteResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	LogPosition   *Position              `protobuf:"bytes,1,opt,name=log_position,json=logPosition,proto3" json:"log_position,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Position of the last event in the committed batch.
+	LogPosition   *Position `protobuf:"bytes,1,opt,name=log_position,json=logPosition,proto3" json:"log_position,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -890,9 +893,13 @@ func (x *SaveEventsRequest) GetEvents() []*EventToSave {
 }
 
 type SaveEventsV2Request struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	Boundary      string                    `protobuf:"bytes,1,opt,name=boundary,proto3" json:"boundary,omitempty"`
-	Events        []*EventToSave            `protobuf:"bytes,2,rep,name=events,proto3" json:"events,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Active boundary receiving this atomic event batch.
+	Boundary string `protobuf:"bytes,1,opt,name=boundary,proto3" json:"boundary,omitempty"`
+	// One or more events. Every event commits or none does.
+	Events []*EventToSave `protobuf:"bytes,2,rep,name=events,proto3" json:"events,omitempty"`
+	// Complete query observations that must all still be current. Empty means an
+	// unconditional append.
 	Consistency   []*ConsistencyObservation `protobuf:"bytes,3,rep,name=consistency,proto3" json:"consistency,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1329,13 +1336,10 @@ func (x *GetServerInfoResponse) GetCapabilities() []ServerCapability {
 	return nil
 }
 
-// GetLatestByCriteria returns the latest event matching each criterion,
-// assembled by the server from ONE consistent read snapshot, plus the
-// context_position to use as SaveEvents.query.expected_position with the same
-// combined criteria. Assembling the same context from independent GetEvents
-// calls is not equivalent: an event can commit between the calls with a
-// position below the observed maximum, and a scalar expected position cannot
-// detect that.
+// GetLatestByCriteria returns the latest event matching each criterion from one
+// read snapshot. context_position is the latest match across the complete OR
+// criteria list. Pair the exact criteria, wrapped in one Query, with that
+// position to create one SaveEventsV2 consistency observation.
 type GetLatestByCriteriaRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Boundary      string                 `protobuf:"bytes,1,opt,name=boundary,proto3" json:"boundary,omitempty"`

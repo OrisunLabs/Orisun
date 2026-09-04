@@ -43,11 +43,18 @@ type WriteResult struct {
 	LogPosition *Position
 }
 
+// SaveQuery is the deprecated single-query consistency shape.
+//
+// Deprecated: use ConsistencyObservation with SaveEventsV2Request.
 type SaveQuery struct {
 	ExpectedPosition *Position
 	SubsetQuery      *Query
 }
 
+// SaveEventsRequest is retained for compatibility with the deprecated
+// SaveEvents RPC.
+//
+// Deprecated: use SaveEventsV2Request.
 type SaveEventsRequest struct {
 	Boundary string
 	Query    *SaveQuery

@@ -92,7 +92,7 @@ SQLite has no clustered mode, but a single boundary file goes further than most 
 
 ### 1. Vertical headroom first
 
-Each boundary file already runs WAL mode with a read pool sized to `runtime.NumCPU()` and a single serialized writer. On NVMe storage with batched `SaveEvents`, a single boundary sustains tens of thousands of events per second. Before adding infrastructure:
+Each boundary file already runs WAL mode with a read pool sized to `runtime.NumCPU()` and a single serialized writer. On NVMe storage with batched `SaveEventsV2` calls, a single boundary sustains tens of thousands of events per second. Before adding infrastructure:
 
 - batch writes, because the per-transaction cost dominates the per-event cost
 - keep `ORISUN_SQLITE_DIR` on local NVMe, never on NFS or other network filesystems (file locking is unreliable there)
@@ -138,7 +138,7 @@ What does not work: multi-writer SQLite replication (cr-sqlite, marmot, and simi
 
 ### 4. Graduate to PostgreSQL
 
-When a deployment needs multi-node availability or write scale beyond boundary sharding, move to the PostgreSQL backend rather than building a distributed SQLite. The public API is identical; see [Migrating between backends](../concepts/storage-backends#migrating-between-backends). Create and activate each empty target boundary before replaying its events in order with `SaveEvents`. Positions are regenerated on write, so consumers must restart subscriptions from the new positions.
+When a deployment needs multi-node availability or write scale beyond boundary sharding, move to the PostgreSQL backend rather than building a distributed SQLite. The public API is identical; see [Migrating between backends](../concepts/storage-backends#migrating-between-backends). Create and activate each empty target boundary before replaying its events in order with unconditional `SaveEventsV2` calls. Positions are regenerated on write, so consumers must restart subscriptions from the new positions.
 
 ### Analytics on the side
 
@@ -282,7 +282,7 @@ Effective values are logged at startup.
 
 | Limit | Value | Notes |
 | --- | --- | --- |
-| gRPC request message size | `ORISUN_GRPC_MAX_RECEIVE_MESSAGE_SIZE` (default 64 MB) | Caps a single `SaveEvents` request, so it bounds batch size times event payload. Split very large batches. |
+| gRPC request message size | `ORISUN_GRPC_MAX_RECEIVE_MESSAGE_SIZE` (default 64 MB) | Caps one gRPC request, including `SaveEventsV2`; it therefore bounds event payload plus consistency observations. Split very large batches. |
 | Event `data` / `metadata` | JSON string per field | No separate field cap; the whole request must fit the message-size limit above. |
 | Publisher read batch | `ORISUN_POLLING_PUBLISHER_BATCH_SIZE` (default 1000) | Events drained per publisher read cycle. Raise for high write volume, lower to smooth memory. |
 | `GetEvents` page | `count` per request, server-capped at 10000 | Page with `from_position`; see [Positions and Ordering](../concepts/positions#positions-and-paging). |
@@ -290,9 +290,9 @@ Effective values are logged at startup.
 
 Sizing guidance:
 
-- Keep batches comfortably under the configured gRPC receive limit. For bulk imports, chunk into many ordered `SaveEvents` calls.
+- Keep batches comfortably under the configured gRPC receive limit. For bulk imports, chunk into many ordered, unconditional `SaveEventsV2` calls.
 - Reuse one official client/channel per target for hot writes. The Node and Java clients set Orisun's high-throughput gRPC defaults and cache auth tokens after the first authenticated response.
-- For bursty writers, cap concurrent `SaveEvents` calls on that one client around 512-1024 in flight. Launching every pending write at once adds client-side HTTP/2 stream and scheduler overhead without improving the single-boundary write ceiling.
+- For bursty writers, cap concurrent `SaveEventsV2` calls on that one client around 512-1024 in flight. Launching every pending write at once adds client-side HTTP/2 stream and scheduler overhead without improving the single-boundary write ceiling.
 - Set retention age above the slowest subscriber's expected lag and above the catch-up handover grace (~10s).
 - Subscribers that routinely fall out of the live window are served from durable storage; this is correct but increases read load. Scale retention or subscriber throughput accordingly.
 

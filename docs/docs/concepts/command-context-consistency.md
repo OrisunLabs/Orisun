@@ -25,9 +25,27 @@ A consistency observation has exactly two parts:
 
 Tags inside one criterion are combined with **AND**. Criteria inside one query are combined with **OR**. The position belongs to the complete query, not to an individual criterion: it is the latest position matched by any criterion in that query.
 
+For example, this query means “events in shipment 9, or suspension events for
+carrier 2”:
+
+```text
+(scopes.shipmentId = shipment-9)
+OR
+(eventType = CarrierSuspended AND carrierId = carrier-2)
+```
+
+It still produces one observation position because it is one query. Two reads
+that were made independently produce two observations, even if the command
+eventually combines their results into one decision.
+
 `SaveEventsV2` accepts zero or more observations. Before inserting anything, Orisun re-runs every query and compares its latest matching position with the supplied position. All checks and all inserts happen atomically. If one observation is stale, no event is saved and the RPC returns `ALREADY_EXISTS`.
 
 An empty `consistency` list is an unconditional atomic append. Use `{-1, -1}` when a query matched no event and must remain empty.
+
+Only a newly committed event that matches an observation's query changes that
+observation. Events outside every observed query do not create a false
+conflict. Conversely, omitting a query that influenced the decision leaves
+that part of the decision unprotected.
 
 ## Command flow
 
@@ -110,7 +128,14 @@ Some commands use different read shapes. A dispatch might use `GetLatestByCriter
 
 The reads do not need to share one snapshot. Each position is tied to its own complete query, so a matching event committed after either read makes that observation stale. `SaveEventsV2` validates both in the write transaction before appending.
 
-When deriving an observation from a complete `GetEvents` read, preserve the exact query and use the latest matching event's position. Use `{-1, -1}` if the complete read returned no match. A truncated page is not a complete context read and must not be used as an observation.
+When deriving an observation from a complete `GetEvents` read, preserve the exact query and use the greatest position among its matching events. Use `{-1, -1}` if the complete read returned no match. A truncated page is not a complete context read and must not be used as an observation. `WriteResult.log_position` is only a write receipt; it is not a replacement for the position produced by the context read.
+
+`GetLatestByCriteria` is safer when a command needs only carried state: it
+returns one latest result per criterion and a single `context_position` for the
+complete criteria list from one server-side snapshot. `GetEvents` is useful
+when the decision genuinely requires history, but the application must finish
+paging through the queried context before using its greatest matching
+position.
 
 ## Before and after
 
@@ -152,11 +177,23 @@ The replacement makes the invariant explicit and supports every context the comm
 
 `SaveEvents` and `SaveQuery` remain wire-compatible but are deprecated. The server translates a V1 request into one V2 observation and executes the same implementation. New applications should use `SaveEventsV2`.
 
+The translation creates an observation only when V1 contains a non-empty
+`subsetQuery`. A legacy `expected_position` without that query never acted as a
+stream revision and remains an unconditional append. V2 removes that ambiguous
+shape: absence is asserted with an explicit query paired with `{-1, -1}`.
+
 ## Conflict behavior
 
 When any observed query has changed, Orisun returns gRPC `ALREADY_EXISTS`. This is an expected concurrency signal, not a server failure. The application should re-read all contexts needed by the decision, rebuild its model, re-run business validation, and retry with fresh observations only if the command remains valid.
 
 Orisun validates equality queries and positions; it does not perform domain decoding or business validation. Those remain the command handler's responsibility.
+
+Malformed observations fail closed with `INVALID_ARGUMENT`. Queries and
+criteria must be non-empty, every tag needs a key, and a position must either
+be exactly `{-1, -1}` or contain two non-negative values. Equivalent duplicate
+observations are collapsed; equivalent queries claiming different positions
+are rejected. Requests are bounded to 1,024 observations, 4,096 total
+criteria, and 16,384 total tags.
 
 ## Design guidance
 

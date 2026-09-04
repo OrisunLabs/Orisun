@@ -8,8 +8,10 @@
         "@docusaurus/core": "3.10.1",
         "@docusaurus/plugin-client-redirects": "^3.10.1",
         "@docusaurus/preset-classic": "3.10.1",
+        "@gsap/react": "^2.1.2",
         "@mdx-js/react": "^3.1.0",
         "clsx": "^2.1.1",
+        "gsap": "^3.15.0",
         "prism-react-renderer": "^2.4.1",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
@@ -430,6 +432,8 @@
     "@docusaurus/utils-common": ["@docusaurus/utils-common@3.10.1", "", { "dependencies": { "@docusaurus/types": "3.10.1", "tslib": "^2.6.0" } }, "sha512-5mFSgEADtnFxFH7RLw02QA5MpU5JVUCj0MPeIvi/aF4Fi45tQRIuTwXoXDqJ+1VfQJuYJGz3SI63wmGz4HvXzA=="],
 
     "@docusaurus/utils-validation": ["@docusaurus/utils-validation@3.10.1", "", { "dependencies": { "@docusaurus/logger": "3.10.1", "@docusaurus/utils": "3.10.1", "@docusaurus/utils-common": "3.10.1", "fs-extra": "^11.2.0", "joi": "^17.9.2", "js-yaml": "^4.1.0", "lodash": "^4.17.21", "tslib": "^2.6.0" } }, "sha512-cRv1X69jwaWv47waglllgZVWzeBFLhl53XT/XED/83BerVBTC5FTP8WTcVl8Z6sZOegDSwitu/wpCSPCDOT6lg=="],
+
+    "@gsap/react": ["@gsap/react@2.1.2", "", { "peerDependencies": { "gsap": "^3.12.5", "react": ">=17" } }, "sha512-JqliybO1837UcgH2hVOM4VO+38APk3ECNrsuSM4MuXp+rbf+/2IG2K1YJiqfTcXQHH7XlA0m3ykniFYstfq0Iw=="],
 
     "@hapi/hoek": ["@hapi/hoek@9.3.0", "", {}, "sha512-/c6rf4UJlmHlC9b5BaNvzAcFv7HZ2QHaV0D4/HNlBdvFnvQq8RI4kYdhyPCl7Xj+oWvTWQ8ujhqS53LIgAe6KQ=="],
 
@@ -1148,6 +1152,8 @@
     "graceful-fs": ["graceful-fs@4.2.11", "", {}, "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="],
 
     "gray-matter": ["gray-matter@4.0.3", "", { "dependencies": { "js-yaml": "^3.13.1", "kind-of": "^6.0.2", "section-matter": "^1.0.0", "strip-bom-string": "^1.0.0" } }, "sha512-5v6yZd4JK3eMI3FqqCouswVqwugaA9r4dNZB1wwcmrD02QkV5H0y7XBQW8QwQqEaZY1pM9aqORSORhJRdNK44Q=="],
+
+    "gsap": ["gsap@3.15.0", "", {}, "sha512-dMW4CWBTUK1AEEDeZc1g4xpPGIrSf9fJF960qbTZmN/QwZIWY5wgliS6JWl9/25fpTGJrMRtSjGtOmPnfjZB+A=="],
 
     "gzip-size": ["gzip-size@6.0.0", "", { "dependencies": { "duplexer": "^0.1.2" } }, "sha512-ax7ZYomf6jqPTQ4+XCpUGyXKHk5WweS+e05MBO4/y3WJ5RkmPXNKvX+bx1behVILVwr6JSQvZAku021CHPXG3Q=="],
 

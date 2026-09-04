@@ -62,7 +62,9 @@ func NewOrisunServer(
 	}, nil
 }
 
-// SaveEvents saves a batch of events to the event store
+// SaveEvents saves a batch through the legacy single-query shape.
+//
+// Deprecated: use SaveEventsV2.
 func (c *OrisunServer) SaveEvents(ctx context.Context, events []EventWithMapTags, boundary string,
 	expectedPosition *Position, streamSubSet *Query) (*Position, error) {
 	return c.SaveEventsV2(ctx, events, boundary, legacyConsistencyObservations(expectedPosition, streamSubSet))

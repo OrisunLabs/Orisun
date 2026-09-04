@@ -80,4 +80,9 @@ Orisun delivery is at least once. Consumers should be idempotent and deduplicate
 
 ## Slow criteria queries
 
-Criteria queries read JSON fields from event `data`. Create indexes for every high-volume key used in command contexts, `GetLatestByCriteria`, or projector filters. See [Indexing](../concepts/indexing).
+Criteria queries read JSON fields from event `data`. On PostgreSQL and SQLite,
+create indexes for high-volume keys used in command contexts,
+`GetLatestByCriteria`, or projector filters. FoundationDB does not fall back to
+a scan: every criterion used by a read or `SaveEventsV2` observation needs a
+ready covering index, or the request fails with `FAILED_PRECONDITION`. See
+[Indexing](../concepts/indexing).
