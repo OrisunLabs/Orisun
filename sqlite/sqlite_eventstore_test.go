@@ -1204,7 +1204,10 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		}
 
 		// Condition key is registry-known after creation, so the query term exactly
-		// matches the predicate and the planner can pick the partial index.
+		// matches the partial-index predicate. Force that index below: SQLite will
+		// reject the statement with "no query solution" if the predicate cannot use
+		// it. This tests structural eligibility without depending on cost estimates
+		// for this deliberately tiny fixture.
 		where, err := buildCriteriaSQLForBoundary([]map[string]any{
 			{"status": "404", "amount": "5"},
 		}, pools["test"].indexes, "test")
@@ -1218,7 +1221,8 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		defer pools["test"].Read.Put(conn)
 		var plan strings.Builder
 		err = sqlitex.ExecuteTransient(conn,
-			"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM orisun_es_event WHERE "+where,
+			"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM orisun_es_event INDEXED BY "+
+				quoteIdent("status404_idx")+" WHERE "+where,
 			&sqlitex.ExecOptions{
 				ResultFunc: func(stmt *sqlite.Stmt) error {
 					plan.WriteString(stmt.ColumnText(3))
