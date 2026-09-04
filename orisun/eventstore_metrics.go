@@ -118,13 +118,12 @@ func (s *EventStore) savePreparedWithMetrics(
 	saver EventsSaver,
 	events PreparedEventBatch,
 	boundary string,
-	expectedPosition *Position,
-	subset *Query,
+	consistency []ConsistencyCheck,
 ) (transactionID string, globalID int64, err error) {
 	m := s.metrics.Load()
 	if m == nil {
 		transactionID, globalID, err = saver.SavePrepared(
-			ctx, events, boundary, expectedPosition, subset,
+			ctx, events, boundary, consistency,
 		)
 		if err != nil {
 			err = normalizeSaveError(err)
@@ -134,12 +133,12 @@ func (s *EventStore) savePreparedWithMetrics(
 
 	started := time.Now()
 	transactionID, globalID, err = saver.SavePrepared(
-		ctx, events, boundary, expectedPosition, subset,
+		ctx, events, boundary, consistency,
 	)
 	if err != nil {
 		err = normalizeSaveError(err)
 	}
-	m.recordCommitAttempt(ctx, boundary, events, expectedPosition, subset, started, err)
+	m.recordCommitAttempt(ctx, boundary, events, consistency, started, err)
 	return transactionID, globalID, err
 }
 
@@ -147,8 +146,7 @@ func (m *eventStoreMetrics) recordCommitAttempt(
 	ctx context.Context,
 	boundary string,
 	events PreparedEventBatch,
-	expectedPosition *Position,
-	subset *Query,
+	consistency []ConsistencyCheck,
 	started time.Time,
 	err error,
 ) {
@@ -169,7 +167,7 @@ func (m *eventStoreMetrics) recordCommitAttempt(
 	if status == "ALREADY_EXISTS" {
 		m.conflicts.Add(ctx, 1, m.conflictOptionsFor(
 			boundary,
-			cccCriterionShape(expectedPosition, subset),
+			cccCriterionShape(consistency),
 		)...)
 	}
 }
@@ -231,20 +229,21 @@ func preparedPayloadBytes(events PreparedEventBatch) int64 {
 	return size
 }
 
-func cccCriterionShape(expectedPosition *Position, subset *Query) string {
-	if subset == nil || len(subset.Criteria) == 0 {
-		if expectedPosition != nil {
-			return "position_only"
-		}
+func cccCriterionShape(consistency []ConsistencyCheck) string {
+	if len(consistency) == 0 {
 		return "unscoped"
 	}
-	if len(subset.Criteria) > 1 {
+	if len(consistency) > 1 {
+		return "multiple_queries"
+	}
+	criteria := consistency[0].Criteria
+	if len(criteria) > 1 {
 		return "multiple_criteria"
 	}
-	if subset.Criteria[0] == nil || len(subset.Criteria[0].Tags) == 0 {
+	if len(criteria) == 0 || len(criteria[0].Tags) == 0 {
 		return "empty_criterion"
 	}
-	if len(subset.Criteria[0].Tags) == 1 {
+	if len(criteria[0].Tags) == 1 {
 		return "single_criterion_single_tag"
 	}
 	return "single_criterion_multiple_tags"

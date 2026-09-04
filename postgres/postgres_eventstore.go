@@ -21,12 +21,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const insertEventsWithConsistency = `
-SELECT * FROM %s.insert_events_with_consistency_v3($1::text, $2::text, $3::jsonb, $4::jsonb)
-`
-
 const insertEventRequestsWithConsistency = `
-SELECT * FROM %s.insert_event_requests_with_consistency_v1($1::text, $2::text, $3::jsonb)
+SELECT * FROM %s.insert_event_requests_v2($1::text, $2::text, $3::jsonb)
 `
 
 const insertUnconditionalEventRequests = `
@@ -34,11 +30,11 @@ SELECT * FROM %s.insert_unconditional_event_requests_v1($1::text, $2::text, $3::
 `
 
 const insertCanonicalEventRequestsWithConsistency = `
-SELECT * FROM %s.insert_canonical_event_requests_with_consistency_v1($1::text, $2::text, $3::jsonb)
+SELECT * FROM %s.insert_canonical_event_requests_v2($1::text, $2::text, $3::jsonb)
 `
 
 const insertIndependentEventRequestsWithConsistency = `
-SELECT * FROM %s.insert_independent_event_requests_with_consistency_v1($1::text, $2::text, $3::text, $4::jsonb)
+SELECT * FROM %s.insert_independent_event_requests_v2($1::text, $2::text, $3::text, $4::jsonb)
 `
 
 const selectMatchingEvents = `
@@ -149,8 +145,8 @@ func (s *PostgresSaveEvents) SavePrepared(
 	ctx context.Context,
 	events eventstore.PreparedEventBatch,
 	boundary string,
-	expectedPosition *eventstore.Position,
-	streamConsistencyCondition *eventstore.Query) (transactionID string, globalID int64, err error) {
+	consistency []eventstore.ConsistencyCheck,
+) (transactionID string, globalID int64, err error) {
 	if s.logger.IsDebugEnabled() {
 		s.logger.Debugf("Postgres: Saving events from request: %v", events)
 	}
@@ -162,7 +158,7 @@ func (s *PostgresSaveEvents) SavePrepared(
 	if _, ok := s.registry.lookup(boundary); !ok {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "no schema found for boundary: %s", boundary)
 	}
-	return s.enqueue(ctx, boundary, events, expectedPosition, streamConsistencyCondition)
+	return s.enqueue(ctx, boundary, events, consistency)
 }
 
 func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEventsRequest) (eventstore.ReadEventBatch, error) {
@@ -266,12 +262,10 @@ func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEve
 	return batch, nil
 }
 
-// GetLatestByCriteria returns the latest event per criterion plus the max
-// observed position. The per-criterion lookups run inside one SQL statement
-// (get_latest_by_criteria_v1 builds a UNION ALL of LIMIT-1 subqueries), so the
-// whole context comes from one snapshot — assembling it from independent
-// queries would let an event commit in between with a position below the
-// observed maximum, invisible to a scalar expected-position check.
+// GetLatestByCriteria returns the latest event per criterion plus the latest
+// position of the complete OR query. The per-criterion lookups run inside one
+// SQL statement (get_latest_by_criteria_v1 builds a UNION ALL of LIMIT-1
+// subqueries), so all returned carried state comes from one snapshot.
 func (s *PostgresGetEvents) GetLatestByCriteria(ctx context.Context, query eventstore.LatestByCriteriaQuery) (eventstore.LatestByCriteriaBatch, error) {
 	entry, ok := s.registry.lookup(query.Boundary)
 	if !ok {
@@ -350,23 +344,6 @@ func getReadCriteriaAsList(criteria []eventstore.ReadCriterion) []map[string]any
 		result = append(result, anded)
 	}
 	return result
-}
-
-func getStreamSectionAsMap(expectedPosition *eventstore.Position, consistencyCondition *eventstore.Query) map[string]any {
-	lastRetrievedPositions := make(map[string]any)
-
-	if expectedPosition != nil {
-		lastRetrievedPositions["expected_position"] = map[string]int64{
-			"transaction_id": expectedPosition.CommitPosition,
-			"global_id":      expectedPosition.PreparePosition,
-		}
-	}
-
-	if conditions := consistencyCondition; conditions != nil {
-		lastRetrievedPositions["criteria"] = getCriteriaAsList(consistencyCondition)
-	}
-
-	return lastRetrievedPositions
 }
 
 func getCriteriaAsList(query *eventstore.Query) []map[string]any {

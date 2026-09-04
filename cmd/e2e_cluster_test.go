@@ -339,7 +339,6 @@ func testBasicClusterFunctionality(t *testing.T, suite *ClusterTestSuite) {
 		}
 	}
 
-	expectedPosition := pb.Position{CommitPosition: -1, PreparePosition: -1}
 	// Test that both nodes are operational
 	for i, node := range suite.nodes {
 		// Save an event to each node
@@ -350,13 +349,12 @@ func testBasicClusterFunctionality(t *testing.T, suite *ClusterTestSuite) {
 			Metadata:  `{"source": "cluster_test"}`,
 		}
 
-		req := &pb.SaveEventsRequest{
+		req := &pb.SaveEventsV2Request{
 			Boundary: fmt.Sprintf("orisun_test_%d", i+1),
-			Query:    &pb.SaveQuery{ExpectedPosition: &expectedPosition},
 			Events:   []*pb.EventToSave{event},
 		}
 
-		resp, err := node.client.SaveEvents(ctx, req)
+		resp, err := node.client.SaveEventsV2(ctx, req)
 		require.NoError(t, err)
 		assert.NotNil(t, resp)
 		t.Logf("Node %d successfully saved event: %v", i, resp)
@@ -382,38 +380,6 @@ func testEventConsistencyAcrossNodes(t *testing.T, suite *ClusterTestSuite) {
 	// Create authenticated context with admin credentials
 	ctx := createAuthenticatedContext("admin", "changeit")
 
-	// First, query the current position in orisun_test_1 to get the latest version
-	// This ensures we don't have optimistic concurrency conflicts with events from
-	// the previous test (BasicClusterFunctionality)
-	getCurrentReq := &pb.GetEventsRequest{
-		Boundary:  "orisun_test_1",
-		Count:     1,
-		Direction: pb.Direction_DESC,
-	}
-
-	currentResp, err := suite.nodes[0].client.GetEvents(ctx, getCurrentReq)
-	require.NoError(t, err, "Failed to query current position")
-
-	// Determine the expected position based on existing events
-	var expectedPosition *pb.Position
-	if len(currentResp.Events) > 0 {
-		// Use the position of the most recent event
-		currentPosition := currentResp.Events[0].Position
-		expectedPosition = &pb.Position{
-			CommitPosition:  currentPosition.CommitPosition,
-			PreparePosition: currentPosition.PreparePosition,
-		}
-		t.Logf("Found existing events in orisun_test_1, current position: commit=%d prepare=%d", expectedPosition.CommitPosition, expectedPosition.PreparePosition)
-	} else {
-		// No events exist, use NotExistsPosition
-		notExists := pb.Position{CommitPosition: -1, PreparePosition: -1}
-		expectedPosition = &pb.Position{
-			CommitPosition:  notExists.CommitPosition,
-			PreparePosition: notExists.PreparePosition,
-		}
-		t.Logf("No existing events in orisun_test_1, using NotExistsPosition")
-	}
-
 	// Save events to the first node
 	eventsToSave := []*pb.EventToSave{
 		{
@@ -430,14 +396,13 @@ func testEventConsistencyAcrossNodes(t *testing.T, suite *ClusterTestSuite) {
 		},
 	}
 
-	// Save all events in a single request with the correct expected position
-	req := &pb.SaveEventsRequest{
+	// Save all events in one atomic request.
+	req := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query:    &pb.SaveQuery{ExpectedPosition: expectedPosition},
 		Events:   eventsToSave,
 	}
 
-	resp, err := suite.nodes[0].client.SaveEvents(ctx, req)
+	resp, err := suite.nodes[0].client.SaveEventsV2(ctx, req)
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
 	t.Logf("Saved %d shared events to node 0: %v", len(eventsToSave), resp)

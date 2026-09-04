@@ -186,12 +186,12 @@ func main() {
 	}
 
 	// 1. Open the account (context must be empty).
-	_, err = client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
+	_, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 		Boundary: "accounts",
-		Query: &eventstore.SaveQuery{
-			ExpectedPosition: &eventstore.Position{CommitPosition: -1, PreparePosition: -1},
-			SubsetQuery:      accountRootQuery,
-		},
+		Consistency: []*eventstore.ConsistencyObservation{{
+			Query: accountRootQuery,
+			Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1},
+		}},
 		Events: []*eventstore.EventToSave{{
 			EventId: accountOpenedID, EventType: "AccountOpened",
 			Data: `{"accountOpenedId":"018f2d5e-0001-7000-8000-000000000001","balance":0}`,
@@ -205,7 +205,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 2. Read the latest carried state and its context position.
+	// 2. Read the latest carried state and construct its V2 observation.
 	latest, err := client.GetLatestByCriteria(ctx, &eventstore.GetLatestByCriteriaRequest{
 		Boundary:  "accounts",
 		Criteria:  accountContextQuery.Criteria,
@@ -213,7 +213,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	expected := latest.ContextPosition // pass to the next save as ExpectedPosition
+	observed := &eventstore.ConsistencyObservation{
+		Query:    accountContextQuery,
+		Position: latest.ContextPosition,
+	}
 
 	// 3. Subscribe a projector (catch-up then live).
 	handler := orisun.NewSimpleEventHandler().
@@ -222,7 +225,7 @@ func main() {
 	sub, err := client.SubscribeToEvents(ctx, &eventstore.CatchUpSubscribeToEventStoreRequest{
 		Boundary:       "accounts",
 		SubscriberName: "balance-projector",
-		AfterPosition:  expected,
+		AfterPosition:  observed.Position,
 	}, handler)
 	if err != nil {
 		log.Fatal(err)
@@ -262,12 +265,12 @@ const accountContextQuery = {
 
 // 1. Open the account (context must be empty).
 try {
-  await client.saveEvents({
+  await client.saveEventsV2({
     boundary: 'accounts',
-    query: {
-      expectedPosition: { commitPosition: -1, preparePosition: -1 },
-      subsetQuery: accountRootQuery,
-    },
+    consistency: [{
+      query: accountRootQuery,
+      position: { commitPosition: -1, preparePosition: -1 },
+    }],
     events: [
       {
         eventId: accountOpenedId,
@@ -284,17 +287,20 @@ try {
   }
 }
 
-// 2. Read the latest carried state and its context position.
+// 2. Read the latest carried state and construct its V2 observation.
 const latest = await client.getLatestByCriteria({
   boundary: 'accounts',
   criteria: accountContextQuery.criteria,
 });
 const balance = latest.results[1].event?.data.balanceAfter ?? latest.results[0].event?.data.balance ?? 0;
-const expectedPosition = latest.contextPosition; // pass to the next save
+const observation = {
+  query: accountContextQuery,
+  position: latest.contextPosition,
+};
 
 // 3. Subscribe a projector (catch-up then live).
 const subscription = client.subscribeToEvents(
-  { subscriberName: 'balance-projector', boundary: 'accounts', afterPosition: expectedPosition },
+  { subscriberName: 'balance-projector', boundary: 'accounts', afterPosition: observation.position },
   (event) => { /* apply event, then checkpoint event.position */ },
   (error) => console.error('subscription error:', error),
 );
@@ -334,13 +340,12 @@ try (OrisunClient client = OrisunClient.newBuilder()
 
   // 1. Open the account (context must be empty).
   try {
-      client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
+      client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
           .setBoundary("accounts")
-          .setQuery(Eventstore.SaveQuery.newBuilder()
-              .setExpectedPosition(Eventstore.Position.newBuilder()
-                  .setCommitPosition(-1).setPreparePosition(-1).build())
-              .setSubsetQuery(accountRootQuery)
-              .build())
+          .addConsistency(Eventstore.ConsistencyObservation.newBuilder()
+              .setQuery(accountRootQuery)
+              .setPosition(Eventstore.Position.newBuilder()
+                  .setCommitPosition(-1).setPreparePosition(-1)))
           .addEvents(Eventstore.EventToSave.newBuilder()
               .setEventId(accountOpenedId)
               .setEventType("AccountOpened")
@@ -351,20 +356,23 @@ try (OrisunClient client = OrisunClient.newBuilder()
       // Concurrency conflict. Re-read the context and retry.
   }
 
-  // 2. Read the latest carried state and its context position.
+  // 2. Read the latest carried state and construct its V2 observation.
   Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
       Eventstore.GetLatestByCriteriaRequest.newBuilder()
           .setBoundary("accounts")
           .addAllCriteria(accountContextQuery.getCriteriaList())
           .build());
-  Eventstore.Position expectedPosition = latest.getContextPosition();
+  Eventstore.ConsistencyObservation observation = Eventstore.ConsistencyObservation.newBuilder()
+      .setQuery(accountContextQuery)
+      .setPosition(latest.getContextPosition())
+      .build();
 
   // 3. Subscribe a projector (catch-up then live).
   EventSubscription sub = client.subscribeToEvents(
       Eventstore.CatchUpSubscribeToEventStoreRequest.newBuilder()
           .setBoundary("accounts")
           .setSubscriberName("balance-projector")
-          .setAfterPosition(expectedPosition)
+          .setAfterPosition(observation.getPosition())
           .build(),
       new EventSubscription.EventHandler() {
           public void onEvent(Eventstore.Event event) { /* apply + checkpoint */ }

@@ -15,7 +15,7 @@ Start a server with [Getting Started](./getting-started) before continuing. The 
 
 Money moves between two accounts by transfer. A transfer posts two events in the same atomic write: a debit on the source account and a credit on the destination account. That is the double-entry invariant: the two legs of a transfer commit together or not at all, so the ledger's total balance never drifts. The additional invariant: an account must not be debited below zero. If two transfers are decided from the same source balance, both must not commit. Command Context Consistency gives the application that protection.
 
-Following the [scoping events](./patterns/event-scopes) pattern, an account has no separate entity identity. It *is* its `AccountOpened` event. Later events reference that event's own id, not a hand-rolled `account_id` foreign key. See [Command Context Consistency](./concepts/command-context-consistency#example-context) for the same `accountOpenedId` / `scopes.*AccountOpenedId` convention used here.
+Following the [scoping events](./patterns/event-scopes) pattern, an account has no separate entity identity. It *is* its `AccountOpened` event. Later events reference that event's own id, not a hand-rolled `account_id` foreign key. See [Command Context Consistency](./concepts/command-context-consistency#one-or-query-one-position) for how a complete OR query becomes one consistency observation.
 
 The ledger uses an `accounts` boundary. Create it through the Admin API after
 the server starts:
@@ -114,11 +114,11 @@ AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
   <TabItem value="go" label="Go" default>
 
 ```go
-_, err = client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
+_, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 	Boundary: "accounts",
-	Query: &eventstore.SaveQuery{
-		ExpectedPosition: &eventstore.Position{CommitPosition: -1, PreparePosition: -1},
-		SubsetQuery: &eventstore.Query{
+	Consistency: []*eventstore.ConsistencyObservation{{
+		Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1},
+		Query: &eventstore.Query{
 			Criteria: []*eventstore.Criterion{{
 				Tags: []*eventstore.Tag{
 					{Key: "eventType", Value: "AccountOpened"},
@@ -126,7 +126,7 @@ _, err = client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
 				},
 			}},
 		},
-	},
+	}},
 	Events: []*eventstore.EventToSave{{
 		EventId:   "018f2d5e-2001-7000-8000-000000000001",
 		EventType: "AccountOpened",
@@ -140,11 +140,11 @@ _, err = client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
   <TabItem value="node" label="Node.js">
 
 ```typescript
-await client.saveEvents({
+await client.saveEventsV2({
   boundary: 'accounts',
-  query: {
-    expectedPosition: { commitPosition: -1, preparePosition: -1 },
-    subsetQuery: {
+  consistency: [{
+    position: { commitPosition: -1, preparePosition: -1 },
+    query: {
       criteria: [{
         tags: [
           { key: 'eventType', value: 'AccountOpened' },
@@ -152,7 +152,7 @@ await client.saveEvents({
         ],
       }],
     },
-  },
+  }],
   events: [
     {
       eventId: '018f2d5e-2001-7000-8000-000000000001',
@@ -167,20 +167,19 @@ await client.saveEvents({
   <TabItem value="java" label="Java">
 
 ```java
-client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
+client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
     .setBoundary("accounts")
-    .setQuery(Eventstore.SaveQuery.newBuilder()
-        .setExpectedPosition(Eventstore.Position.newBuilder()
-            .setCommitPosition(-1).setPreparePosition(-1).build())
-        .setSubsetQuery(Eventstore.Query.newBuilder()
+    .addConsistency(Eventstore.ConsistencyObservation.newBuilder()
+        .setPosition(Eventstore.Position.newBuilder()
+            .setCommitPosition(-1).setPreparePosition(-1))
+        .setQuery(Eventstore.Query.newBuilder()
             .addCriteria(Eventstore.Criterion.newBuilder()
                 .addTags(Eventstore.Tag.newBuilder()
                     .setKey("eventType").setValue("AccountOpened").build())
                 .addTags(Eventstore.Tag.newBuilder()
                     .setKey("accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
                 .build())
-            .build())
-        .build())
+            .build()))
     .addEvents(Eventstore.EventToSave.newBuilder()
         .setEventId("018f2d5e-2001-7000-8000-000000000001")
         .setEventType("AccountOpened")
@@ -193,12 +192,12 @@ client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
+grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "accounts",
-  "query": {
-    "expected_position": {"commit_position": -1, "prepare_position": -1},
-    "subsetQuery": {
+  "consistency": [{
+    "position": {"commit_position": -1, "prepare_position": -1},
+    "query": {
       "criteria": [
         {"tags": [
           {"key": "eventType", "value": "AccountOpened"},
@@ -206,7 +205,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
         ]}
       ]
     }
-  },
+  }],
   "events": [
     {
       "event_id": "018f2d5e-2001-7000-8000-000000000001",
@@ -261,40 +260,45 @@ resp, err := client.GetLatestByCriteria(ctx, &eventstore.GetLatestByCriteriaRequ
 // resp.Results[0] is acct-1's AccountOpened event, resp.Results[1] is its latest movement (if any).
 // resp.Results[2] is acct-2's AccountOpened event, resp.Results[3] is its latest movement (if any).
 // Each account's current balance is the movement's balanceAfter when present, else the root's balance.
-// resp.ContextPosition is the consistency anchor for the transfer.
+// For SaveEventsV2, pair criteria with resp.ContextPosition.
 ```
 
   </TabItem>
   <TabItem value="node" label="Node.js">
 
 ```typescript
+const criteria = [
+  { tags: [
+    { key: 'eventType', value: 'AccountOpened' },
+    { key: 'accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' },
+  ] },
+  { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' }] },
+  { tags: [
+    { key: 'eventType', value: 'AccountOpened' },
+    { key: 'accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' },
+  ] },
+  { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' }] },
+];
+
 const latest = await client.getLatestByCriteria({
   boundary: 'accounts',
-  criteria: [
-    { tags: [
-      { key: 'eventType', value: 'AccountOpened' },
-      { key: 'accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' },
-    ] },
-    { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' }] },
-    { tags: [
-      { key: 'eventType', value: 'AccountOpened' },
-      { key: 'accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' },
-    ] },
-    { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' }] },
-  ],
+  criteria,
 });
 
 const [fromOpened, fromMovement, toOpened, toMovement] = latest.results;
 const fromBalance = fromMovement.event?.data.balanceAfter ?? fromOpened.event.data.balance;
 const toBalance = toMovement.event?.data.balanceAfter ?? toOpened.event.data.balance;
-const expectedPosition = latest.contextPosition; // consistency anchor for the transfer
+const observation = {
+  query: { criteria },
+  position: latest.contextPosition,
+};
 ```
 
   </TabItem>
   <TabItem value="java" label="Java">
 
 ```java
-Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
+Eventstore.GetLatestByCriteriaRequest latestRequest =
     Eventstore.GetLatestByCriteriaRequest.newBuilder()
         .setBoundary("accounts")
         .addCriteria(Eventstore.Criterion.newBuilder()
@@ -311,10 +315,11 @@ Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
         .addCriteria(Eventstore.Criterion.newBuilder()
             .addTags(Eventstore.Tag.newBuilder().setKey("scopes.accountOpenedId").setValue("018f2d5e-2002-7000-8000-000000000002").build())
             .build())
-        .build());
+        .build();
+Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(latestRequest);
 
 // results 0/1 are acct-1's root and latest movement, results 2/3 are acct-2's.
-// latest.getContextPosition() is the consistency anchor for the transfer.
+// For SaveEventsV2, pair latestRequest.getCriteriaList() with latest.getContextPosition().
 ```
 
   </TabItem>
@@ -343,24 +348,22 @@ EOF
   </TabItem>
 </Tabs>
 
-The `scopes.accountOpenedId` criterion deliberately omits an `eventType` tag: it matches any later event scoped to that account, regardless of whether it is a debit or a credit, so the response always carries that account's freshest movement. The application derives each balance, decides whether the transfer is valid, and remembers `context_position` as the consistency anchor for the write, reusing these same four criteria. See [Command Context Consistency](./concepts/command-context-consistency#reading-a-command-context) for why independent per-account reads cannot substitute for this.
+The `scopes.accountOpenedId` criterion deliberately omits an `eventType` tag: it matches any later event scoped to that account, regardless of whether it is a debit or a credit, so the response always carries that account's freshest movement. The application derives each balance, decides whether the transfer is valid, and constructs an observation from the request criteria and returned `context_position`. Its one position belongs to the complete four-criterion OR query.
 
 ## 3. Transfer with a double-entry write
 
-The transfer decision, such as `fromBalance >= amount`, lives in application code. The write itself posts both legs, `MoneyDebited` scoped to the source account and `MoneyCredited` scoped to the destination account, as one atomic `SaveEvents` call using the same four criteria as the read. Either both events commit or neither does; the ledger can never observe a debit without its matching credit. The credit also backlinks to the debit's own event id via `scopes.moneyDebitedId`, so the two legs of one transfer can be found from either side without an invented "transfer id."
+The transfer decision, such as `fromBalance >= amount`, lives in application code. The write itself posts both legs, `MoneyDebited` scoped to the source account and `MoneyCredited` scoped to the destination account, as one atomic `SaveEventsV2` call carrying the observation from step 2. Either both events commit or neither does; the ledger can never observe a debit without its matching credit. The credit also backlinks to the debit's own event id via `scopes.moneyDebitedId`, so the two legs of one transfer can be found from either side without an invented "transfer id."
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
 
 ```go
-_, err = client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
+_, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 	Boundary: "accounts",
-	Query: &eventstore.SaveQuery{
-		ExpectedPosition: resp.ContextPosition,
-		SubsetQuery: &eventstore.Query{
-			Criteria: criteria, // the same four criteria used in step 2
-		},
-	},
+	Consistency: []*eventstore.ConsistencyObservation{{
+		Query:    &eventstore.Query{Criteria: criteria},
+		Position: resp.ContextPosition,
+	}},
 	Events: []*eventstore.EventToSave{
 		{
 			EventId:   "018f2d5e-2003-7000-8000-000000000003",
@@ -382,12 +385,9 @@ _, err = client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
   <TabItem value="node" label="Node.js">
 
 ```typescript
-await client.saveEvents({
+await client.saveEventsV2({
   boundary: 'accounts',
-  query: {
-    expectedPosition,
-    subsetQuery: { criteria }, // the same four criteria used in step 2
-  },
+  consistency: [observation],
   events: [
     {
       eventId: '018f2d5e-2003-7000-8000-000000000003',
@@ -418,12 +418,11 @@ await client.saveEvents({
   <TabItem value="java" label="Java">
 
 ```java
-client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
+client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
     .setBoundary("accounts")
-    .setQuery(Eventstore.SaveQuery.newBuilder()
-        .setExpectedPosition(latest.getContextPosition())
-        .setSubsetQuery(subsetQueryFromStep2) // the same four criteria used in step 2
-        .build())
+    .addConsistency(Eventstore.ConsistencyObservation.newBuilder()
+        .setQuery(Eventstore.Query.newBuilder().addAllCriteria(latestRequest.getCriteriaList()))
+        .setPosition(latest.getContextPosition()))
     .addEvents(Eventstore.EventToSave.newBuilder()
         .setEventId("018f2d5e-2003-7000-8000-000000000003")
         .setEventType("MoneyDebited")
@@ -441,12 +440,12 @@ client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
+grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "accounts",
-  "query": {
-    "expected_position": {"commit_position": 2, "prepare_position": 1},
-    "subsetQuery": {
+  "consistency": [{
+    "position": {"commit_position": 2, "prepare_position": 1},
+    "query": {
       "criteria": [
         {"tags": [
           {"key": "eventType", "value": "AccountOpened"},
@@ -460,7 +459,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
         {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}]}
       ]
     }
-  },
+  }],
   "events": [
     {
       "event_id": "018f2d5e-2003-7000-8000-000000000003",
@@ -482,7 +481,7 @@ EOF
   </TabItem>
 </Tabs>
 
-Set `expected_position` to the `context_position` observed in step 2, and reuse the exact same four criteria as the read. The save commits only if neither account has moved since. If either account has moved, both legs are rejected together, never just one.
+Pass the `observation` from step 2 unchanged. The save commits only if the complete query still has the same latest matching position. If either account has moved, both legs are rejected together, never just one.
 
 ## 4. Handle the conflict
 
@@ -503,7 +502,7 @@ if errors.As(err, &conflict) {
 
 ```typescript
 try {
-  await client.saveEvents({ /* transfer request */ });
+  await client.saveEventsV2({ /* transfer request with query criteria + latest.contextPosition */ });
 } catch (error) {
   if (error.message.includes('AlreadyExists')) {
     // Concurrency signal. Re-run step 2, re-decide, retry the save.
@@ -518,7 +517,7 @@ try {
 
 ```java
 try {
-    client.saveEvents(transferRequest);
+    client.saveEventsV2(transferRequest);
 } catch (OptimisticConcurrencyException conflict) {
     // Concurrency signal. Re-run step 2, re-decide, retry the save.
 }
@@ -540,7 +539,7 @@ This is a concurrency signal. The losing command should:
 1. Re-run the four-criteria read in step 2.
 2. Read the carried balances from the new latest events.
 3. Re-check the invariant. The transfer may no longer be valid.
-4. Retry the save with the new `expected_position`.
+4. Retry the save with the new observation.
 
 Reusing the same `event_id`s on retry keeps the command idempotent at the application boundary. See [Idempotency & Retry](./patterns/idempotency-and-retry) for the full pattern, including the retry loop and consumer-side deduplication.
 

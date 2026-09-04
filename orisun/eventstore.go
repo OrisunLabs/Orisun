@@ -439,48 +439,60 @@ func (s *EventStore) SaveEvents(ctx context.Context, req *SaveEventsRequest) (re
 	if s.logger.IsDebugEnabled() {
 		s.logger.Debugf("SaveEvents called with req: %v", req)
 	}
+	if err = authorizeRequest(ctx, []Role{RoleAdmin, RoleOperations}); err != nil {
+		return nil, err
+	}
+	return s.saveEventsV2Request(ctx, saveEventsV2RequestFromLegacy(req))
+}
 
-	err = authorizeRequest(ctx, []Role{RoleAdmin, RoleOperations})
+func (s *EventStore) SaveEventsV2(ctx context.Context, req *SaveEventsV2Request) (*WriteResult, error) {
+	if s.logger.IsDebugEnabled() {
+		s.logger.Debugf("SaveEventsV2 called with req: %v", req)
+	}
+	if err := authorizeRequest(ctx, []Role{RoleAdmin, RoleOperations}); err != nil {
+		return nil, err
+	}
+	return s.saveEventsV2Request(ctx, req)
+}
+
+func (s *EventStore) saveEventsV2Request(ctx context.Context, req *SaveEventsV2Request) (*WriteResult, error) {
+	if err := validateSaveEventsV2Request(req); err != nil {
+		return nil, err
+	}
+	checks, err := consistencyChecksFromObservations(req.Consistency)
 	if err != nil {
 		return nil, err
 	}
-	// Defer a recovery function to catch any panics
+	return s.saveEvents(ctx, req.Boundary, req.Events, checks)
+}
+
+func (s *EventStore) saveEvents(
+	ctx context.Context,
+	boundary string,
+	events []*EventToSave,
+	checks []ConsistencyCheck,
+) (resp *WriteResult, err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			s.logger.Errorf("Panic in SaveEvents: %v\nStack Trace:\n%s", r, debug.Stack())
+		if recovered := recover(); recovered != nil {
+			s.logger.Errorf("panic while saving events: %v\nStack Trace:\n%s", recovered, debug.Stack())
+			resp = nil
 			err = statuscode.Errorf(statuscode.Internal, "Internal server error")
 		}
 	}()
-
-	if err = validateSaveEventsRequest(req); err != nil {
-		return nil, err
-	}
-	if err = s.RequireBoundaryActive(req.Boundary); err != nil {
+	if err = s.RequireBoundaryActive(boundary); err != nil {
 		return nil, err
 	}
 
-	var transactionID string
-	var globalID int64
-
-	// Extract ExpectedPosition and SubsetQuery from Query if present
-	var expectedPosition *Position
-	var subsetQuery *Query
-	if req.Query != nil {
-		expectedPosition = req.Query.ExpectedPosition
-		subsetQuery = req.Query.SubsetQuery
-	}
-
-	prepared, prepareErr := prepareRequestedEventsForSave(req.Events)
+	prepared, prepareErr := prepareRequestedEventsForSave(events)
 	if prepareErr != nil {
 		return nil, statuscode.Errorf(statuscode.InvalidArgument, "invalid event JSON: %v", prepareErr)
 	}
-	transactionID, globalID, err = s.savePreparedWithMetrics(
+	transactionID, globalID, err := s.savePreparedWithMetrics(
 		ctx,
 		s.saveEventsFn,
 		prepared,
-		req.Boundary,
-		expectedPosition,
-		subsetQuery,
+		boundary,
+		checks,
 	)
 
 	if err != nil {
@@ -960,16 +972,24 @@ func isEventPositionNewerThanPosition(newPosition, lastPosition *Position) bool 
 	return compResult == IsGreaterThan
 }
 
-// Add the validation function
-func validateSaveEventsRequest(req *SaveEventsRequest) error {
+func saveEventsV2RequestFromLegacy(req *SaveEventsRequest) *SaveEventsV2Request {
+	if req == nil {
+		return nil
+	}
+	result := &SaveEventsV2Request{Boundary: req.Boundary, Events: req.Events}
+	if req.Query != nil {
+		result.Consistency = legacyConsistencyObservations(req.Query.ExpectedPosition, req.Query.SubsetQuery)
+	}
+	return result
+}
+
+func validateSaveEventsV2Request(req *SaveEventsV2Request) error {
 	if req == nil {
 		return statuscode.New(statuscode.InvalidArgument, "Invalid request: missing request body")
 	}
-
 	if len(req.Events) == 0 {
 		return statuscode.New(statuscode.InvalidArgument, "Invalid request: no events provided")
 	}
-
 	return nil
 }
 

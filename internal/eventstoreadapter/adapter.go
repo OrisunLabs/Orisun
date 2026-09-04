@@ -46,13 +46,14 @@ func (a *Adapter) Append(ctx context.Context, request coreeventstore.AppendReque
 	if err != nil {
 		return coreeventstore.AppendResult{}, err
 	}
-	transactionID, globalID, err := a.saver.SavePrepared(
-		ctx,
-		prepared,
-		request.Boundary,
+	consistency, err := orisun.LegacyConsistencyChecks(
 		legacyPosition(request.ExpectedPosition),
 		legacyQuery(request.Subset),
 	)
+	if err != nil {
+		return coreeventstore.AppendResult{}, err
+	}
+	transactionID, globalID, err := a.saver.SavePrepared(ctx, prepared, request.Boundary, consistency)
 	if err != nil {
 		return coreeventstore.AppendResult{}, err
 	}
@@ -94,13 +95,7 @@ func (a *Adapter) LatestByCriteria(
 	if a == nil || a.retriever == nil {
 		return coreeventstore.LatestByCriteriaResult{}, fmt.Errorf("event-store latest-by-criteria adapter is not configured")
 	}
-	criteria := make([]orisun.ReadCriterion, len(request.Criteria))
-	for index, criterion := range request.Criteria {
-		criteria[index] = orisun.ReadCriterion{Tags: make([]orisun.ReadTag, len(criterion.Tags))}
-		for tagIndex, tag := range criterion.Tags {
-			criteria[index].Tags[tagIndex] = orisun.ReadTag{Key: tag.Key, Value: tag.Value}
-		}
-	}
+	criteria := readCriteria(request.Criteria)
 	batch, err := a.retriever.GetLatestByCriteria(ctx, orisun.LatestByCriteriaQuery{
 		Boundary: request.Boundary,
 		Criteria: criteria,
@@ -122,6 +117,17 @@ func (a *Adapter) LatestByCriteria(
 		}
 	}
 	return result, nil
+}
+
+func readCriteria(criteria []coreeventstore.Criterion) []orisun.ReadCriterion {
+	result := make([]orisun.ReadCriterion, len(criteria))
+	for index, criterion := range criteria {
+		result[index] = orisun.ReadCriterion{Tags: make([]orisun.ReadTag, len(criterion.Tags))}
+		for tagIndex, tag := range criterion.Tags {
+			result[index].Tags[tagIndex] = orisun.ReadTag{Key: tag.Key, Value: tag.Value}
+		}
+	}
+	return result
 }
 
 func (a *Adapter) Subscribe(

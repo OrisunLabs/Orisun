@@ -132,13 +132,6 @@ func setupTestDatabase(t *testing.T, container *PostgresContainer) (*sql.DB, err
 	return db, nil
 }
 
-func terminateTestContainer(t *testing.T, container testcontainers.Container) {
-	t.Helper()
-	if err := container.Terminate(context.Background()); err != nil {
-		t.Logf("Failed to terminate container: %v", err)
-	}
-}
-
 func TestSaveAndGetEvents(t *testing.T) {
 	container, err := setupTestContainer(t)
 	require.NoError(t, err)
@@ -538,10 +531,10 @@ func insertEventInTx(ctx context.Context, tx *sql.Tx, eventID, eventType string)
 	var newGlobalID, latestTransactionID, latestGlobalID int64
 	err := tx.QueryRowContext(
 		ctx,
-		`SELECT * FROM public.insert_events_with_consistency_v3($1::text, $2::text, $3::jsonb, $4::jsonb)`,
+		`SELECT * FROM public.insert_events_v2($1::text, $2::text, $3::jsonb, $4::jsonb)`,
 		"test_boundary",
 		"public",
-		[]byte(`{}`),
+		[]byte(`[]`),
 		[]byte(eventsJSON),
 	).Scan(&newGlobalID, &latestTransactionID, &latestGlobalID)
 	return latestGlobalID, err

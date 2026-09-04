@@ -222,17 +222,19 @@ func TestValidateCreateUserRequestRejectsUnknownRoles(t *testing.T) {
 	}
 
 	for _, roles := range [][]string{{"admin"}, {"READER"}, {"OPERATIONS", "WRITER"}} {
-		req := *base
-		req.Roles = roles
-		if err := server.validateCreateUserRequest(&req); err == nil {
+		req := &grpcapi.CreateUserRequest{
+			Name: base.Name, Username: base.Username, Password: base.Password, Roles: roles,
+		}
+		if err := server.validateCreateUserRequest(req); err == nil {
 			t.Fatalf("validateCreateUserRequest() accepted roles %v", roles)
 		}
 	}
 
 	for _, roles := range [][]string{{"ADMIN"}, {"OPERATIONS"}, {"ADMIN", "OPERATIONS"}} {
-		req := *base
-		req.Roles = roles
-		if err := server.validateCreateUserRequest(&req); err != nil {
+		req := &grpcapi.CreateUserRequest{
+			Name: base.Name, Username: base.Username, Password: base.Password, Roles: roles,
+		}
+		if err := server.validateCreateUserRequest(req); err != nil {
 			t.Fatalf("validateCreateUserRequest() rejected roles %v: %v", roles, err)
 		}
 	}

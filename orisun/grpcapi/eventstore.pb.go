@@ -430,8 +430,9 @@ func (x *Tag) GetValue() string {
 }
 
 type Criterion struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Tags          []*Tag                 `protobuf:"bytes,1,rep,name=tags,proto3" json:"tags,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// All tags in one criterion must match.
+	Tags          []*Tag `protobuf:"bytes,1,rep,name=tags,proto3" json:"tags,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -474,8 +475,9 @@ func (x *Criterion) GetTags() []*Tag {
 }
 
 type Query struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Criteria      []*Criterion           `protobuf:"bytes,1,rep,name=criteria,proto3" json:"criteria,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// An event matches when it matches any criterion.
+	Criteria      []*Criterion `protobuf:"bytes,1,rep,name=criteria,proto3" json:"criteria,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -713,6 +715,9 @@ func (x *WriteResult) GetLogPosition() *Position {
 	return nil
 }
 
+// SaveQuery is the consistency shape used by the deprecated SaveEvents RPC.
+//
+// Deprecated: Marked as deprecated in eventstore.proto.
 type SaveQuery struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ExpectedPosition *Position              `protobuf:"bytes,1,opt,name=expected_position,json=expectedPosition,proto3" json:"expected_position,omitempty"`
@@ -765,6 +770,65 @@ func (x *SaveQuery) GetSubsetQuery() *Query {
 	return nil
 }
 
+// ConsistencyObservation records the latest position observed for one complete
+// query. SaveEventsV2 requires every supplied observation to remain current.
+type ConsistencyObservation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The complete OR query whose latest matching position was observed. Every
+	// criterion and every tag within it must be non-empty.
+	Query *Query `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	// Position of the newest event matching the complete query, or (-1, -1)
+	// when the query matched no event.
+	Position      *Position `protobuf:"bytes,2,opt,name=position,proto3" json:"position,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsistencyObservation) Reset() {
+	*x = ConsistencyObservation{}
+	mi := &file_eventstore_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsistencyObservation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsistencyObservation) ProtoMessage() {}
+
+func (x *ConsistencyObservation) ProtoReflect() protoreflect.Message {
+	mi := &file_eventstore_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsistencyObservation.ProtoReflect.Descriptor instead.
+func (*ConsistencyObservation) Descriptor() ([]byte, []int) {
+	return file_eventstore_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ConsistencyObservation) GetQuery() *Query {
+	if x != nil {
+		return x.Query
+	}
+	return nil
+}
+
+func (x *ConsistencyObservation) GetPosition() *Position {
+	if x != nil {
+		return x.Position
+	}
+	return nil
+}
+
+// Deprecated: Marked as deprecated in eventstore.proto.
 type SaveEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Boundary      string                 `protobuf:"bytes,2,opt,name=boundary,proto3" json:"boundary,omitempty"`
@@ -776,7 +840,7 @@ type SaveEventsRequest struct {
 
 func (x *SaveEventsRequest) Reset() {
 	*x = SaveEventsRequest{}
-	mi := &file_eventstore_proto_msgTypes[8]
+	mi := &file_eventstore_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -788,7 +852,7 @@ func (x *SaveEventsRequest) String() string {
 func (*SaveEventsRequest) ProtoMessage() {}
 
 func (x *SaveEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[8]
+	mi := &file_eventstore_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -801,7 +865,7 @@ func (x *SaveEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveEventsRequest.ProtoReflect.Descriptor instead.
 func (*SaveEventsRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{8}
+	return file_eventstore_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SaveEventsRequest) GetBoundary() string {
@@ -825,6 +889,66 @@ func (x *SaveEventsRequest) GetEvents() []*EventToSave {
 	return nil
 }
 
+type SaveEventsV2Request struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Boundary      string                    `protobuf:"bytes,1,opt,name=boundary,proto3" json:"boundary,omitempty"`
+	Events        []*EventToSave            `protobuf:"bytes,2,rep,name=events,proto3" json:"events,omitempty"`
+	Consistency   []*ConsistencyObservation `protobuf:"bytes,3,rep,name=consistency,proto3" json:"consistency,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SaveEventsV2Request) Reset() {
+	*x = SaveEventsV2Request{}
+	mi := &file_eventstore_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SaveEventsV2Request) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SaveEventsV2Request) ProtoMessage() {}
+
+func (x *SaveEventsV2Request) ProtoReflect() protoreflect.Message {
+	mi := &file_eventstore_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SaveEventsV2Request.ProtoReflect.Descriptor instead.
+func (*SaveEventsV2Request) Descriptor() ([]byte, []int) {
+	return file_eventstore_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SaveEventsV2Request) GetBoundary() string {
+	if x != nil {
+		return x.Boundary
+	}
+	return ""
+}
+
+func (x *SaveEventsV2Request) GetEvents() []*EventToSave {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *SaveEventsV2Request) GetConsistency() []*ConsistencyObservation {
+	if x != nil {
+		return x.Consistency
+	}
+	return nil
+}
+
 type GetEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Query         *Query                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
@@ -838,7 +962,7 @@ type GetEventsRequest struct {
 
 func (x *GetEventsRequest) Reset() {
 	*x = GetEventsRequest{}
-	mi := &file_eventstore_proto_msgTypes[9]
+	mi := &file_eventstore_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -850,7 +974,7 @@ func (x *GetEventsRequest) String() string {
 func (*GetEventsRequest) ProtoMessage() {}
 
 func (x *GetEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[9]
+	mi := &file_eventstore_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -863,7 +987,7 @@ func (x *GetEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEventsRequest.ProtoReflect.Descriptor instead.
 func (*GetEventsRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{9}
+	return file_eventstore_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetEventsRequest) GetQuery() *Query {
@@ -910,7 +1034,7 @@ type GetEventsResponse struct {
 
 func (x *GetEventsResponse) Reset() {
 	*x = GetEventsResponse{}
-	mi := &file_eventstore_proto_msgTypes[10]
+	mi := &file_eventstore_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -922,7 +1046,7 @@ func (x *GetEventsResponse) String() string {
 func (*GetEventsResponse) ProtoMessage() {}
 
 func (x *GetEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[10]
+	mi := &file_eventstore_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -935,7 +1059,7 @@ func (x *GetEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEventsResponse.ProtoReflect.Descriptor instead.
 func (*GetEventsResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{10}
+	return file_eventstore_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetEventsResponse) GetEvents() []*Event {
@@ -957,7 +1081,7 @@ type CatchUpSubscribeToEventStoreRequest struct {
 
 func (x *CatchUpSubscribeToEventStoreRequest) Reset() {
 	*x = CatchUpSubscribeToEventStoreRequest{}
-	mi := &file_eventstore_proto_msgTypes[11]
+	mi := &file_eventstore_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -969,7 +1093,7 @@ func (x *CatchUpSubscribeToEventStoreRequest) String() string {
 func (*CatchUpSubscribeToEventStoreRequest) ProtoMessage() {}
 
 func (x *CatchUpSubscribeToEventStoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[11]
+	mi := &file_eventstore_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -982,7 +1106,7 @@ func (x *CatchUpSubscribeToEventStoreRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use CatchUpSubscribeToEventStoreRequest.ProtoReflect.Descriptor instead.
 func (*CatchUpSubscribeToEventStoreRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{11}
+	return file_eventstore_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CatchUpSubscribeToEventStoreRequest) GetAfterPosition() *Position {
@@ -1021,7 +1145,7 @@ type PingRequest struct {
 
 func (x *PingRequest) Reset() {
 	*x = PingRequest{}
-	mi := &file_eventstore_proto_msgTypes[12]
+	mi := &file_eventstore_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1033,7 +1157,7 @@ func (x *PingRequest) String() string {
 func (*PingRequest) ProtoMessage() {}
 
 func (x *PingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[12]
+	mi := &file_eventstore_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1046,7 +1170,7 @@ func (x *PingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingRequest.ProtoReflect.Descriptor instead.
 func (*PingRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{12}
+	return file_eventstore_proto_rawDescGZIP(), []int{14}
 }
 
 type PingResponse struct {
@@ -1057,7 +1181,7 @@ type PingResponse struct {
 
 func (x *PingResponse) Reset() {
 	*x = PingResponse{}
-	mi := &file_eventstore_proto_msgTypes[13]
+	mi := &file_eventstore_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1069,7 +1193,7 @@ func (x *PingResponse) String() string {
 func (*PingResponse) ProtoMessage() {}
 
 func (x *PingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[13]
+	mi := &file_eventstore_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1082,7 +1206,7 @@ func (x *PingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingResponse.ProtoReflect.Descriptor instead.
 func (*PingResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{13}
+	return file_eventstore_proto_rawDescGZIP(), []int{15}
 }
 
 type GetServerInfoRequest struct {
@@ -1093,7 +1217,7 @@ type GetServerInfoRequest struct {
 
 func (x *GetServerInfoRequest) Reset() {
 	*x = GetServerInfoRequest{}
-	mi := &file_eventstore_proto_msgTypes[14]
+	mi := &file_eventstore_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1105,7 +1229,7 @@ func (x *GetServerInfoRequest) String() string {
 func (*GetServerInfoRequest) ProtoMessage() {}
 
 func (x *GetServerInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[14]
+	mi := &file_eventstore_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1118,7 +1242,7 @@ func (x *GetServerInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetServerInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetServerInfoRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{14}
+	return file_eventstore_proto_rawDescGZIP(), []int{16}
 }
 
 type GetServerInfoResponse struct {
@@ -1135,7 +1259,7 @@ type GetServerInfoResponse struct {
 
 func (x *GetServerInfoResponse) Reset() {
 	*x = GetServerInfoResponse{}
-	mi := &file_eventstore_proto_msgTypes[15]
+	mi := &file_eventstore_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1147,7 +1271,7 @@ func (x *GetServerInfoResponse) String() string {
 func (*GetServerInfoResponse) ProtoMessage() {}
 
 func (x *GetServerInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[15]
+	mi := &file_eventstore_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1160,7 +1284,7 @@ func (x *GetServerInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetServerInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetServerInfoResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{15}
+	return file_eventstore_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetServerInfoResponse) GetVersion() string {
@@ -1222,7 +1346,7 @@ type GetLatestByCriteriaRequest struct {
 
 func (x *GetLatestByCriteriaRequest) Reset() {
 	*x = GetLatestByCriteriaRequest{}
-	mi := &file_eventstore_proto_msgTypes[16]
+	mi := &file_eventstore_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1234,7 +1358,7 @@ func (x *GetLatestByCriteriaRequest) String() string {
 func (*GetLatestByCriteriaRequest) ProtoMessage() {}
 
 func (x *GetLatestByCriteriaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[16]
+	mi := &file_eventstore_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1247,7 +1371,7 @@ func (x *GetLatestByCriteriaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLatestByCriteriaRequest.ProtoReflect.Descriptor instead.
 func (*GetLatestByCriteriaRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{16}
+	return file_eventstore_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetLatestByCriteriaRequest) GetBoundary() string {
@@ -1275,7 +1399,7 @@ type LatestCriterionResult struct {
 
 func (x *LatestCriterionResult) Reset() {
 	*x = LatestCriterionResult{}
-	mi := &file_eventstore_proto_msgTypes[17]
+	mi := &file_eventstore_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1287,7 +1411,7 @@ func (x *LatestCriterionResult) String() string {
 func (*LatestCriterionResult) ProtoMessage() {}
 
 func (x *LatestCriterionResult) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[17]
+	mi := &file_eventstore_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1300,7 +1424,7 @@ func (x *LatestCriterionResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LatestCriterionResult.ProtoReflect.Descriptor instead.
 func (*LatestCriterionResult) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{17}
+	return file_eventstore_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *LatestCriterionResult) GetCriterion() *Criterion {
@@ -1330,7 +1454,7 @@ type GetLatestByCriteriaResponse struct {
 
 func (x *GetLatestByCriteriaResponse) Reset() {
 	*x = GetLatestByCriteriaResponse{}
-	mi := &file_eventstore_proto_msgTypes[18]
+	mi := &file_eventstore_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1342,7 +1466,7 @@ func (x *GetLatestByCriteriaResponse) String() string {
 func (*GetLatestByCriteriaResponse) ProtoMessage() {}
 
 func (x *GetLatestByCriteriaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[18]
+	mi := &file_eventstore_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1355,7 +1479,7 @@ func (x *GetLatestByCriteriaResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLatestByCriteriaResponse.ProtoReflect.Descriptor instead.
 func (*GetLatestByCriteriaResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{18}
+	return file_eventstore_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetLatestByCriteriaResponse) GetResults() []*LatestCriterionResult {
@@ -1384,7 +1508,7 @@ type IndexField struct {
 
 func (x *IndexField) Reset() {
 	*x = IndexField{}
-	mi := &file_eventstore_proto_msgTypes[19]
+	mi := &file_eventstore_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1396,7 +1520,7 @@ func (x *IndexField) String() string {
 func (*IndexField) ProtoMessage() {}
 
 func (x *IndexField) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[19]
+	mi := &file_eventstore_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1409,7 +1533,7 @@ func (x *IndexField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexField.ProtoReflect.Descriptor instead.
 func (*IndexField) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{19}
+	return file_eventstore_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *IndexField) GetJsonKey() string {
@@ -1439,7 +1563,7 @@ type IndexCondition struct {
 
 func (x *IndexCondition) Reset() {
 	*x = IndexCondition{}
-	mi := &file_eventstore_proto_msgTypes[20]
+	mi := &file_eventstore_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1451,7 +1575,7 @@ func (x *IndexCondition) String() string {
 func (*IndexCondition) ProtoMessage() {}
 
 func (x *IndexCondition) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[20]
+	mi := &file_eventstore_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1464,7 +1588,7 @@ func (x *IndexCondition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexCondition.ProtoReflect.Descriptor instead.
 func (*IndexCondition) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{20}
+	return file_eventstore_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *IndexCondition) GetKey() string {
@@ -1501,7 +1625,7 @@ type CreateIndexRequest struct {
 
 func (x *CreateIndexRequest) Reset() {
 	*x = CreateIndexRequest{}
-	mi := &file_eventstore_proto_msgTypes[21]
+	mi := &file_eventstore_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1513,7 +1637,7 @@ func (x *CreateIndexRequest) String() string {
 func (*CreateIndexRequest) ProtoMessage() {}
 
 func (x *CreateIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[21]
+	mi := &file_eventstore_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1526,7 +1650,7 @@ func (x *CreateIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateIndexRequest.ProtoReflect.Descriptor instead.
 func (*CreateIndexRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{21}
+	return file_eventstore_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CreateIndexRequest) GetBoundary() string {
@@ -1572,7 +1696,7 @@ type CreateIndexResponse struct {
 
 func (x *CreateIndexResponse) Reset() {
 	*x = CreateIndexResponse{}
-	mi := &file_eventstore_proto_msgTypes[22]
+	mi := &file_eventstore_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1584,7 +1708,7 @@ func (x *CreateIndexResponse) String() string {
 func (*CreateIndexResponse) ProtoMessage() {}
 
 func (x *CreateIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[22]
+	mi := &file_eventstore_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1597,7 +1721,7 @@ func (x *CreateIndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateIndexResponse.ProtoReflect.Descriptor instead.
 func (*CreateIndexResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{22}
+	return file_eventstore_proto_rawDescGZIP(), []int{24}
 }
 
 type DropIndexRequest struct {
@@ -1610,7 +1734,7 @@ type DropIndexRequest struct {
 
 func (x *DropIndexRequest) Reset() {
 	*x = DropIndexRequest{}
-	mi := &file_eventstore_proto_msgTypes[23]
+	mi := &file_eventstore_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1622,7 +1746,7 @@ func (x *DropIndexRequest) String() string {
 func (*DropIndexRequest) ProtoMessage() {}
 
 func (x *DropIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[23]
+	mi := &file_eventstore_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1635,7 +1759,7 @@ func (x *DropIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropIndexRequest.ProtoReflect.Descriptor instead.
 func (*DropIndexRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{23}
+	return file_eventstore_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DropIndexRequest) GetBoundary() string {
@@ -1660,7 +1784,7 @@ type DropIndexResponse struct {
 
 func (x *DropIndexResponse) Reset() {
 	*x = DropIndexResponse{}
-	mi := &file_eventstore_proto_msgTypes[24]
+	mi := &file_eventstore_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1672,7 +1796,7 @@ func (x *DropIndexResponse) String() string {
 func (*DropIndexResponse) ProtoMessage() {}
 
 func (x *DropIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[24]
+	mi := &file_eventstore_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1685,7 +1809,7 @@ func (x *DropIndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropIndexResponse.ProtoReflect.Descriptor instead.
 func (*DropIndexResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{24}
+	return file_eventstore_proto_rawDescGZIP(), []int{26}
 }
 
 type IndexDefinition struct {
@@ -1701,7 +1825,7 @@ type IndexDefinition struct {
 
 func (x *IndexDefinition) Reset() {
 	*x = IndexDefinition{}
-	mi := &file_eventstore_proto_msgTypes[25]
+	mi := &file_eventstore_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1713,7 +1837,7 @@ func (x *IndexDefinition) String() string {
 func (*IndexDefinition) ProtoMessage() {}
 
 func (x *IndexDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[25]
+	mi := &file_eventstore_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1726,7 +1850,7 @@ func (x *IndexDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexDefinition.ProtoReflect.Descriptor instead.
 func (*IndexDefinition) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{25}
+	return file_eventstore_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *IndexDefinition) GetName() string {
@@ -1773,7 +1897,7 @@ type ListIndexesRequest struct {
 
 func (x *ListIndexesRequest) Reset() {
 	*x = ListIndexesRequest{}
-	mi := &file_eventstore_proto_msgTypes[26]
+	mi := &file_eventstore_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1785,7 +1909,7 @@ func (x *ListIndexesRequest) String() string {
 func (*ListIndexesRequest) ProtoMessage() {}
 
 func (x *ListIndexesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[26]
+	mi := &file_eventstore_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1798,7 +1922,7 @@ func (x *ListIndexesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIndexesRequest.ProtoReflect.Descriptor instead.
 func (*ListIndexesRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{26}
+	return file_eventstore_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListIndexesRequest) GetBoundary() string {
@@ -1817,7 +1941,7 @@ type ListIndexesResponse struct {
 
 func (x *ListIndexesResponse) Reset() {
 	*x = ListIndexesResponse{}
-	mi := &file_eventstore_proto_msgTypes[27]
+	mi := &file_eventstore_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1829,7 +1953,7 @@ func (x *ListIndexesResponse) String() string {
 func (*ListIndexesResponse) ProtoMessage() {}
 
 func (x *ListIndexesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[27]
+	mi := &file_eventstore_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1842,7 +1966,7 @@ func (x *ListIndexesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIndexesResponse.ProtoReflect.Descriptor instead.
 func (*ListIndexesResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{27}
+	return file_eventstore_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListIndexesResponse) GetIndexes() []*IndexDefinition {
@@ -1862,7 +1986,7 @@ type GetIndexRequest struct {
 
 func (x *GetIndexRequest) Reset() {
 	*x = GetIndexRequest{}
-	mi := &file_eventstore_proto_msgTypes[28]
+	mi := &file_eventstore_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1874,7 +1998,7 @@ func (x *GetIndexRequest) String() string {
 func (*GetIndexRequest) ProtoMessage() {}
 
 func (x *GetIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[28]
+	mi := &file_eventstore_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1887,7 +2011,7 @@ func (x *GetIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIndexRequest.ProtoReflect.Descriptor instead.
 func (*GetIndexRequest) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{28}
+	return file_eventstore_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetIndexRequest) GetBoundary() string {
@@ -1913,7 +2037,7 @@ type GetIndexResponse struct {
 
 func (x *GetIndexResponse) Reset() {
 	*x = GetIndexResponse{}
-	mi := &file_eventstore_proto_msgTypes[29]
+	mi := &file_eventstore_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1925,7 +2049,7 @@ func (x *GetIndexResponse) String() string {
 func (*GetIndexResponse) ProtoMessage() {}
 
 func (x *GetIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[29]
+	mi := &file_eventstore_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1938,7 +2062,7 @@ func (x *GetIndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIndexResponse.ProtoReflect.Descriptor instead.
 func (*GetIndexResponse) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{29}
+	return file_eventstore_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetIndexResponse) GetIndex() *IndexDefinition {
@@ -1978,14 +2102,21 @@ const file_eventstore_proto_rawDesc = "" +
 	"\bposition\x18\x06 \x01(\v2\x10.orisun.PositionR\bposition\x12=\n" +
 	"\fdate_created\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vdateCreated\"B\n" +
 	"\vWriteResult\x123\n" +
-	"\flog_position\x18\x01 \x01(\v2\x10.orisun.PositionR\vlogPosition\"{\n" +
+	"\flog_position\x18\x01 \x01(\v2\x10.orisun.PositionR\vlogPosition\"\x7f\n" +
 	"\tSaveQuery\x12=\n" +
 	"\x11expected_position\x18\x01 \x01(\v2\x10.orisun.PositionR\x10expectedPosition\x12/\n" +
-	"\vsubsetQuery\x18\x02 \x01(\v2\r.orisun.QueryR\vsubsetQuery\"\x85\x01\n" +
+	"\vsubsetQuery\x18\x02 \x01(\v2\r.orisun.QueryR\vsubsetQuery:\x02\x18\x01\"k\n" +
+	"\x16ConsistencyObservation\x12#\n" +
+	"\x05query\x18\x01 \x01(\v2\r.orisun.QueryR\x05query\x12,\n" +
+	"\bposition\x18\x02 \x01(\v2\x10.orisun.PositionR\bposition\"\x89\x01\n" +
 	"\x11SaveEventsRequest\x12\x1a\n" +
 	"\bboundary\x18\x02 \x01(\tR\bboundary\x12'\n" +
 	"\x05query\x18\x03 \x01(\v2\x11.orisun.SaveQueryR\x05query\x12+\n" +
-	"\x06events\x18\x04 \x03(\v2\x13.orisun.EventToSaveR\x06events\"\xd1\x01\n" +
+	"\x06events\x18\x04 \x03(\v2\x13.orisun.EventToSaveR\x06events:\x02\x18\x01\"\xa0\x01\n" +
+	"\x13SaveEventsV2Request\x12\x1a\n" +
+	"\bboundary\x18\x01 \x01(\tR\bboundary\x12+\n" +
+	"\x06events\x18\x02 \x03(\v2\x13.orisun.EventToSaveR\x06events\x12@\n" +
+	"\vconsistency\x18\x03 \x03(\v2\x1e.orisun.ConsistencyObservationR\vconsistency\"\xd1\x01\n" +
 	"\x10GetEventsRequest\x12#\n" +
 	"\x05query\x18\x01 \x01(\v2\r.orisun.QueryR\x05query\x125\n" +
 	"\rfrom_position\x18\x02 \x01(\v2\x10.orisun.PositionR\ffromPosition\x12\x14\n" +
@@ -2086,11 +2217,12 @@ const file_eventstore_proto_rawDesc = "" +
 	"IndexState\x12\x1b\n" +
 	"\x17INDEX_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14INDEX_STATE_BUILDING\x10\x01\x12\x15\n" +
-	"\x11INDEX_STATE_READY\x10\x022\xec\x05\n" +
+	"\x11INDEX_STATE_READY\x10\x022\xb3\x06\n" +
 	"\n" +
-	"EventStore\x12>\n" +
+	"EventStore\x12A\n" +
 	"\n" +
-	"SaveEvents\x12\x19.orisun.SaveEventsRequest\x1a\x13.orisun.WriteResult\"\x00\x12B\n" +
+	"SaveEvents\x12\x19.orisun.SaveEventsRequest\x1a\x13.orisun.WriteResult\"\x03\x88\x02\x01\x12B\n" +
+	"\fSaveEventsV2\x12\x1b.orisun.SaveEventsV2Request\x1a\x13.orisun.WriteResult\"\x00\x12B\n" +
 	"\tGetEvents\x12\x18.orisun.GetEventsRequest\x1a\x19.orisun.GetEventsResponse\"\x00\x12`\n" +
 	"\x13GetLatestByCriteria\x12\".orisun.GetLatestByCriteriaRequest\x1a#.orisun.GetLatestByCriteriaResponse\"\x00\x12Z\n" +
 	"\x18CatchUpSubscribeToEvents\x12+.orisun.CatchUpSubscribeToEventStoreRequest\x1a\r.orisun.Event\"\x000\x01\x123\n" +
@@ -2115,7 +2247,7 @@ func file_eventstore_proto_rawDescGZIP() []byte {
 }
 
 var file_eventstore_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_eventstore_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_eventstore_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_eventstore_proto_goTypes = []any{
 	(Direction)(0),                              // 0: orisun.Direction
 	(StorageBackend)(0),                         // 1: orisun.StorageBackend
@@ -2131,88 +2263,96 @@ var file_eventstore_proto_goTypes = []any{
 	(*Event)(nil),                               // 11: orisun.Event
 	(*WriteResult)(nil),                         // 12: orisun.WriteResult
 	(*SaveQuery)(nil),                           // 13: orisun.SaveQuery
-	(*SaveEventsRequest)(nil),                   // 14: orisun.SaveEventsRequest
-	(*GetEventsRequest)(nil),                    // 15: orisun.GetEventsRequest
-	(*GetEventsResponse)(nil),                   // 16: orisun.GetEventsResponse
-	(*CatchUpSubscribeToEventStoreRequest)(nil), // 17: orisun.CatchUpSubscribeToEventStoreRequest
-	(*PingRequest)(nil),                         // 18: orisun.PingRequest
-	(*PingResponse)(nil),                        // 19: orisun.PingResponse
-	(*GetServerInfoRequest)(nil),                // 20: orisun.GetServerInfoRequest
-	(*GetServerInfoResponse)(nil),               // 21: orisun.GetServerInfoResponse
-	(*GetLatestByCriteriaRequest)(nil),          // 22: orisun.GetLatestByCriteriaRequest
-	(*LatestCriterionResult)(nil),               // 23: orisun.LatestCriterionResult
-	(*GetLatestByCriteriaResponse)(nil),         // 24: orisun.GetLatestByCriteriaResponse
-	(*IndexField)(nil),                          // 25: orisun.IndexField
-	(*IndexCondition)(nil),                      // 26: orisun.IndexCondition
-	(*CreateIndexRequest)(nil),                  // 27: orisun.CreateIndexRequest
-	(*CreateIndexResponse)(nil),                 // 28: orisun.CreateIndexResponse
-	(*DropIndexRequest)(nil),                    // 29: orisun.DropIndexRequest
-	(*DropIndexResponse)(nil),                   // 30: orisun.DropIndexResponse
-	(*IndexDefinition)(nil),                     // 31: orisun.IndexDefinition
-	(*ListIndexesRequest)(nil),                  // 32: orisun.ListIndexesRequest
-	(*ListIndexesResponse)(nil),                 // 33: orisun.ListIndexesResponse
-	(*GetIndexRequest)(nil),                     // 34: orisun.GetIndexRequest
-	(*GetIndexResponse)(nil),                    // 35: orisun.GetIndexResponse
-	(*timestamppb.Timestamp)(nil),               // 36: google.protobuf.Timestamp
+	(*ConsistencyObservation)(nil),              // 14: orisun.ConsistencyObservation
+	(*SaveEventsRequest)(nil),                   // 15: orisun.SaveEventsRequest
+	(*SaveEventsV2Request)(nil),                 // 16: orisun.SaveEventsV2Request
+	(*GetEventsRequest)(nil),                    // 17: orisun.GetEventsRequest
+	(*GetEventsResponse)(nil),                   // 18: orisun.GetEventsResponse
+	(*CatchUpSubscribeToEventStoreRequest)(nil), // 19: orisun.CatchUpSubscribeToEventStoreRequest
+	(*PingRequest)(nil),                         // 20: orisun.PingRequest
+	(*PingResponse)(nil),                        // 21: orisun.PingResponse
+	(*GetServerInfoRequest)(nil),                // 22: orisun.GetServerInfoRequest
+	(*GetServerInfoResponse)(nil),               // 23: orisun.GetServerInfoResponse
+	(*GetLatestByCriteriaRequest)(nil),          // 24: orisun.GetLatestByCriteriaRequest
+	(*LatestCriterionResult)(nil),               // 25: orisun.LatestCriterionResult
+	(*GetLatestByCriteriaResponse)(nil),         // 26: orisun.GetLatestByCriteriaResponse
+	(*IndexField)(nil),                          // 27: orisun.IndexField
+	(*IndexCondition)(nil),                      // 28: orisun.IndexCondition
+	(*CreateIndexRequest)(nil),                  // 29: orisun.CreateIndexRequest
+	(*CreateIndexResponse)(nil),                 // 30: orisun.CreateIndexResponse
+	(*DropIndexRequest)(nil),                    // 31: orisun.DropIndexRequest
+	(*DropIndexResponse)(nil),                   // 32: orisun.DropIndexResponse
+	(*IndexDefinition)(nil),                     // 33: orisun.IndexDefinition
+	(*ListIndexesRequest)(nil),                  // 34: orisun.ListIndexesRequest
+	(*ListIndexesResponse)(nil),                 // 35: orisun.ListIndexesResponse
+	(*GetIndexRequest)(nil),                     // 36: orisun.GetIndexRequest
+	(*GetIndexResponse)(nil),                    // 37: orisun.GetIndexResponse
+	(*timestamppb.Timestamp)(nil),               // 38: google.protobuf.Timestamp
 }
 var file_eventstore_proto_depIdxs = []int32{
 	7,  // 0: orisun.Criterion.tags:type_name -> orisun.Tag
 	8,  // 1: orisun.Query.criteria:type_name -> orisun.Criterion
 	6,  // 2: orisun.Event.position:type_name -> orisun.Position
-	36, // 3: orisun.Event.date_created:type_name -> google.protobuf.Timestamp
+	38, // 3: orisun.Event.date_created:type_name -> google.protobuf.Timestamp
 	6,  // 4: orisun.WriteResult.log_position:type_name -> orisun.Position
 	6,  // 5: orisun.SaveQuery.expected_position:type_name -> orisun.Position
 	9,  // 6: orisun.SaveQuery.subsetQuery:type_name -> orisun.Query
-	13, // 7: orisun.SaveEventsRequest.query:type_name -> orisun.SaveQuery
-	10, // 8: orisun.SaveEventsRequest.events:type_name -> orisun.EventToSave
-	9,  // 9: orisun.GetEventsRequest.query:type_name -> orisun.Query
-	6,  // 10: orisun.GetEventsRequest.from_position:type_name -> orisun.Position
-	0,  // 11: orisun.GetEventsRequest.direction:type_name -> orisun.Direction
-	11, // 12: orisun.GetEventsResponse.events:type_name -> orisun.Event
-	6,  // 13: orisun.CatchUpSubscribeToEventStoreRequest.after_position:type_name -> orisun.Position
-	9,  // 14: orisun.CatchUpSubscribeToEventStoreRequest.query:type_name -> orisun.Query
-	1,  // 15: orisun.GetServerInfoResponse.backend:type_name -> orisun.StorageBackend
-	2,  // 16: orisun.GetServerInfoResponse.capabilities:type_name -> orisun.ServerCapability
-	8,  // 17: orisun.GetLatestByCriteriaRequest.criteria:type_name -> orisun.Criterion
-	8,  // 18: orisun.LatestCriterionResult.criterion:type_name -> orisun.Criterion
-	11, // 19: orisun.LatestCriterionResult.event:type_name -> orisun.Event
-	23, // 20: orisun.GetLatestByCriteriaResponse.results:type_name -> orisun.LatestCriterionResult
-	6,  // 21: orisun.GetLatestByCriteriaResponse.context_position:type_name -> orisun.Position
-	3,  // 22: orisun.IndexField.value_type:type_name -> orisun.ValueType
-	25, // 23: orisun.CreateIndexRequest.fields:type_name -> orisun.IndexField
-	26, // 24: orisun.CreateIndexRequest.conditions:type_name -> orisun.IndexCondition
-	4,  // 25: orisun.CreateIndexRequest.condition_combinator:type_name -> orisun.ConditionCombinator
-	25, // 26: orisun.IndexDefinition.fields:type_name -> orisun.IndexField
-	26, // 27: orisun.IndexDefinition.conditions:type_name -> orisun.IndexCondition
-	4,  // 28: orisun.IndexDefinition.condition_combinator:type_name -> orisun.ConditionCombinator
-	5,  // 29: orisun.IndexDefinition.state:type_name -> orisun.IndexState
-	31, // 30: orisun.ListIndexesResponse.indexes:type_name -> orisun.IndexDefinition
-	31, // 31: orisun.GetIndexResponse.index:type_name -> orisun.IndexDefinition
-	14, // 32: orisun.EventStore.SaveEvents:input_type -> orisun.SaveEventsRequest
-	15, // 33: orisun.EventStore.GetEvents:input_type -> orisun.GetEventsRequest
-	22, // 34: orisun.EventStore.GetLatestByCriteria:input_type -> orisun.GetLatestByCriteriaRequest
-	17, // 35: orisun.EventStore.CatchUpSubscribeToEvents:input_type -> orisun.CatchUpSubscribeToEventStoreRequest
-	18, // 36: orisun.EventStore.Ping:input_type -> orisun.PingRequest
-	20, // 37: orisun.EventStore.GetServerInfo:input_type -> orisun.GetServerInfoRequest
-	27, // 38: orisun.EventStore.CreateIndex:input_type -> orisun.CreateIndexRequest
-	29, // 39: orisun.EventStore.DropIndex:input_type -> orisun.DropIndexRequest
-	32, // 40: orisun.EventStore.ListIndexes:input_type -> orisun.ListIndexesRequest
-	34, // 41: orisun.EventStore.GetIndex:input_type -> orisun.GetIndexRequest
-	12, // 42: orisun.EventStore.SaveEvents:output_type -> orisun.WriteResult
-	16, // 43: orisun.EventStore.GetEvents:output_type -> orisun.GetEventsResponse
-	24, // 44: orisun.EventStore.GetLatestByCriteria:output_type -> orisun.GetLatestByCriteriaResponse
-	11, // 45: orisun.EventStore.CatchUpSubscribeToEvents:output_type -> orisun.Event
-	19, // 46: orisun.EventStore.Ping:output_type -> orisun.PingResponse
-	21, // 47: orisun.EventStore.GetServerInfo:output_type -> orisun.GetServerInfoResponse
-	28, // 48: orisun.EventStore.CreateIndex:output_type -> orisun.CreateIndexResponse
-	30, // 49: orisun.EventStore.DropIndex:output_type -> orisun.DropIndexResponse
-	33, // 50: orisun.EventStore.ListIndexes:output_type -> orisun.ListIndexesResponse
-	35, // 51: orisun.EventStore.GetIndex:output_type -> orisun.GetIndexResponse
-	42, // [42:52] is the sub-list for method output_type
-	32, // [32:42] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	9,  // 7: orisun.ConsistencyObservation.query:type_name -> orisun.Query
+	6,  // 8: orisun.ConsistencyObservation.position:type_name -> orisun.Position
+	13, // 9: orisun.SaveEventsRequest.query:type_name -> orisun.SaveQuery
+	10, // 10: orisun.SaveEventsRequest.events:type_name -> orisun.EventToSave
+	10, // 11: orisun.SaveEventsV2Request.events:type_name -> orisun.EventToSave
+	14, // 12: orisun.SaveEventsV2Request.consistency:type_name -> orisun.ConsistencyObservation
+	9,  // 13: orisun.GetEventsRequest.query:type_name -> orisun.Query
+	6,  // 14: orisun.GetEventsRequest.from_position:type_name -> orisun.Position
+	0,  // 15: orisun.GetEventsRequest.direction:type_name -> orisun.Direction
+	11, // 16: orisun.GetEventsResponse.events:type_name -> orisun.Event
+	6,  // 17: orisun.CatchUpSubscribeToEventStoreRequest.after_position:type_name -> orisun.Position
+	9,  // 18: orisun.CatchUpSubscribeToEventStoreRequest.query:type_name -> orisun.Query
+	1,  // 19: orisun.GetServerInfoResponse.backend:type_name -> orisun.StorageBackend
+	2,  // 20: orisun.GetServerInfoResponse.capabilities:type_name -> orisun.ServerCapability
+	8,  // 21: orisun.GetLatestByCriteriaRequest.criteria:type_name -> orisun.Criterion
+	8,  // 22: orisun.LatestCriterionResult.criterion:type_name -> orisun.Criterion
+	11, // 23: orisun.LatestCriterionResult.event:type_name -> orisun.Event
+	25, // 24: orisun.GetLatestByCriteriaResponse.results:type_name -> orisun.LatestCriterionResult
+	6,  // 25: orisun.GetLatestByCriteriaResponse.context_position:type_name -> orisun.Position
+	3,  // 26: orisun.IndexField.value_type:type_name -> orisun.ValueType
+	27, // 27: orisun.CreateIndexRequest.fields:type_name -> orisun.IndexField
+	28, // 28: orisun.CreateIndexRequest.conditions:type_name -> orisun.IndexCondition
+	4,  // 29: orisun.CreateIndexRequest.condition_combinator:type_name -> orisun.ConditionCombinator
+	27, // 30: orisun.IndexDefinition.fields:type_name -> orisun.IndexField
+	28, // 31: orisun.IndexDefinition.conditions:type_name -> orisun.IndexCondition
+	4,  // 32: orisun.IndexDefinition.condition_combinator:type_name -> orisun.ConditionCombinator
+	5,  // 33: orisun.IndexDefinition.state:type_name -> orisun.IndexState
+	33, // 34: orisun.ListIndexesResponse.indexes:type_name -> orisun.IndexDefinition
+	33, // 35: orisun.GetIndexResponse.index:type_name -> orisun.IndexDefinition
+	15, // 36: orisun.EventStore.SaveEvents:input_type -> orisun.SaveEventsRequest
+	16, // 37: orisun.EventStore.SaveEventsV2:input_type -> orisun.SaveEventsV2Request
+	17, // 38: orisun.EventStore.GetEvents:input_type -> orisun.GetEventsRequest
+	24, // 39: orisun.EventStore.GetLatestByCriteria:input_type -> orisun.GetLatestByCriteriaRequest
+	19, // 40: orisun.EventStore.CatchUpSubscribeToEvents:input_type -> orisun.CatchUpSubscribeToEventStoreRequest
+	20, // 41: orisun.EventStore.Ping:input_type -> orisun.PingRequest
+	22, // 42: orisun.EventStore.GetServerInfo:input_type -> orisun.GetServerInfoRequest
+	29, // 43: orisun.EventStore.CreateIndex:input_type -> orisun.CreateIndexRequest
+	31, // 44: orisun.EventStore.DropIndex:input_type -> orisun.DropIndexRequest
+	34, // 45: orisun.EventStore.ListIndexes:input_type -> orisun.ListIndexesRequest
+	36, // 46: orisun.EventStore.GetIndex:input_type -> orisun.GetIndexRequest
+	12, // 47: orisun.EventStore.SaveEvents:output_type -> orisun.WriteResult
+	12, // 48: orisun.EventStore.SaveEventsV2:output_type -> orisun.WriteResult
+	18, // 49: orisun.EventStore.GetEvents:output_type -> orisun.GetEventsResponse
+	26, // 50: orisun.EventStore.GetLatestByCriteria:output_type -> orisun.GetLatestByCriteriaResponse
+	11, // 51: orisun.EventStore.CatchUpSubscribeToEvents:output_type -> orisun.Event
+	21, // 52: orisun.EventStore.Ping:output_type -> orisun.PingResponse
+	23, // 53: orisun.EventStore.GetServerInfo:output_type -> orisun.GetServerInfoResponse
+	30, // 54: orisun.EventStore.CreateIndex:output_type -> orisun.CreateIndexResponse
+	32, // 55: orisun.EventStore.DropIndex:output_type -> orisun.DropIndexResponse
+	35, // 56: orisun.EventStore.ListIndexes:output_type -> orisun.ListIndexesResponse
+	37, // 57: orisun.EventStore.GetIndex:output_type -> orisun.GetIndexResponse
+	47, // [47:58] is the sub-list for method output_type
+	36, // [36:47] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_eventstore_proto_init() }
@@ -2226,7 +2366,7 @@ func file_eventstore_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_eventstore_proto_rawDesc), len(file_eventstore_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   30,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

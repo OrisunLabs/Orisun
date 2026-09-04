@@ -19,7 +19,7 @@ and does not expose a separate DCB mode or API.
 | Event type | `event_type` on save; queryable as `eventType` in stored event data |
 | Tags | Queryable JSON fields in event `data` |
 | Query | `Query.criteria` used by `GetEvents` or `GetLatestByCriteria` |
-| Append condition | `SaveEvents.query.expected_position` plus `subsetQuery` |
+| Append condition | One or more `SaveEventsV2.consistency` query/position observations |
 | Condition failure | `ALREADY_EXISTS` |
 
 This mapping is terminology for comparison, not a second implementation path.
@@ -30,7 +30,7 @@ Use the [CCC workflow](./command-context-consistency) and the
 
 - **Condition semantics.** A DCB append condition rejects when its query matches
   an event after the optional `after` position. Orisun instead requires the
-  latest event matching `subsetQuery` to equal `expected_position`. A position
+  latest event matching each observation query to equal its observation position. A position
   later than the latest match is valid in DCB but fails Orisun's equality check.
 - **Query shape.** DCB query items have first-class event-type and tag filters.
   Orisun criteria match JSON fields; event type is queried through the canonical

@@ -93,6 +93,46 @@ func TestMigrationsAdoptPreVersioningDatabase(t *testing.T) {
 	}
 }
 
+func TestEnsureBoundaryIndexesOrderByPositionUpgradesLegacyIndex(t *testing.T) {
+	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "legacy-index.db"))
+	if err := applyMigrations(conn); err != nil {
+		t.Fatalf("apply event migrations: %v", err)
+	}
+	if err := sqlitex.Execute(conn,
+		`CREATE INDEX stream_idx ON orisun_es_event (json_extract(data, '$."stream_id"'))`, nil); err != nil {
+		t.Fatalf("create legacy index: %v", err)
+	}
+	if err := sqlitex.Execute(conn,
+		`INSERT INTO orisun_boundary_index_metadata (name, fields, conditions, combinator)
+		 VALUES ('stream', '[{"JsonKey":"stream_id","ValueType":"text"}]', '[]', 'AND')`, nil); err != nil {
+		t.Fatalf("insert legacy metadata: %v", err)
+	}
+
+	registry := newSqliteIndexRegistry()
+	if err := loadBoundaryIndexMetadata(conn, "test", registry); err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if err := ensureBoundaryIndexesOrderByPosition(conn, "test", registry); err != nil {
+		t.Fatalf("upgrade legacy index: %v", err)
+	}
+	if err := ensureBoundaryIndexesOrderByPosition(conn, "test", registry); err != nil {
+		t.Fatalf("repeat index upgrade: %v", err)
+	}
+
+	var ddl string
+	if err := sqlitex.Execute(conn,
+		"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'stream_idx'",
+		&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+			ddl = stmt.ColumnText(0)
+			return nil
+		}}); err != nil {
+		t.Fatalf("read upgraded DDL: %v", err)
+	}
+	if !sqliteIndexOrdersByPosition(ddl) {
+		t.Fatalf("legacy index was not upgraded: %s", ddl)
+	}
+}
+
 func TestMigrationsRefuseNewerSchema(t *testing.T) {
 	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "future.db"))
 

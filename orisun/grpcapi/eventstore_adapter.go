@@ -54,6 +54,14 @@ func (a *EventStoreAdapter) SaveEvents(ctx context.Context, req *SaveEventsReque
 	return writeResultToProto(response), nil
 }
 
+func (a *EventStoreAdapter) SaveEventsV2(ctx context.Context, req *SaveEventsV2Request) (*WriteResult, error) {
+	response, err := a.eventStore.SaveEventsV2(ctx, saveEventsV2RequestFromProto(req))
+	if err != nil {
+		return nil, grpcstatus.FromError(err)
+	}
+	return writeResultToProto(response), nil
+}
+
 func (a *EventStoreAdapter) GetEvents(ctx context.Context, req *GetEventsRequest) (*GetEventsResponse, error) {
 	response, err := a.eventStore.GetEvents(ctx, getEventsRequestFromProto(req))
 	if err != nil {
@@ -155,7 +163,7 @@ func saveEventsRequestFromProto(req *SaveEventsRequest) *orisun.SaveEventsReques
 	}
 	result := &orisun.SaveEventsRequest{
 		Boundary: req.Boundary,
-		Events:   make([]*orisun.EventToSave, len(req.Events)),
+		Events:   eventsToSaveFromProto(req.Events),
 	}
 	if req.Query != nil {
 		result.Query = &orisun.SaveQuery{
@@ -163,15 +171,39 @@ func saveEventsRequestFromProto(req *SaveEventsRequest) *orisun.SaveEventsReques
 			SubsetQuery:      domainQueryFromProto(req.Query.SubsetQuery),
 		}
 	}
-	for index, event := range req.Events {
+	return result
+}
+
+func saveEventsV2RequestFromProto(req *SaveEventsV2Request) *orisun.SaveEventsV2Request {
+	if req == nil {
+		return nil
+	}
+	result := &orisun.SaveEventsV2Request{
+		Boundary:    req.Boundary,
+		Events:      eventsToSaveFromProto(req.Events),
+		Consistency: make([]*orisun.ConsistencyObservation, len(req.Consistency)),
+	}
+	for index, observation := range req.Consistency {
+		if observation == nil {
+			continue
+		}
+		result.Consistency[index] = &orisun.ConsistencyObservation{
+			Query:    domainQueryFromProto(observation.Query),
+			Position: domainPositionFromProto(observation.Position),
+		}
+	}
+	return result
+}
+
+func eventsToSaveFromProto(events []*EventToSave) []*orisun.EventToSave {
+	result := make([]*orisun.EventToSave, len(events))
+	for index, event := range events {
 		if event == nil {
 			continue
 		}
-		result.Events[index] = &orisun.EventToSave{
-			EventId:   event.EventId,
-			EventType: event.EventType,
-			Data:      event.Data,
-			Metadata:  event.Metadata,
+		result[index] = &orisun.EventToSave{
+			EventId: event.EventId, EventType: event.EventType,
+			Data: event.Data, Metadata: event.Metadata,
 		}
 	}
 	return result

@@ -99,6 +99,12 @@ func benchSaveFn(saver *SqliteSaveEvents, mode string) func(context.Context, []o
 			return saveBypassingQueue(saver, ctx, events, boundary, pos, query)
 		}
 	}
+	if mode == "group-isolated" {
+		// Test/benchmark-only control that preserves the exact request while
+		// isolating set-path gains from transaction/fsync amortization.
+		saver.gcDisableSetPaths = true
+		return saver.Save
+	}
 	return saver.Save
 }
 
@@ -106,7 +112,7 @@ func benchSaveFn(saver *SqliteSaveEvents, mode string) func(context.Context, []o
 // per-request transaction path under FULL synchronous — the configuration
 // group commit is meant to pay for. Independent contexts (no CCC).
 func BenchmarkSqlite_GroupCommitVsDirect(b *testing.B) {
-	for _, mode := range []string{"group", "direct"} {
+	for _, mode := range []string{"group", "group-isolated", "direct"} {
 		for _, conc := range []int{1, 16, 100} {
 			b.Run(fmt.Sprintf("mode=%s/workers=%d", mode, conc), func(b *testing.B) {
 				saver, _, _, teardown := setupBenchmarkPools(b)
@@ -204,15 +210,24 @@ func BenchmarkSqlite_GroupCommitDelay(b *testing.B) {
 }
 
 // BenchmarkSqlite_GroupCommitVsDirect_CCC is the same comparison on the hot
-// CCC path: every save carries a per-stream criterion and expected position,
-// so batched requests exercise the savepoint + consistency-check loop.
+// CCC path: every save carries a per-stream criterion and expected position.
+// "group" exercises independent-ccc; "group-isolated" forces the savepoint
+// loop with the exact same request.
 //
 // Per-save cost grows with table size (the CCC check scans the criterion's
 // index slice), so cross-mode numbers are only comparable at equal iteration
 // counts — run with a fixed -benchtime=Nx, not a duration.
 func BenchmarkSqlite_GroupCommitVsDirect_CCC(b *testing.B) {
-	for _, mode := range []string{"group", "direct"} {
-		for _, conc := range []int{16, 100} {
+	benchmarkSqliteGroupCommitCCC(b, false)
+}
+
+func BenchmarkSqlite_GroupCommitVsDirect_GeneralCCC(b *testing.B) {
+	benchmarkSqliteGroupCommitCCC(b, true)
+}
+
+func benchmarkSqliteGroupCommitCCC(b *testing.B, general bool) {
+	for _, mode := range []string{"group", "group-isolated", "direct"} {
+		for _, conc := range []int{16, 32, 64, 100} {
 			b.Run(fmt.Sprintf("mode=%s/workers=%d", mode, conc), func(b *testing.B) {
 				saver, _, admin, teardown := setupBenchmarkPools(b)
 				defer teardown()
@@ -246,6 +261,14 @@ func BenchmarkSqlite_GroupCommitVsDirect_CCC(b *testing.B) {
 							query := &orisun.Query{Criteria: []*orisun.Criterion{{
 								Tags: []*orisun.Tag{{Key: "stream_id", Value: streamIds[w]}},
 							}}}
+							if general {
+								// A second OR criterion keeps a single observed position while
+								// forcing the general queue-ordered CCC path.
+								query.Criteria = append(query.Criteria, &orisun.Criterion{Tags: []*orisun.Tag{
+									{Key: "stream_id", Value: streamIds[w]},
+									{Key: "benchmark_shape", Value: "general"},
+								}})
+							}
 							tranID, gid, err := save(ctx, []orisun.EventWithMapTags{{
 								EventId:   id.String(),
 								EventType: "OrderPlaced",
@@ -312,7 +335,7 @@ func BenchmarkSqlite_EventStoreBurst10000(b *testing.B) {
 			go func() {
 				defer wg.Done()
 				<-startCh
-				if _, err := server.SaveEvents(ctx, &orisun.SaveEventsRequest{
+				if _, err := server.SaveEventsV2(ctx, &orisun.SaveEventsV2Request{
 					Boundary: benchBoundary,
 					Events:   []*orisun.EventToSave{ev},
 				}); err != nil {
@@ -404,7 +427,7 @@ func BenchmarkSqlite_GRPCEventStoreBurst10000(b *testing.B) {
 			go func() {
 				defer wg.Done()
 				<-startCh
-				if _, err := client.SaveEvents(ctx, &grpcapi.SaveEventsRequest{
+				if _, err := client.SaveEventsV2(ctx, &grpcapi.SaveEventsV2Request{
 					Boundary: benchBoundary,
 					Events:   []*grpcapi.EventToSave{ev},
 				}); err != nil {
@@ -611,7 +634,7 @@ func runGRPCSaveBurst10000(b *testing.B, clients []sqliteGRPCBenchClient) {
 		go func() {
 			defer wg.Done()
 			<-startCh
-			if _, err := client.client.SaveEvents(client.ctx, &grpcapi.SaveEventsRequest{
+			if _, err := client.client.SaveEventsV2(client.ctx, &grpcapi.SaveEventsV2Request{
 				Boundary: benchBoundary,
 				Events:   []*grpcapi.EventToSave{ev},
 			}); err != nil {

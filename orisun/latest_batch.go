@@ -13,6 +13,13 @@ type ReadCriterion struct {
 	Tags []ReadTag
 }
 
+// ConsistencyCheck is one normalized query observation. Criteria are ORed;
+// tags within each criterion are ANDed.
+type ConsistencyCheck struct {
+	Criteria []ReadCriterion
+	Position Position
+}
+
 // LatestByCriteriaQuery is the protobuf-free request used below the gRPC
 // boundary.
 type LatestByCriteriaQuery struct {

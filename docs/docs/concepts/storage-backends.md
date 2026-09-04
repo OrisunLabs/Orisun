@@ -71,7 +71,7 @@ ORISUN_FDB_ROOT=orisun
 
 Criteria queries keep the same public API, but FoundationDB requires ready covering boundary indexes for criteria reads and consistency checks. Unindexed criteria fail with `FAILED_PRECONDITION`; this avoids boundary-wide scans and keeps write conflict ranges scoped to the indexed event subset.
 
-FoundationDB assigns event positions with commit versionstamps instead of a per-boundary counter. Plain appends can commit in parallel; writes with a consistency context conflict only on the covered index range for that context, so commands on different aggregates in one boundary commit concurrently. As in the other backends, an `expected_position` takes effect only together with consistency criteria.
+FoundationDB assigns event positions with commit versionstamps instead of a per-boundary counter. Plain appends can commit in parallel; writes with consistency observations conflict only on the covered index ranges for those queries, so commands on unrelated contexts in one boundary commit concurrently.
 
 For cluster layout, process classes, Kubernetes, backups, monitoring, lock failover, and release gates, see [FoundationDB topology](../operations/deployment#foundationdb-topology) and [FoundationDB operations](../operations/foundationdb).
 
@@ -146,7 +146,7 @@ an event replay:
 2. On the target deployment, call `CreateBoundary` for each new empty physical
    boundary and wait for `ACTIVE`. Use target-backend placement values.
 3. Read source events in ascending position order and replay them with
-   `SaveEvents`, preserving event IDs and payloads. Chunk the replay within the
+   `SaveEventsV2`, preserving event IDs and payloads. Chunk the replay within the
    target backend's transaction limits.
 4. Validate event counts, representative criteria queries, indexes, and
    projectors.

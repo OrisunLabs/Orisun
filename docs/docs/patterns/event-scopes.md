@@ -7,7 +7,7 @@ Event scopes are a modeling convention for grouping related events without forci
 
 This pattern is adapted from Ralf Westphal's article [Scoping Events](https://ralfwestphal.substack.com/p/scoping-events), especially the course-enrollment example. Westphal describes scopes as event-rooted containers: every event can be the root of a scope, and every event can be a member of multiple scopes.
 
-Orisun does not reserve a special `scope` or `scopes` field. Criteria and indexes match JSON keys in event `data`, so scope keys are normal event data keys. The examples below use `scopes.` as a naming convention. When calling `SaveEvents`, pass the type through `event_type`; Orisun writes the canonical `eventType` key into `data`.
+Orisun does not reserve a special `scope` or `scopes` field. Criteria and indexes match JSON keys in event `data`, so scope keys are normal event data keys. The examples below use `scopes.` as a naming convention. When calling `SaveEventsV2`, pass the type through `event_type`; Orisun writes the canonical `eventType` key into `data`.
 
 ## Course enrollment chain
 
@@ -183,27 +183,29 @@ Scopes are a natural fit for [Command Context Consistency](../concepts/command-c
 ```json
 {
   "boundary": "courses",
-  "query": {
-    "expected_position": {
-      "commit_position": 100,
-      "prepare_position": 7
-    },
-    "subsetQuery": {
-      "criteria": [
-        {
-          "tags": [
-            {"key": "eventType", "value": "StudentEnrolledInCourse"},
-            {"key": "studentEnrolledInCourseId", "value": "018f2d5e-1003-7000-8000-000000000003"}
-          ]
-        },
-        {
-          "tags": [
-            {"key": "scopes.studentEnrolledInCourseId", "value": "018f2d5e-1003-7000-8000-000000000003"}
-          ]
-        }
-      ]
+  "consistency": [
+    {
+      "position": {
+        "commit_position": 100,
+        "prepare_position": 7
+      },
+      "query": {
+        "criteria": [
+          {
+            "tags": [
+              {"key": "eventType", "value": "StudentEnrolledInCourse"},
+              {"key": "studentEnrolledInCourseId", "value": "018f2d5e-1003-7000-8000-000000000003"}
+            ]
+          },
+          {
+            "tags": [
+              {"key": "scopes.studentEnrolledInCourseId", "value": "018f2d5e-1003-7000-8000-000000000003"}
+            ]
+          }
+        ]
+      }
     }
-  },
+  ],
   "events": [
     {
       "event_id": "018f2d5e-1004-7000-8000-000000000004",
@@ -215,7 +217,7 @@ Scopes are a natural fit for [Command Context Consistency](../concepts/command-c
 }
 ```
 
-Use all criteria that the command model actually read. If grading rules depend on the course, student status, prior grades, or grade-discussion state, include the relevant root and scope criteria in the same `subsetQuery`.
+Use all queries that the command model actually read. If grading rules depend on the course, student status, prior grades, or grade-discussion state, preserve each complete read as a query-level observation and include them all in `SaveEventsV2.consistency`.
 
 ## Index scope keys
 
@@ -257,4 +259,4 @@ EOF
 - Put backlinks to earlier events under queryable scope keys, such as `scopes.coursePublishedId`.
 - Carry inherited scopes when outer-scope queries matter; otherwise the reader would need graph traversal.
 - Keep `metadata` for tracing, request source, and operational context; put domain scopes in `data`.
-- Index scope keys that appear in CCC `subsetQuery` values or replay filters.
+- Index scope keys that appear in CCC observation queries or replay filters.

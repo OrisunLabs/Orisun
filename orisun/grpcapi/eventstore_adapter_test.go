@@ -20,8 +20,7 @@ func (codedErrorSaver) SavePrepared(
 	context.Context,
 	orisun.PreparedEventBatch,
 	string,
-	*orisun.Position,
-	*orisun.Query,
+	[]orisun.ConsistencyCheck,
 ) (string, int64, error) {
 	return "", 0, statuscode.New(statuscode.AlreadyExists, "position conflict")
 }
@@ -29,21 +28,18 @@ func (codedErrorSaver) SavePrepared(
 type mappingSaver struct {
 	events   orisun.PreparedEventBatch
 	boundary string
-	position *orisun.Position
-	query    *orisun.Query
+	checks   []orisun.ConsistencyCheck
 }
 
 func (s *mappingSaver) SavePrepared(
 	_ context.Context,
 	events orisun.PreparedEventBatch,
 	boundary string,
-	position *orisun.Position,
-	query *orisun.Query,
+	checks []orisun.ConsistencyCheck,
 ) (string, int64, error) {
 	s.events = events
 	s.boundary = boundary
-	s.position = position
-	s.query = query
+	s.checks = checks
 	return "12", 13, nil
 }
 
@@ -164,10 +160,46 @@ func TestEventStoreAdapterMapsSaveRequestAndResponse(t *testing.T) {
 	if response.LogPosition.CommitPosition != 12 || response.LogPosition.PreparePosition != 13 {
 		t.Fatalf("SaveEvents() response = %#v", response)
 	}
-	if saver.boundary != "orders" || saver.position.CommitPosition != 3 ||
-		saver.query.Criteria[0].Tags[0].Value != "o-1" ||
+	if saver.boundary != "orders" || saver.checks[0].Position.CommitPosition != 3 ||
+		saver.checks[0].Criteria[0].Tags[0].Value != "o-1" ||
 		saver.events[0].EventType != "Opened" {
-		t.Fatalf("mapped save = %#v %#v %#v %#v", saver.boundary, saver.position, saver.query, saver.events)
+		t.Fatalf("mapped save = %#v %#v %#v", saver.boundary, saver.checks, saver.events)
+	}
+}
+
+func TestEventStoreAdapterMapsSaveEventsV2Observations(t *testing.T) {
+	logger, err := logging.ZapLogger("error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saver := &mappingSaver{}
+	adapter := AdaptEventStore(orisun.NewEventStoreServer(
+		nil, saver, nil, nil, nil, orisun.EventStreamConfig{}, logger,
+	))
+
+	response, err := adapter.SaveEventsV2(t.Context(), &SaveEventsV2Request{
+		Boundary: "orders",
+		Events: []*EventToSave{{
+			EventId: "event-2", EventType: "Accepted", Data: `{}`, Metadata: `{}`,
+		}},
+		Consistency: []*ConsistencyObservation{
+			{
+				Query:    &Query{Criteria: []*Criterion{{Tags: []*Tag{{Key: "order_id", Value: "o-1"}}}}},
+				Position: &Position{CommitPosition: 7, PreparePosition: 6},
+			},
+			{
+				Query:    &Query{Criteria: []*Criterion{{Tags: []*Tag{{Key: "customer_id", Value: "c-1"}}}}},
+				Position: &Position{CommitPosition: -1, PreparePosition: -1},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveEventsV2() error = %v", err)
+	}
+	if response.LogPosition.PreparePosition != 13 || len(saver.checks) != 2 ||
+		saver.checks[0].Position.CommitPosition != 7 ||
+		saver.checks[1].Criteria[0].Tags[0].Value != "c-1" {
+		t.Fatalf("mapped V2 save = response %#v, checks %#v", response, saver.checks)
 	}
 }
 

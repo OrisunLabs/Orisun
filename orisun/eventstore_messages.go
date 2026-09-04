@@ -54,6 +54,17 @@ type SaveEventsRequest struct {
 	Events   []*EventToSave
 }
 
+type ConsistencyObservation struct {
+	Query    *Query
+	Position *Position
+}
+
+type SaveEventsV2Request struct {
+	Boundary    string
+	Events      []*EventToSave
+	Consistency []*ConsistencyObservation
+}
+
 type Direction int32
 
 const (

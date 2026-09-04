@@ -561,13 +561,9 @@ func BenchmarkGetEvents(b *testing.B) {
 	boundary := "benchmark_test"
 	streamId := uuid.New().String()
 	events := generateEvents(1000, streamId)
-	p := grpcapi.Position{CommitPosition: -1, PreparePosition: -1}
-	_, err := setup.client.SaveEvents(setup.authContext(), &grpcapi.SaveEventsRequest{
+	_, err := setup.client.SaveEventsV2(setup.authContext(), &grpcapi.SaveEventsV2Request{
 		Boundary: boundary,
-		Query: &grpcapi.SaveQuery{
-			ExpectedPosition: &p,
-		},
-		Events: events,
+		Events:   events,
 	})
 	if err != nil {
 		b.Fatalf("Failed to pre-populate events: %v", err)
@@ -595,13 +591,9 @@ func BenchmarkSubscribeToEvents(b *testing.B) {
 	// Pre-populate with events to ensure subscription has data to read
 	for range 100 {
 		event := generateRandomEvent("PrePopulateEvent")
-		p := grpcapi.Position{CommitPosition: -1, PreparePosition: -1}
-		_, err := setup.client.SaveEvents(setup.authContext(), &grpcapi.SaveEventsRequest{
+		_, err := setup.client.SaveEventsV2(setup.authContext(), &grpcapi.SaveEventsV2Request{
 			Boundary: boundary,
-			Query: &grpcapi.SaveQuery{
-				ExpectedPosition: &p,
-			},
-			Events: []*grpcapi.EventToSave{event},
+			Events:   []*grpcapi.EventToSave{event},
 		})
 		if err != nil {
 			b.Fatalf("Failed to pre-populate events: %v", err)
@@ -738,7 +730,7 @@ func benchmarkSaveEventsBurst10000WithMaxInFlight(b *testing.B, clients []benchm
 				defer func() { <-inFlight }()
 			}
 			client := clients[w%len(clients)]
-			_, err := client.client.SaveEvents(client.ctx, &grpcapi.SaveEventsRequest{
+			_, err := client.client.SaveEventsV2(client.ctx, &grpcapi.SaveEventsV2Request{
 				Boundary: boundary,
 				Events:   []*grpcapi.EventToSave{events[w]},
 			})
@@ -791,13 +783,9 @@ func BenchmarkMemoryUsage(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		p := grpcapi.Position{CommitPosition: -1, PreparePosition: -1}
-		_, err := setup.client.SaveEvents(setup.authContext(), &grpcapi.SaveEventsRequest{
+		_, err := setup.client.SaveEventsV2(setup.authContext(), &grpcapi.SaveEventsV2Request{
 			Boundary: boundary,
-			Query: &grpcapi.SaveQuery{
-				ExpectedPosition: &p,
-			},
-			Events: []*grpcapi.EventToSave{events[i]},
+			Events:   []*grpcapi.EventToSave{events[i]},
 		})
 		if err != nil {
 			b.Errorf("Failed to save large event: %v", err)
@@ -912,12 +900,16 @@ func BenchmarkSaveEvents_DirectDatabase10K(b *testing.B) {
 					b.Errorf("failed to prepare event: %v", err)
 					return
 				}
+				consistency, err := orisun.LegacyConsistencyChecks(&p, consistencyCondition)
+				if err != nil {
+					b.Errorf("invalid consistency: %v", err)
+					return
+				}
 				_, _, err = saveEvents.SavePrepared(
 					ctx,
 					prepared,
 					"benchmark_test",
-					&p,                   // Expected position for a new stream.
-					consistencyCondition, // Unique consistency condition for each event
+					consistency,
 				)
 
 				// Use atomic operations to avoid mutex overhead
@@ -1086,8 +1078,7 @@ func BenchmarkSaveEvents_DirectDatabase10KBatch(b *testing.B) {
 		start := time.Now()
 
 		// Save all events in a single batch operation
-		p := orisun.NotExistsPosition()
-		_, _, err := saveEvents.SavePrepared(ctx, prepared, "benchmark_test", &p, nil)
+		_, _, err := saveEvents.SavePrepared(ctx, prepared, "benchmark_test", nil)
 		if err != nil {
 			b.Fatalf("Failed to save batch events: %v", err)
 		}

@@ -20,5 +20,9 @@ func (s *PostgresSaveEvents) Save(
 	if err != nil {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid event data: %v", err)
 	}
-	return s.SavePrepared(ctx, prepared, boundary, expectedPosition, query)
+	consistency, err := eventstore.LegacyConsistencyChecks(expectedPosition, query)
+	if err != nil {
+		return "", 0, err
+	}
+	return s.SavePrepared(ctx, prepared, boundary, consistency)
 }

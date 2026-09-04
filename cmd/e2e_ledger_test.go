@@ -132,12 +132,12 @@ func runLedgerWorkloadWithConfig(t *testing.T, suite *E2ETestSuite, cfg ledgerWo
 	// Seed accounts: consistency context "this account is still empty".
 	notExists := pb.Position{CommitPosition: -1, PreparePosition: -1}
 	for i := 0; i < cfg.accounts; i++ {
-		_, err := client.SaveEvents(ctx, &pb.SaveEventsRequest{
+		_, err := client.SaveEventsV2(ctx, &pb.SaveEventsV2Request{
 			Boundary: boundary,
-			Query: &pb.SaveQuery{
-				ExpectedPosition: &notExists,
-				SubsetQuery:      accountCriteria(accountID(i)),
-			},
+			Consistency: []*pb.ConsistencyObservation{{
+				Position: &notExists,
+				Query:    accountCriteria(accountID(i)),
+			}},
 			Events: []*pb.EventToSave{{
 				EventId:   uuid.NewString(),
 				EventType: "AccountOpened",
@@ -211,12 +211,12 @@ func runLedgerWorkloadWithConfig(t *testing.T, suite *E2ETestSuite, cfg ledgerWo
 						break
 					}
 					transferID := uuid.NewString()
-					_, err = client.SaveEvents(ctx, &pb.SaveEventsRequest{
+					_, err = client.SaveEventsV2(ctx, &pb.SaveEventsV2Request{
 						Boundary: boundary,
-						Query: &pb.SaveQuery{
-							ExpectedPosition: last,
-							SubsetQuery:      accountCriteria(src, dst),
-						},
+						Consistency: []*pb.ConsistencyObservation{{
+							Position: last,
+							Query:    accountCriteria(src, dst),
+						}},
 						Events: []*pb.EventToSave{
 							{
 								EventId:   uuid.NewString(),
@@ -415,7 +415,7 @@ func TestE2E_GetLatestByCriteria_SQLite(t *testing.T) {
 	// Two events for entity a, one for entity b; latest-per-criterion plus
 	// context_position = the newest of them all.
 	save := func(entity, eventType string) *pb.Position {
-		res, err := client.SaveEvents(ctx, &pb.SaveEventsRequest{
+		res, err := client.SaveEventsV2(ctx, &pb.SaveEventsV2Request{
 			Boundary: boundary,
 			Events: []*pb.EventToSave{{
 				EventId:   uuid.NewString(),

@@ -141,8 +141,7 @@ func (s *capturingBoundarySaver) SavePrepared(
 	_ context.Context,
 	events orisun.PreparedEventBatch,
 	_ string,
-	_ *orisun.Position,
-	_ *orisun.Query,
+	_ []orisun.ConsistencyCheck,
 ) (string, int64, error) {
 	s.events = append(orisun.PreparedEventBatch(nil), events...)
 	return "12", 13, nil

@@ -227,8 +227,7 @@ func (b *Backend) SavePrepared(
 	ctx context.Context,
 	events eventstore.PreparedEventBatch,
 	boundary string,
-	expectedPosition *eventstore.Position,
-	streamConsistencyCondition *eventstore.Query,
+	consistency []eventstore.ConsistencyCheck,
 ) (transactionID string, globalID int64, err error) {
 	if err := contextStatusErr(ctx); err != nil {
 		return "", 0, err
@@ -255,23 +254,6 @@ func (b *Backend) SavePrepared(
 		if err := contextStatusErr(ctx); err != nil {
 			return nil, err
 		}
-		// Parity with the PostgreSQL and SQLite backends: the consistency check
-		// runs only when the condition carries criteria. An expected position
-		// without criteria is ignored — there is no context to compare against.
-		if hasCriteria(streamConsistencyCondition) {
-			actualTx, actualGid, err := b.latestMatchingPosition(tr, boundary, streamConsistencyCondition)
-			if err != nil {
-				return nil, err
-			}
-			expectedTx, expectedGid := int64(-1), int64(-1)
-			if expectedPosition != nil {
-				expectedTx, expectedGid = expectedPosition.CommitPosition, expectedPosition.PreparePosition
-			}
-			if actualTx != expectedTx || actualGid != expectedGid {
-				return nil, optimisticConflict(expectedTx, expectedGid, actualTx, actualGid)
-			}
-		}
-
 		// Index create/drop writes this key. Reading it forces Saves that began
 		// before an index metadata change to retry, so they cannot commit
 		// without maintaining the current index set.
@@ -280,6 +262,27 @@ func (b *Backend) SavePrepared(
 		if err != nil {
 			return nil, err
 		}
+		consistencyIndexes := readyIndexes(indexes)
+		for _, check := range consistency {
+			actualTx, actualGid, err := b.latestMatchingPosition(
+				tr,
+				boundary,
+				consistencyIndexes,
+				check.Criteria,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if actualTx != check.Position.CommitPosition || actualGid != check.Position.PreparePosition {
+				return nil, optimisticConflict(
+					check.Position.CommitPosition,
+					check.Position.PreparePosition,
+					actualTx,
+					actualGid,
+				)
+			}
+		}
+
 		if total := estimateSaveBytes(prepared, indexes); total > maxTransactionBytes {
 			return nil, statuscode.Errorf(statuscode.InvalidArgument,
 				"batch of %d events is ~%d bytes, exceeding the %d-byte FoundationDB transaction budget; split it",
@@ -1284,15 +1287,15 @@ func (b *Backend) eventRangeForCursor(boundary string, from *eventstore.Position
 // versionstamp IS the answer. No event records are fetched inside the write
 // transaction: each criterion costs one Limit-1 reverse range read regardless
 // of how long the aggregate's history is.
-func (b *Backend) latestMatchingPosition(tr fdb.Transaction, boundary string, query *eventstore.Query) (int64, int64, error) {
-	indexes, err := b.loadIndexes(tr, boundary)
-	if err != nil {
-		return -1, -1, err
-	}
-	indexes = readyIndexes(indexes)
+func (b *Backend) latestMatchingPosition(
+	tr fdb.Transaction,
+	boundary string,
+	indexes []indexDefinition,
+	criteria []eventstore.ReadCriterion,
+) (int64, int64, error) {
 	bestTx, bestGid := int64(-1), int64(-1)
 	found := false
-	for _, criterion := range criteriaAsMaps(query) {
+	for _, criterion := range readCriteriaAsMaps(criteria) {
 		idx, ok := chooseCoveringIndex(indexes, criterion)
 		if !ok {
 			// Fail closed: an unindexed consistency condition cannot be checked

@@ -8,7 +8,8 @@ import TabItem from '@theme/TabItem';
 
 The EventStore service owns event operations:
 
-- `SaveEvents`
+- `SaveEventsV2`
+- `SaveEvents` (deprecated)
 - `GetEvents`
 - `GetLatestByCriteria`
 - `CatchUpSubscribeToEvents`
@@ -121,7 +122,106 @@ Orisun also stores a durable `position` and `date_created` on committed events.
 `event_type` is the API field for the event's type. On save, Orisun writes that value into the stored event data as the canonical `eventType` JSON key, and storage backends derive response `event_type` from `data.eventType`. Criteria and indexes should use the `eventType` JSON key.
 :::
 
-## SaveEvents
+## SaveEventsV2
+
+`SaveEventsV2` atomically appends one or more events. Its `consistency` list contains the complete query and latest matching position for every context the command read. Orisun validates all observations in the write transaction before inserting any event.
+
+```go
+criteria := []*eventstore.Criterion{
+	{Tags: []*eventstore.Tag{{Key: "scopes.orderId", Value: "order-17"}}},
+	{Tags: []*eventstore.Tag{
+		{Key: "eventType", Value: "CustomerOrderingSuspended"},
+		{Key: "customerId", Value: "customer-4"},
+	}},
+}
+latest, err := client.GetLatestByCriteria(ctx, &eventstore.GetLatestByCriteriaRequest{
+	Boundary: "orders",
+	Criteria: criteria,
+})
+if err != nil {
+	return err
+}
+
+_, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
+	Boundary: "orders",
+	Events: []*eventstore.EventToSave{{
+		EventId:   "018f2d5e-0002-7000-8000-000000000002",
+		EventType: "OrderConfirmed",
+		Data:      `{"orderId":"order-17","customerId":"customer-4"}`,
+		Metadata:  `{}`,
+	}},
+	Consistency: []*eventstore.ConsistencyObservation{{
+		Query:    &eventstore.Query{Criteria: criteria},
+		Position: latest.ContextPosition,
+	}},
+})
+```
+
+`GetLatestByCriteria` remains unchanged: combine the exact criteria sent to it with its existing `context_position` to construct the V2 observation. One position belongs to the complete OR query, not to each criterion.
+
+For multiple independently read contexts, include multiple observations:
+
+```bash
+grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+{
+  "boundary": "orders",
+  "events": [{
+    "event_id": "018f2d5e-0002-7000-8000-000000000002",
+    "event_type": "OrderConfirmed",
+    "data": "{\"orderId\":\"order-17\",\"customerId\":\"customer-4\"}",
+    "metadata": "{}"
+  }],
+  "consistency": [
+    {
+      "query": {
+        "criteria": [
+          {"tags": [{"key": "scopes.orderId", "value": "order-17"}]},
+          {"tags": [
+            {"key": "eventType", "value": "OrderCancelled"},
+            {"key": "orderId", "value": "order-17"}
+          ]}
+        ]
+      },
+      "position": {"commit_position": 12, "prepare_position": 8}
+    },
+    {
+      "query": {
+        "criteria": [
+          {"tags": [
+            {"key": "eventType", "value": "CustomerOrderingSuspended"},
+            {"key": "customerId", "value": "customer-4"}
+          ]},
+          {"tags": [
+            {"key": "eventType", "value": "CustomerOrderingRestored"},
+            {"key": "customerId", "value": "customer-4"}
+          ]}
+        ]
+      },
+      "position": {"commit_position": 9, "prepare_position": 0}
+    }
+  ]
+}
+EOF
+```
+
+Every observation is required to contain a non-empty query and a position. Criteria are OR alternatives; tags in one criterion are AND predicates. Duplicate equivalent observations are normalized, contradictory positions for the same query are rejected, and requests with excessive observation fan-out fail closed.
+
+Omit `consistency` for an unconditional append. Use `{-1, -1}` for a query observed to have no matches. The response contains the committed log position:
+
+```json
+{
+  "log_position": {
+    "commit_position": 13,
+    "prepare_position": 0
+  }
+}
+```
+
+Batches are atomic. Events in one batch share the same commit position and receive increasing prepare positions. If any observation is stale, Orisun returns `ALREADY_EXISTS` and appends none of the events.
+
+## SaveEvents (deprecated)
+
+`SaveEvents` and `SaveQuery` are retained for wire compatibility. The server converts the legacy request into a `SaveEventsV2Request` with at most one consistency observation, then uses the V2 implementation. New code should call `SaveEventsV2`.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
@@ -587,7 +687,7 @@ Keep the consumer idempotent and deduplicate by `event_id` rather than assuming 
 
 ## GetLatestByCriteria
 
-`GetLatestByCriteria` returns the latest event matching each criterion, assembled by the server from **one consistent read snapshot**, plus a `context_position` to use as the `expected_position` of the next `SaveEvents` with the same combined criteria. It is the command-side read for the carried-state pattern: store the resulting state (for example an account balance) on each event, then a command needs only the latest event per entity, not a history replay.
+`GetLatestByCriteria` returns the latest event matching each criterion, assembled by the server from **one consistent read snapshot**, plus a `context_position`. It is the command-side read for the carried-state pattern: store the resulting state on each event, then a command needs only the latest event per criterion rather than a history replay.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
@@ -611,8 +711,7 @@ resp, err := client.GetLatestByCriteria(ctx, &eventstore.GetLatestByCriteriaRequ
 
 // One result per criterion, in request order.
 // Use the root event when no scoped movement exists yet.
-// resp.ContextPosition is the next expected_position for a SaveEvents
-// using the same combined criteria.
+// For SaveEventsV2, pair these exact request criteria with resp.ContextPosition.
 for _, r := range resp.Results {
 	if r.Event != nil {
 		// r.Event.Data carries the latest snapshot for this criterion
@@ -641,7 +740,7 @@ const latest = await client.getLatestByCriteria({
 });
 
 // latest.results[i].event: latest event per criterion, in request order
-// latest.contextPosition: pass to the next saveEvents expectedPosition
+// For saveEventsV2, pair these exact request criteria with latest.contextPosition.
 ```
 
   </TabItem>
@@ -667,7 +766,7 @@ Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
             .build())
         .build());
 
-Eventstore.Position expectedPosition = latest.getContextPosition();
+// For SaveEventsV2, pair the exact request criteria with latest.getContextPosition().
 ```
 
   </TabItem>
@@ -698,7 +797,7 @@ EOF
 
 The response carries one `result` per request criterion in order (`event` unset when nothing matches) and `context_position`, which is the max position observed in the same snapshot, or `{-1, -1}` when nothing matched.
 
-Why a dedicated RPC instead of separate `GetEvents` calls: two calls are two snapshots. An event can commit between them with a position *below* the maximum you observed, and a scalar `expected_position` can only prove "nothing newer than X exists." It cannot prove your reads saw everything up to X. `GetLatestByCriteria` closes that gap by sampling the whole context atomically. See [Command Context Consistency](../concepts/command-context-consistency).
+For `SaveEventsV2`, construct one observation from the exact combined criteria sent to this RPC and the returned `context_position`. Multiple complete reads may each contribute their own query-level observation because V2 validates all of them atomically. See [Command Context Consistency](../concepts/command-context-consistency).
 
 ## CatchUpSubscribeToEvents
 
@@ -1136,7 +1235,7 @@ grpcurl -H "$AUTH" \
 
 ## Handling consistency conflicts
 
-When a command's context changed between read and write, `SaveEvents` returns `ALREADY_EXISTS`. Treat it as a retryable business conflict: re-read the context, re-decide, and save again with the new position.
+When any command context changed between read and write, `SaveEventsV2` returns `ALREADY_EXISTS`. Treat it as a retryable business conflict: re-read every context needed by the decision, re-decide, and save again with fresh observations.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
@@ -1154,7 +1253,7 @@ if errors.As(err, &conflict) {
 
 ```typescript
 try {
-  await client.saveEvents({ /* ... */ });
+  await client.saveEventsV2({ /* ... */ });
 } catch (error) {
   if (error.message.includes('AlreadyExists')) {
     // Concurrency conflict. Re-read the context and retry.
@@ -1169,7 +1268,7 @@ try {
 
 ```java
 try {
-    client.saveEvents(request);
+    client.saveEventsV2(request);
 } catch (OptimisticConcurrencyException conflict) {
     // Concurrency conflict. Re-read the context and retry.
     // conflict.getExpectedVersion() / conflict.getActualVersion()
@@ -1198,5 +1297,5 @@ The EventStore protobuf source lives at [`proto/eventstore.proto`](https://githu
 | `INVALID_ARGUMENT` | The request is malformed, uses invalid JSON, or references invalid index fields. |
 | `UNAUTHENTICATED` | Missing or invalid credentials. |
 | `PERMISSION_DENIED` | Authenticated user does not have a required role. |
-| `ALREADY_EXISTS` | Optimistic consistency conflict during `SaveEvents`; re-query and retry if still valid. |
+| `ALREADY_EXISTS` | One or more observations changed during `SaveEventsV2`; re-query and retry if still valid. |
 | `INTERNAL` | Storage, publishing, or unexpected server failure. |
