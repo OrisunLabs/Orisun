@@ -30,29 +30,36 @@ grpcurl -H "$AUTH" \
   localhost:5005 orisun.EventStore/CreateIndex
 ```
 
-### High-throughput PostgreSQL CCC
+### High-throughput CCC
 
-PostgreSQL group commit resolves canonical CCC event batches as criterion state
-rather than issuing one database query per request. It:
+PostgreSQL group commit resolves canonical CCC event batches as criterion
+state rather than issuing one database query per request. It:
 
 - deduplicates the batch's AND criteria
 - groups criteria by their indexed key shape
 - reads the current position of each criterion set-wise
 - computes which incoming events match every criterion
-- evaluates AND/OR queries in request order, updating criterion state after
+- evaluates each observation's OR query in request order, updating criterion state after
   every accepted request
 - bulk-inserts accepted events once
 
 This supports duplicate contexts, different keys, multi-tag AND criteria,
-multi-criterion OR queries, and query-less events that affect later queried
-saves. An earlier event in the transaction still invalidates a later query
-exactly as it would if the saves committed separately.
+multi-criterion OR queries, multiple query-level observations, and query-less
+events that affect later queried saves. An earlier event in the transaction
+still invalidates a later observation exactly as it would if the saves
+committed separately.
 
 Every event in a multi-event save receives a consecutive global ID and shares
-the save's transaction ID. For each criterion, in-batch state points to the
-highest event in that save that matched the criterion. Later queued saves
-therefore observe the same `(transaction_id, global_id)` position that they
-would observe after a separately committed multi-event save.
+the save's transaction ID. For each criterion, PostgreSQL's in-batch state
+points to the highest event in that save that matched the criterion. Later
+queued saves therefore observe the same `(transaction_id, global_id)` position
+that they would observe after a separately committed multi-event save.
+
+SQLite bulk-inserts unconditional flushes and flushes containing independent
+single-tag contexts. Other CCC shapes use queue-ordered checks with
+request-local savepoints inside the shared transaction. This bounded split
+avoids a cross-product between incoming events and distinct criteria while
+retaining the transaction and fsync savings of group commit.
 
 Create indexes for every criterion shape used by high-volume command paths. A
 simple `customer_id` criterion needs the simple index above; a criterion on
@@ -156,7 +163,16 @@ continue during creation. Orisun verifies `pg_index.indisvalid` before reporting
 an index as `READY`. If a concurrent build fails or a retry finds an invalid
 physical index, Orisun drops that invalid index and leaves the logical
 definition `BUILDING` so the operation can be retried cleanly. SQLite uses JSON
-expression indexes.
+expression indexes and automatically appends descending event-position columns
+to API-managed indexes. An equality lookup on the full declared field shape can
+therefore find its latest matching event without sorting the context's complete
+history.
+
+On the first SQLite startup after upgrading from an older physical index shape,
+Orisun atomically rebuilds API-managed indexes from their stored definitions.
+Large boundary files can make that first startup take longer and temporarily
+require space for rebuilding; later startups detect the position-ordered shape
+and skip this work.
 
 ## Naming and safety
 

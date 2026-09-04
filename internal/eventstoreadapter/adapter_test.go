@@ -33,8 +33,9 @@ func TestAdapterConvertsNeutralAppend(t *testing.T) {
 	if result.Position != (coreeventstore.Position{CommitPosition: 17, PreparePosition: 9}) {
 		t.Fatalf("Append() position = %#v", result.Position)
 	}
-	if legacy.boundary != "admin" || legacy.expected.CommitPosition != 3 || legacy.query.Criteria[0].Tags[0].Value != "orders" {
-		t.Fatalf("legacy append request = %#v %#v %#v", legacy.boundary, legacy.expected, legacy.query)
+	if legacy.boundary != "admin" || legacy.consistency[0].Position.CommitPosition != 3 ||
+		legacy.consistency[0].Criteria[0].Tags[0].Value != "orders" {
+		t.Fatalf("legacy append request = %#v %#v", legacy.boundary, legacy.consistency)
 	}
 	var data map[string]any
 	if err := json.Unmarshal([]byte(legacy.events[0].DataJSON), &data); err != nil {
@@ -141,8 +142,7 @@ func TestAdapterForwardsNeutralSubscriptionEvents(t *testing.T) {
 type captureLegacyStore struct {
 	events      orisun.PreparedEventBatch
 	boundary    string
-	expected    *orisun.Position
-	query       *orisun.Query
+	consistency []orisun.ConsistencyCheck
 	readRequest *orisun.GetEventsRequest
 	readBatch   orisun.ReadEventBatch
 	latestBatch orisun.LatestByCriteriaBatch
@@ -152,10 +152,9 @@ func (s *captureLegacyStore) SavePrepared(
 	_ context.Context,
 	events orisun.PreparedEventBatch,
 	boundary string,
-	expected *orisun.Position,
-	query *orisun.Query,
+	consistency []orisun.ConsistencyCheck,
 ) (string, int64, error) {
-	s.events, s.boundary, s.expected, s.query = events, boundary, expected, query
+	s.events, s.boundary, s.consistency = events, boundary, consistency
 	return "17", 9, nil
 }
 

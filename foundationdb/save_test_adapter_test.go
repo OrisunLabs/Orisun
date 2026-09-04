@@ -22,5 +22,9 @@ func (b *Backend) Save(
 	if err != nil {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid event data: %v", err)
 	}
-	return b.SavePrepared(ctx, prepared, boundary, expectedPosition, query)
+	consistency, err := eventstore.LegacyConsistencyChecks(expectedPosition, query)
+	if err != nil {
+		return "", 0, err
+	}
+	return b.SavePrepared(ctx, prepared, boundary, consistency)
 }

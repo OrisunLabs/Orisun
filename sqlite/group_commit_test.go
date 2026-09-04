@@ -146,7 +146,11 @@ func saveBypassingQueue(
 		}
 	}()
 
-	return saver.saveEventsOnConn(conn, pool, boundary, inserts, expectedPosition, query)
+	consistency, consistencyErr := eventstore.LegacyConsistencyChecks(expectedPosition, query)
+	if consistencyErr != nil {
+		return "", 0, consistencyErr
+	}
+	return saver.saveEventsOnConn(conn, pool, boundary, inserts, consistency)
 }
 
 // blockWorkerThenQueue occupies the worker with one blocking save, runs
@@ -809,6 +813,23 @@ func TestGroupCommit_ConcurrentSameExpectedPositionAcrossFlushesOnlyOneWins(t *t
 		t.Fatalf("seed save: %v", err)
 	}
 	expected := &eventstore.Position{CommitPosition: gid, PreparePosition: gid}
+	_, guardGID, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
+		mustEvent(t, "Guard", map[string]any{"guard": "stable"}, map[string]any{}),
+	}, gcBoundary, nil, nil)
+	if err != nil {
+		t.Fatalf("guard save: %v", err)
+	}
+	guardPosition := eventstore.Position{CommitPosition: guardGID, PreparePosition: guardGID}
+	checks := []eventstore.ConsistencyCheck{
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "agg", Value: "same-expected-across-flushes"}}}},
+			Position: *expected,
+		},
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "guard", Value: "stable"}}}},
+			Position: guardPosition,
+		},
+	}
 
 	const n = 20
 	start := make(chan struct{})
@@ -819,12 +840,17 @@ func TestGroupCommit_ConcurrentSameExpectedPositionAcrossFlushesOnlyOneWins(t *t
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, _, errs[i] = saver.Save(context.Background(), []eventstore.EventWithMapTags{
+			prepared, prepareErr := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
 				mustEvent(t, "Raced", map[string]any{
 					"agg":    "same-expected-across-flushes",
 					"worker": strconv.Itoa(i),
 				}, map[string]any{}),
-			}, gcBoundary, expected, criteria)
+			})
+			if prepareErr != nil {
+				errs[i] = prepareErr
+				return
+			}
+			_, _, errs[i] = saver.SavePrepared(context.Background(), prepared, gcBoundary, checks)
 		}(i)
 	}
 	close(start)
@@ -848,7 +874,7 @@ func TestGroupCommit_ConcurrentSameExpectedPositionAcrossFlushesOnlyOneWins(t *t
 	if count := countEventsMatching(t, bp, map[string]any{"agg": "same-expected-across-flushes"}); count != 2 {
 		t.Fatalf("expected seed plus one winning update, got %d matching events", count)
 	}
-	if next := readSeqNextID(t, bp); next != 3 {
-		t.Errorf("expected only seed and winner to allocate IDs, seq next_id got %d", next)
+	if next := readSeqNextID(t, bp); next != 4 {
+		t.Errorf("expected only seed, guard, and winner to allocate IDs, seq next_id got %d", next)
 	}
 }

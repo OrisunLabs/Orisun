@@ -112,12 +112,15 @@ func openSQLitePools(
 	}
 	if loadIndexes {
 		err = loadBoundaryIndexMetadata(conn, name, indexes)
+		if err == nil {
+			err = ensureBoundaryIndexesOrderByPosition(conn, name, indexes)
+		}
 	}
 	if err != nil {
 		writePool.Put(conn)
 		writePool.Close()
 		readPool.Close()
-		return nil, fmt.Errorf("load index metadata %s: %w", name, err)
+		return nil, fmt.Errorf("prepare index metadata %s: %w", name, err)
 	}
 	writePool.Put(conn)
 

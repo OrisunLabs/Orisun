@@ -13,11 +13,11 @@ Orisun gives you two distinct idempotency problems to solve, and a mechanism for
 
 ## Write side: the CCC check is your idempotency guard
 
-The primary idempotency mechanism is the Command Context Consistency `expected_position`, not the `event_id`:
+The primary idempotency mechanism is the Command Context Consistency observation, not the `event_id`:
 
-1. Read the command context (`GetLatestByCriteria` or `GetEvents`) and note the position.
-2. Save with that position as `expected_position` and a `subsetQuery` for the context.
-3. If the save **committed** and you retry with the *same* `expected_position`, Orisun returns `ALREADY_EXISTS` because the context already advanced, rather than writing a duplicate.
+1. Read the command context (`GetLatestByCriteria` or a complete `GetEvents` query), then retain its exact query and latest matching position as one observation.
+2. Pass every observation to `SaveEventsV2.consistency`.
+3. If the save **committed** and you retry with the same observations, Orisun returns `ALREADY_EXISTS` because at least one context advanced, rather than writing a duplicate.
 
 So `ALREADY_EXISTS` after a retry means *"something already moved this context."* Very often, that was your own first attempt.
 
@@ -62,14 +62,9 @@ for {
 		return ErrInsufficientFunds // no longer valid; stop
 	}
 
-	_, err = client.SaveEvents(ctx, &eventstore.SaveEventsRequest{
+	_, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 		Boundary: "accounts",
-		Query: &eventstore.SaveQuery{
-			ExpectedPosition: latest.ContextPosition,
-			SubsetQuery: &eventstore.Query{
-				Criteria: accountCriteria,
-			},
-		},
+		Consistency: []*eventstore.ConsistencyObservation{latest.Observation},
 		Events: []*eventstore.EventToSave{{
 			EventId:   eventID,
 			EventType: "MoneyDebited",
@@ -114,12 +109,12 @@ for (;;) {
   if (balance < amount) throw new Error('insufficient funds');
 
   try {
-    await client.saveEvents({
+    await client.saveEventsV2({
       boundary: 'accounts',
-      query: {
-        expectedPosition: latest.contextPosition,
-        subsetQuery: { criteria: accountCriteria },
-      },
+      consistency: [{
+        query: { criteria: accountCriteria },
+        position: latest.contextPosition,
+      }],
       events: [{
         eventId,
         eventType: 'MoneyDebited',
@@ -166,12 +161,11 @@ while (true) {
     if (balance < amount) throw new IllegalStateException("insufficient funds");
 
     try {
-        client.saveEvents(Eventstore.SaveEventsRequest.newBuilder()
+        client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
             .setBoundary("accounts")
-            .setQuery(Eventstore.SaveQuery.newBuilder()
-                .setExpectedPosition(latest.getContextPosition())
-                .setSubsetQuery(accountQuery)
-                .build())
+            .addConsistency(Eventstore.ConsistencyObservation.newBuilder()
+                .setQuery(accountQuery)
+                .setPosition(latest.getContextPosition()))
             .addEvents(Eventstore.EventToSave.newBuilder()
                 .setEventId(eventId)
                 .setEventType("MoneyDebited")
@@ -191,19 +185,19 @@ while (true) {
 `grpcurl` is not suited to retry loops because it makes one call. Use it to reproduce a single conflict:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
+grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "accounts",
-  "query": {
-    "expected_position": {"commit_position": 2, "prepare_position": 1},
-    "subsetQuery": {"criteria": [
+  "consistency": [{
+    "position": {"commit_position": 2, "prepare_position": 1},
+    "query": {"criteria": [
       {"tags": [
         {"key": "eventType", "value": "AccountOpened"},
         {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
       ]},
       {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]}
     ]}
-  },
+  }],
   "events": [{
     "event_id": "018f2d5e-00a1-7000-8000-0000000000a1",
     "event_type": "MoneyDebited",
@@ -233,7 +227,7 @@ Persist the projector checkpoint **after** the side effect is durable, so a rest
 
 | Concern | Mechanism |
 | --- | --- |
-| Don't write a duplicate on retry | CCC `expected_position` → `ALREADY_EXISTS` |
+| Don't write a duplicate on retry | Reuse CCC observations → `ALREADY_EXISTS` |
 | Recognize a retried command | Command-stable `event_id` |
 | Don't double-apply on redelivery | Consumer dedup by `event_id` |
 | Recover from a lost response | Re-read the context before retrying |

@@ -123,8 +123,7 @@ func (s *countingBoundarySaver) SavePrepared(
 	context.Context,
 	PreparedEventBatch,
 	string,
-	*Position,
-	*Query,
+	[]ConsistencyCheck,
 ) (string, int64, error) {
 	s.calls.Add(1)
 	return "1", 1, nil

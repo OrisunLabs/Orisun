@@ -289,15 +289,9 @@ through environment mappings.
 ## Save your first event
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEvents <<EOF
+grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
-  "query": {
-    "expected_position": {
-      "commit_position": -1,
-      "prepare_position": -1
-    }
-  },
   "events": [
     {
       "event_id": "018f2d5e-0001-7000-8000-000000000001",

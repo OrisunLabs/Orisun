@@ -11,6 +11,7 @@ import (
 
 type capturePreparedSaver struct {
 	prepared PreparedEventBatch
+	checks   []ConsistencyCheck
 }
 
 type captureEventsRetriever struct {
@@ -30,9 +31,29 @@ func (r *captureEventsRetriever) GetLatestByCriteria(_ context.Context, query La
 	return r.latestBatch, nil
 }
 
-func (s *capturePreparedSaver) SavePrepared(_ context.Context, events PreparedEventBatch, _ string, _ *Position, _ *Query) (string, int64, error) {
+func (s *capturePreparedSaver) SavePrepared(_ context.Context, events PreparedEventBatch, _ string, checks []ConsistencyCheck) (string, int64, error) {
 	s.prepared = events
+	s.checks = checks
 	return "7", 8, nil
+}
+
+func TestOrisunServerSaveEventsV2PassesEveryQueryObservation(t *testing.T) {
+	saver := &capturePreparedSaver{}
+	server := &OrisunServer{eventStore: &EventStore{}, saveEvents: saver}
+	position := &Position{CommitPosition: 8, PreparePosition: 7}
+	_, err := server.SaveEventsV2(t.Context(), []EventWithMapTags{{
+		EventId: "event-1", EventType: "OrderAccepted", Data: map[string]any{},
+	}}, "orders", []*ConsistencyObservation{
+		{Query: &Query{Criteria: []*Criterion{{Tags: []*Tag{{Key: "order_id", Value: "o-1"}}}}}, Position: position},
+		{Query: &Query{Criteria: []*Criterion{{Tags: []*Tag{{Key: "customer_id", Value: "c-1"}}}}}, Position: &Position{CommitPosition: -1, PreparePosition: -1}},
+	})
+	if err != nil {
+		t.Fatalf("SaveEventsV2() error = %v", err)
+	}
+	if len(saver.checks) != 2 || saver.checks[0].Position != *position ||
+		saver.checks[1].Criteria[0].Tags[0].Value != "c-1" {
+		t.Fatalf("checks = %#v", saver.checks)
+	}
 }
 
 func TestOrisunServerSaveEventsAddsEventTypeToData(t *testing.T) {

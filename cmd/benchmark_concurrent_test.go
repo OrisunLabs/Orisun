@@ -87,9 +87,9 @@ func BenchmarkConcurrentSaveEvents(b *testing.B) {
 						for e := 0; e < eventsPerWorker; e++ {
 							event := cb.createTestEvent(workerID, e)
 
-							_, err := cb.client.SaveEvents(
+							_, err := cb.client.SaveEventsV2(
 								cb.authCtx,
-								&grpcapi.SaveEventsRequest{
+								&grpcapi.SaveEventsV2Request{
 									Events:   []*grpcapi.EventToSave{event},
 									Boundary: testBoundary,
 								},
@@ -205,9 +205,9 @@ func BenchmarkConcurrentWithBatching(b *testing.B) {
 						for e := 0; e < tc.eventsPerWorker; e++ {
 							event := cb.createTestEvent(workerID, e)
 
-							_, err := cb.client.SaveEvents(
+							_, err := cb.client.SaveEventsV2(
 								cb.authCtx,
-								&grpcapi.SaveEventsRequest{
+								&grpcapi.SaveEventsV2Request{
 									Events:   []*grpcapi.EventToSave{event},
 									Boundary: testBoundary,
 								},

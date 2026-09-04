@@ -246,6 +246,18 @@ func criteriaAsList(query *eventstore.Query) []map[string]any {
 	return out
 }
 
+func readCriteriaAsList(criteria []eventstore.ReadCriterion) []map[string]any {
+	out := make([]map[string]any, len(criteria))
+	for index, criterion := range criteria {
+		anded := make(map[string]any, len(criterion.Tags))
+		for _, tag := range criterion.Tags {
+			anded[tag.Key] = tag.Value
+		}
+		out[index] = anded
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // SqliteSaveEvents
 // ---------------------------------------------------------------------------
@@ -272,11 +284,14 @@ type SqliteSaveEvents struct {
 	workerWG  sync.WaitGroup
 
 	// Flush accounting, exposed for tests and debug logging.
-	gcMultiFlushes  atomic.Int64
-	gcSingleFlushes atomic.Int64
+	gcMultiFlushes         atomic.Int64
+	gcSingleFlushes        atomic.Int64
+	gcUnconditionalFlushes atomic.Int64
+	gcIndependentFlushes   atomic.Int64
 	// gcTestFlushHook runs inside a flush's recover scope after the write
 	// connection is taken, with the live batch size. Test-only; nil in production.
-	gcTestFlushHook func(batchSize int)
+	gcTestFlushHook   func(batchSize int)
+	gcDisableSetPaths bool
 }
 
 const (
@@ -387,8 +402,7 @@ func (s *SqliteSaveEvents) SavePrepared(
 	ctx context.Context,
 	events eventstore.PreparedEventBatch,
 	boundary string,
-	expectedPosition *eventstore.Position,
-	streamConsistencyCondition *eventstore.Query,
+	consistency []eventstore.ConsistencyCheck,
 ) (transactionID string, globalID int64, err error) {
 	if len(events) == 0 {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "events cannot be empty")
@@ -396,7 +410,7 @@ func (s *SqliteSaveEvents) SavePrepared(
 	if _, ok := s.registry.eventPool(boundary); !ok {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", boundary)
 	}
-	return s.enqueue(ctx, boundary, events, expectedPosition, streamConsistencyCondition)
+	return s.enqueue(ctx, boundary, events, consistency)
 }
 
 // saveEventsOnConn runs the CCC check, ID allocation, and insert on an open
@@ -406,60 +420,36 @@ func (s *SqliteSaveEvents) saveEventsOnConn(
 	pool *BoundaryPools,
 	boundary string,
 	eventsToInsert eventstore.PreparedEventBatch,
-	expectedPosition *eventstore.Position,
-	streamConsistencyCondition *eventstore.Query,
+	consistency []eventstore.ConsistencyCheck,
 ) (transactionID string, globalID int64, err error) {
-	// CCC check
-	if streamConsistencyCondition != nil && len(streamConsistencyCondition.Criteria) > 0 {
-		criteria := criteriaAsList(streamConsistencyCondition)
-		if len(criteria) > 0 {
-			where, buildErr := buildCriteriaSQLForBoundary(criteria, pool.indexes, boundary)
-			if buildErr != nil {
-				return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid consistency criteria: %v", buildErr)
-			}
-			checkSQL := "SELECT transaction_id, global_id FROM orisun_es_event WHERE " + where +
-				" ORDER BY transaction_id DESC, global_id DESC LIMIT 1"
-
-			// Transient: criteria literals are inlined, so the SQL text has unbounded
-			// cardinality and must not enter the per-conn prepared-statement cache.
-			latestTx, latestGid := int64(-1), int64(-1)
-			if err = sqlitex.ExecuteTransient(conn, checkSQL, &sqlitex.ExecOptions{
-				ResultFunc: func(stmt *sqlite.Stmt) error {
-					latestTx = stmt.ColumnInt64(0)
-					latestGid = stmt.ColumnInt64(1)
-					return nil
-				},
-			}); err != nil {
-				return "", 0, statuscode.Errorf(statuscode.Internal, "ccc check: %v", err)
-			}
-
-			expectedTx, expectedGid := int64(-1), int64(-1)
-			if expectedPosition != nil {
-				expectedTx = expectedPosition.CommitPosition
-				expectedGid = expectedPosition.PreparePosition
-			}
-
-			if latestTx != expectedTx || latestGid != expectedGid {
-				return "", 0, statuscode.Errorf(statuscode.AlreadyExists,
-					"OptimisticConcurrencyException:StreamVersionConflict: Expected (%d, %d), Actual (%d, %d)",
-					expectedTx, expectedGid, latestTx, latestGid)
-			}
+	for _, check := range consistency {
+		criteria := readCriteriaAsList(check.Criteria)
+		where, buildErr := buildCriteriaSQLForBoundary(criteria, pool.indexes, boundary)
+		if buildErr != nil {
+			return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid consistency criteria: %v", buildErr)
 		}
-	}
+		checkSQL := "SELECT transaction_id, global_id FROM orisun_es_event WHERE " + where +
+			" ORDER BY transaction_id DESC, global_id DESC LIMIT 1"
 
-	// Allocate N global_ids atomically.
-	n := int64(len(eventsToInsert))
-	var firstID, lastID int64
-	if err = sqlitex.Execute(conn,
-		"UPDATE orisun_es_seq SET next_id = next_id + ? WHERE id = 1 RETURNING next_id - ?, next_id - 1",
-		&sqlitex.ExecOptions{
-			Args: []any{n, n},
+		latestTx, latestGid := int64(-1), int64(-1)
+		if err = sqlitex.ExecuteTransient(conn, checkSQL, &sqlitex.ExecOptions{
 			ResultFunc: func(stmt *sqlite.Stmt) error {
-				firstID = stmt.ColumnInt64(0)
-				lastID = stmt.ColumnInt64(1)
+				latestTx = stmt.ColumnInt64(0)
+				latestGid = stmt.ColumnInt64(1)
 				return nil
 			},
 		}); err != nil {
+			return "", 0, statuscode.Errorf(statuscode.Internal, "ccc check: %v", err)
+		}
+		if latestTx != check.Position.CommitPosition || latestGid != check.Position.PreparePosition {
+			return "", 0, statuscode.Errorf(statuscode.AlreadyExists,
+				"OptimisticConcurrencyException:StreamVersionConflict: Expected (%d, %d), Actual (%d, %d)",
+				check.Position.CommitPosition, check.Position.PreparePosition, latestTx, latestGid)
+		}
+	}
+
+	firstID, lastID, err := allocateGlobalIDs(conn, len(eventsToInsert))
+	if err != nil {
 		return "", 0, statuscode.Errorf(statuscode.Internal, "allocate ids: %v", err)
 	}
 
@@ -468,6 +458,21 @@ func (s *SqliteSaveEvents) saveEventsOnConn(
 	}
 
 	return strconv.FormatInt(lastID, 10), lastID, nil
+}
+
+func allocateGlobalIDs(conn *sqlite.Conn, count int) (firstID, lastID int64, err error) {
+	n := int64(count)
+	err = sqlitex.Execute(conn,
+		"UPDATE orisun_es_seq SET next_id = next_id + ? WHERE id = 1 RETURNING next_id - ?, next_id - 1",
+		&sqlitex.ExecOptions{
+			Args: []any{n, n},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				firstID = stmt.ColumnInt64(0)
+				lastID = stmt.ColumnInt64(1)
+				return nil
+			},
+		})
+	return firstID, lastID, err
 }
 
 // insertEventBatch inserts events in chunks of sqliteMaxEventsPerInsert to stay under
@@ -490,6 +495,45 @@ func insertEventBatch(conn *sqlite.Conn, events eventstore.PreparedEventBatch, f
 			gid := firstID + int64(start+i)
 			insertArgs = append(insertArgs,
 				transactionID, gid, e.EventId, e.DataJSON, e.MetadataJSON,
+			)
+		}
+
+		if err := sqlitex.Execute(conn, sb.String(), &sqlitex.ExecOptions{Args: insertArgs}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type positionedPreparedEvent struct {
+	event         eventstore.PreparedEvent
+	globalID      int64
+	transactionID int64
+}
+
+// insertPositionedEventBatch inserts events from multiple requests while
+// retaining each request's transaction position. The caller has already
+// allocated one contiguous global-ID range for the whole flush.
+func insertPositionedEventBatch(conn *sqlite.Conn, events []positionedPreparedEvent) error {
+	for start := 0; start < len(events); start += sqliteMaxEventsPerInsert {
+		end := min(start+sqliteMaxEventsPerInsert, len(events))
+		chunk := events[start:end]
+
+		var sb strings.Builder
+		sb.Grow(64 + len(chunk)*48)
+		sb.WriteString("INSERT INTO orisun_es_event (transaction_id, global_id, event_id, data, metadata) VALUES ")
+		insertArgs := make([]any, 0, len(chunk)*sqliteInsertParamsPerEvent)
+		for i, positioned := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("(?, ?, ?, ?, ?)")
+			insertArgs = append(insertArgs,
+				positioned.transactionID,
+				positioned.globalID,
+				positioned.event.EventId,
+				positioned.event.DataJSON,
+				positioned.event.MetadataJSON,
 			)
 		}
 
@@ -1103,6 +1147,80 @@ func (a *SqliteAdminDB) SaveEventCount(ctx context.Context, count int, boundary 
 		})
 }
 
+// buildSQLiteBoundaryIndexDDL renders the physical SQLite index. Position
+// columns follow the user-declared JSON expressions so an equality lookup on
+// the full criterion shape can read its latest event directly from the index,
+// without sorting every historical match.
+func buildSQLiteBoundaryIndexDDLWithRegistry(
+	boundary, name string,
+	fields []eventstore.BoundaryIndexField,
+	conditions []eventstore.BoundaryIndexCondition,
+	combinator string,
+	registry *sqliteIndexRegistry,
+) (string, []eventstore.BoundaryIndexField, error) {
+	if err := validateIdentifier(name); err != nil {
+		return "", nil, fmt.Errorf("invalid index name %s: %w", name, err)
+	}
+	if len(fields) == 0 {
+		return "", nil, fmt.Errorf("at least one field is required")
+	}
+	if combinator == "" {
+		combinator = eventstore.IndexCombinatorAND
+	}
+
+	exprs := make([]string, 0, len(fields)+2)
+	normalizedFields := make([]eventstore.BoundaryIndexField, len(fields))
+	for i, f := range fields {
+		valueType := normalizeIndexValueType(f.ValueType)
+		normalizedFields[i] = eventstore.BoundaryIndexField{
+			JsonKey:   f.JsonKey,
+			ValueType: valueType,
+		}
+		path := jsonPathLiteral(f.JsonKey)
+		base := fmt.Sprintf("json_extract(data, %s)", path)
+		switch valueType {
+		case "numeric":
+			exprs = append(exprs, "CAST("+base+" AS REAL)")
+		case "boolean":
+			exprs = append(exprs, "CAST("+base+" AS INTEGER)")
+		case "timestamptz":
+			exprs = append(exprs, base) // ISO8601 strings sort lexicographically
+		default:
+			exprs = append(exprs, base)
+		}
+	}
+	exprs = append(exprs, "transaction_id DESC", "global_id DESC")
+
+	var whereClause string
+	if len(conditions) > 0 {
+		validOps := map[string]bool{"=": true, ">": true, "<": true, ">=": true, "<=": true}
+		validCombinators := map[string]bool{eventstore.IndexCombinatorAND: true, eventstore.IndexCombinatorOR: true}
+		if !validCombinators[combinator] {
+			return "", nil, fmt.Errorf("invalid combinator %q: must be AND or OR", combinator)
+		}
+		typeByKey := make(map[string]string, len(normalizedFields))
+		for _, f := range normalizedFields {
+			typeByKey[f.JsonKey] = f.ValueType
+		}
+		predicates := make([]string, len(conditions))
+		for i, c := range conditions {
+			if !validOps[c.Operator] {
+				return "", nil, fmt.Errorf("invalid operator %q", c.Operator)
+			}
+			predicate, err := buildIndexConditionPredicate(c, typeByKey, registry, boundary)
+			if err != nil {
+				return "", nil, err
+			}
+			predicates[i] = predicate
+		}
+		whereClause = " WHERE " + strings.Join(predicates, " "+combinator+" ")
+	}
+
+	ddl := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON orisun_es_event (%s)%s",
+		quoteIdent(name+"_idx"), strings.Join(exprs, ", "), whereClause)
+	return ddl, normalizedFields, nil
+}
+
 // CreateBoundaryIndex builds a partial expression index over orisun_es_event.data JSON keys.
 // Index name = "{name}_idx" inside the boundary's database.
 func (a *SqliteAdminDB) CreateBoundaryIndex(
@@ -1116,61 +1234,14 @@ func (a *SqliteAdminDB) CreateBoundaryIndex(
 	if !ok {
 		return fmt.Errorf("unknown boundary: %s", boundary)
 	}
-	if err := validateIdentifier(name); err != nil {
-		return fmt.Errorf("invalid index name %s: %w", name, err)
-	}
-	if len(fields) == 0 {
-		return fmt.Errorf("at least one field is required")
+	ddl, normalizedFields, err := buildSQLiteBoundaryIndexDDLWithRegistry(
+		boundary, name, fields, conditions, combinator, pool.indexes,
+	)
+	if err != nil {
+		return err
 	}
 	if combinator == "" {
 		combinator = eventstore.IndexCombinatorAND
-	}
-
-	exprs := make([]string, len(fields))
-	normalizedFields := make([]eventstore.BoundaryIndexField, len(fields))
-	for i, f := range fields {
-		valueType := normalizeIndexValueType(f.ValueType)
-		normalizedFields[i] = eventstore.BoundaryIndexField{
-			JsonKey:   f.JsonKey,
-			ValueType: valueType,
-		}
-		path := jsonPathLiteral(f.JsonKey)
-		base := fmt.Sprintf("json_extract(data, %s)", path)
-		switch valueType {
-		case "numeric":
-			exprs[i] = "CAST(" + base + " AS REAL)"
-		case "boolean":
-			exprs[i] = "CAST(" + base + " AS INTEGER)"
-		case "timestamptz":
-			exprs[i] = base // ISO8601 strings sort lexicographically
-		default:
-			exprs[i] = base
-		}
-	}
-
-	var whereClause string
-	if len(conditions) > 0 {
-		validOps := map[string]bool{"=": true, ">": true, "<": true, ">=": true, "<=": true}
-		validCombinators := map[string]bool{eventstore.IndexCombinatorAND: true, eventstore.IndexCombinatorOR: true}
-		if !validCombinators[combinator] {
-			return fmt.Errorf("invalid combinator %q: must be AND or OR", combinator)
-		}
-		typeByKey := make(map[string]string, len(normalizedFields))
-		for _, f := range normalizedFields {
-			typeByKey[f.JsonKey] = f.ValueType
-		}
-		predicates := make([]string, len(conditions))
-		for i, c := range conditions {
-			if !validOps[c.Operator] {
-				return fmt.Errorf("invalid operator %q", c.Operator)
-			}
-			predicate, err := buildIndexConditionPredicate(c, typeByKey, pool.indexes, boundary)
-			if err != nil {
-				return err
-			}
-			predicates[i] = predicate
-		}
-		whereClause = " WHERE " + strings.Join(predicates, " "+combinator+" ")
 	}
 
 	conn, err := pool.Write.Take(ctx)
@@ -1185,8 +1256,6 @@ func (a *SqliteAdminDB) CreateBoundaryIndex(
 	}
 	defer endFn(&err)
 
-	ddl := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON orisun_es_event (%s)%s",
-		quoteIdent(name+"_idx"), strings.Join(exprs, ", "), whereClause)
 	if err = sqlitex.Execute(conn, ddl, nil); err != nil {
 		return err
 	}

@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	EventStore_SaveEvents_FullMethodName               = "/orisun.EventStore/SaveEvents"
+	EventStore_SaveEventsV2_FullMethodName             = "/orisun.EventStore/SaveEventsV2"
 	EventStore_GetEvents_FullMethodName                = "/orisun.EventStore/GetEvents"
 	EventStore_GetLatestByCriteria_FullMethodName      = "/orisun.EventStore/GetLatestByCriteria"
 	EventStore_CatchUpSubscribeToEvents_FullMethodName = "/orisun.EventStore/CatchUpSubscribeToEvents"
@@ -35,7 +36,11 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type EventStoreClient interface {
+	// Deprecated: Do not use.
+	// Deprecated compatibility RPC. The server translates this request into one
+	// SaveEventsV2 operation.
 	SaveEvents(ctx context.Context, in *SaveEventsRequest, opts ...grpc.CallOption) (*WriteResult, error)
+	SaveEventsV2(ctx context.Context, in *SaveEventsV2Request, opts ...grpc.CallOption) (*WriteResult, error)
 	GetEvents(ctx context.Context, in *GetEventsRequest, opts ...grpc.CallOption) (*GetEventsResponse, error)
 	GetLatestByCriteria(ctx context.Context, in *GetLatestByCriteriaRequest, opts ...grpc.CallOption) (*GetLatestByCriteriaResponse, error)
 	CatchUpSubscribeToEvents(ctx context.Context, in *CatchUpSubscribeToEventStoreRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
@@ -55,10 +60,21 @@ func NewEventStoreClient(cc grpc.ClientConnInterface) EventStoreClient {
 	return &eventStoreClient{cc}
 }
 
+// Deprecated: Do not use.
 func (c *eventStoreClient) SaveEvents(ctx context.Context, in *SaveEventsRequest, opts ...grpc.CallOption) (*WriteResult, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WriteResult)
 	err := c.cc.Invoke(ctx, EventStore_SaveEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *eventStoreClient) SaveEventsV2(ctx context.Context, in *SaveEventsV2Request, opts ...grpc.CallOption) (*WriteResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WriteResult)
+	err := c.cc.Invoke(ctx, EventStore_SaveEventsV2_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +184,11 @@ func (c *eventStoreClient) GetIndex(ctx context.Context, in *GetIndexRequest, op
 // All implementations must embed UnimplementedEventStoreServer
 // for forward compatibility.
 type EventStoreServer interface {
+	// Deprecated: Do not use.
+	// Deprecated compatibility RPC. The server translates this request into one
+	// SaveEventsV2 operation.
 	SaveEvents(context.Context, *SaveEventsRequest) (*WriteResult, error)
+	SaveEventsV2(context.Context, *SaveEventsV2Request) (*WriteResult, error)
 	GetEvents(context.Context, *GetEventsRequest) (*GetEventsResponse, error)
 	GetLatestByCriteria(context.Context, *GetLatestByCriteriaRequest) (*GetLatestByCriteriaResponse, error)
 	CatchUpSubscribeToEvents(*CatchUpSubscribeToEventStoreRequest, grpc.ServerStreamingServer[Event]) error
@@ -190,6 +210,9 @@ type UnimplementedEventStoreServer struct{}
 
 func (UnimplementedEventStoreServer) SaveEvents(context.Context, *SaveEventsRequest) (*WriteResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SaveEvents not implemented")
+}
+func (UnimplementedEventStoreServer) SaveEventsV2(context.Context, *SaveEventsV2Request) (*WriteResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SaveEventsV2 not implemented")
 }
 func (UnimplementedEventStoreServer) GetEvents(context.Context, *GetEventsRequest) (*GetEventsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetEvents not implemented")
@@ -253,6 +276,24 @@ func _EventStore_SaveEvents_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(EventStoreServer).SaveEvents(ctx, req.(*SaveEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EventStore_SaveEventsV2_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveEventsV2Request)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EventStoreServer).SaveEventsV2(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EventStore_SaveEventsV2_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EventStoreServer).SaveEventsV2(ctx, req.(*SaveEventsV2Request))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -422,6 +463,10 @@ var EventStore_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SaveEvents",
 			Handler:    _EventStore_SaveEvents_Handler,
+		},
+		{
+			MethodName: "SaveEventsV2",
+			Handler:    _EventStore_SaveEventsV2_Handler,
 		},
 		{
 			MethodName: "GetEvents",

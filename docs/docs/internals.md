@@ -134,18 +134,18 @@ all other boundaries. PostgreSQL and SQLite can migrate supported pre-catalog
 storage through the normal command path. FoundationDB is beta and has no
 legacy catalog-discovery path.
 
-## `SaveEvents`: one contract, three concurrency models
+## `SaveEventsV2`: one contract, three concurrency models
 
 Before invoking a backend, the EventStore core validates the request, converts
 events into an immutable prepared batch, and checks the local active-boundary
 gate.
 
-When a request carries consistency criteria, the backend finds the latest event
-matching that content query and compares its complete position with
-`expected_position`. A missing match is the empty position. If the positions
-differ, Orisun returns `ALREADY_EXISTS` and writes none of that request's
-events. If the request has no criteria, `expected_position` alone does not
-create a consistency context.
+Each consistency observation owns one complete OR query and one position. The
+backend finds the latest event matching every observation's query and compares
+its complete position with the observation position. A missing match is the
+empty position. If any comparison differs, Orisun returns `ALREADY_EXISTS`
+and writes none of that request's events. An empty observation list is an
+unconditional append.
 
 The check and append must remain atomic. Performing the query first and the
 insert in a later transaction would allow a conflicting event to commit
@@ -155,7 +155,7 @@ between them.
 | --- | --- | --- |
 | PostgreSQL | Per-boundary in-process group-commit queue; one SQL transaction per flush | A transaction-scoped PostgreSQL advisory lock orders all writers across processes |
 | SQLite | Per-boundary in-process group-commit queue; one `BEGIN IMMEDIATE` transaction per flush | SQLite's single writer for the boundary file |
-| FoundationDB | One native FoundationDB transaction per `SaveEvents` request | None for plain appends; CCC conflicts are scoped by indexed reads |
+| FoundationDB | One native FoundationDB transaction per `SaveEventsV2` request | None for plain appends; CCC conflicts are scoped by indexed reads |
 
 ### PostgreSQL group commit
 
@@ -171,33 +171,32 @@ through commit. This is the cross-process serialization point: group commit
 reduces transaction and round-trip overhead within one process without
 weakening ordering between processes.
 
-The batcher selects the narrowest safe SQL path:
+The batcher selects the narrowest path that preserves queue-order semantics:
 
 | Path | Eligible requests | Execution strategy |
 | --- | --- | --- |
-| Unconditional | Canonical event batches with no CCC query | Assign positions and insert all events set-wise |
-| Independent CCC | One equality tag on the same key, unique context values, and events contained in their own contexts | Check one locked snapshot and bulk-insert accepted requests |
-| Criterion state | Canonical general AND/OR criteria | Deduplicate criterion shapes, load their latest state, evaluate requests in queue order, then bulk insert |
-| Isolated fallback | Requests that can raise request-local validation errors or do not fit the optimized shapes | Run each request in a PL/pgSQL subtransaction |
+| Unconditional | Requests with no observations | Assign positions and insert all events set-wise |
+| Independent CCC | One single-tag observation per request, using the same key with unique values, where every emitted event remains inside its request's context | Check all contexts from the locked snapshot and bulk-insert accepted requests |
+| Criterion state | Canonical requests with arbitrary non-empty observations | Deduplicate criteria, resolve their initial positions set-wise, then evaluate requests in queue order while advancing in-memory criterion state |
+| Isolated | Noncanonical or malformed backend-level requests | Validate and append each request inside a request-local PL/pgSQL subtransaction |
 
 Later requests in a flush observe earlier accepted writes in that flush.
 A CCC conflict or request-local validation failure rejects only that request;
 it does not poison later requests. A failure of the outer transaction fails all
 requests that did not already have an isolated result.
 
-The single-request primitive remains
-`insert_events_with_consistency_v3`. Group flushes enter through
-`insert_unconditional_event_requests_v1`,
-`insert_independent_event_requests_with_consistency_v1`,
-`insert_canonical_event_requests_with_consistency_v1`, or
-`insert_event_requests_with_consistency_v1`.
+The single-request checked primitive is `insert_events_v2`. Group flushes use
+specialized functions for the three canonical shapes and
+`insert_event_requests_v2` as the isolated fallback. The Go selector is
+conservative: any shape it cannot prove safe stays on that fallback.
 
 ### SQLite group commit
 
 SQLite uses the same queue-per-boundary shape, but executes directly on the
 boundary's single write connection. One opportunistically drained flush owns a
-`BEGIN IMMEDIATE` transaction. In a multi-request flush, each request runs
-inside a savepoint:
+`BEGIN IMMEDIATE` transaction. It bulk-inserts unconditional flushes and
+independent single-tag contexts. Other CCC shapes run each request inside a
+savepoint:
 
 - an accepted request remains visible to later CCC checks in queue order;
 - a CCC or validation failure rolls back only that request, including its
@@ -211,7 +210,7 @@ clustering with SQLite.
 ### FoundationDB transactions
 
 FoundationDB does not use the process-local group-commit queues. Each
-`SaveEvents` call executes as one FoundationDB transaction:
+`SaveEventsV2` call executes as one FoundationDB transaction:
 
 - criteria reads and event writes share the transaction;
 - criteria require ready covering indexes and fail with
@@ -404,7 +403,7 @@ durable event history or advancing a checkpoint incorrectly.
 
 | Failure | Result |
 | --- | --- |
-| CCC context no longer equals `expected_position` | That request returns `ALREADY_EXISTS`; none of its events are appended |
+| Any CCC observation no longer equals the latest position of its query | That request returns `ALREADY_EXISTS`; none of its events are appended |
 | Request-local error inside a multi-request group flush | That request rolls back; later requests continue in queue order |
 | Known outer transaction rollback | No accepted request in that transaction persists |
 | Caller cancellation or connection loss around commit | Outcome may be unknown; retry idempotently |

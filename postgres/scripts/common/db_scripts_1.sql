@@ -165,20 +165,9 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- Insert Events with Consistency Function
---
--- Inserts one non-empty event batch into a boundary event table and enforces
--- Command Context Consistency for the supplied content query. The Go saver sends
--- query as:
---   {
---     "expected_position": {"transaction_id": <commit>, "global_id": <prepare>},
---     "criteria": [{"tag": "value", ...}, ...]
---   }
---
--- Each criterion object is an AND of its tags; the criteria array is ORed. When
--- criteria are present, this function locks each criterion object, finds the
--- latest event matching the content query, and compares it with expected_position.
--- A missing expected_position or missing match is treated as (-1, -1).
+-- V2 checked-write primitive. Every observation is a complete OR query with
+-- its own expected latest position. All observations are checked while the
+-- per-boundary position lock is held, before any event is inserted.
 --
 -- The inserted batch receives consecutive global_id values. Its logical
 -- transaction_id is MAX(global_id) + 1 for the batch, which keeps Orisun
@@ -188,10 +177,10 @@ $$ LANGUAGE plpgsql;
 --   new_global_id: the highest global_id inserted
 --   latest_transaction_id/latest_global_id: the resulting position to return to callers
 
-CREATE OR REPLACE FUNCTION insert_events_with_consistency_v3(
+CREATE OR REPLACE FUNCTION insert_events_v2(
     boundary_name TEXT,
     schema TEXT,
-    query JSONB,
+    consistency JSONB,
     events JSONB
 )
     RETURNS TABLE
@@ -204,12 +193,13 @@ CREATE OR REPLACE FUNCTION insert_events_with_consistency_v3(
 AS
 $$
 DECLARE
+    observation           JSONB;
     criteria              JSONB;
     expected_tx_id        BIGINT;
     expected_gid          BIGINT;
     current_pg_xact_id    BIGINT;
-    latest_tx_id          BIGINT;
-    latest_gid            BIGINT;
+    actual_tx_id          BIGINT;
+    actual_gid            BIGINT;
     new_global_id         BIGINT;
     latest_transaction_id BIGINT;
     latest_global_id      BIGINT;
@@ -221,9 +211,6 @@ DECLARE
     k                     TEXT;
     v                     TEXT;
 BEGIN
-    criteria := query -> 'criteria';
-    expected_tx_id := (query -> 'expected_position' ->> 'transaction_id')::BIGINT;
-    expected_gid := (query -> 'expected_position' ->> 'global_id')::BIGINT;
     current_pg_xact_id := pg_current_xact_id()::TEXT::BIGINT;
 
     -- Build a schema-qualified sequence reference for nextval. This avoids
@@ -232,6 +219,10 @@ BEGIN
 
     IF jsonb_array_length(events) = 0 THEN
         RAISE EXCEPTION 'Events array cannot be empty';
+    END IF;
+
+    IF consistency IS NULL OR jsonb_typeof(consistency) <> 'array' THEN
+        RAISE EXCEPTION 'consistency must be a JSON array';
     END IF;
 
     IF EXISTS (
@@ -247,56 +238,50 @@ BEGIN
     -- expected-position check and assigned positions share one ordering.
     PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
 
-    -- If criteria are present, verify the caller's expected content-query
-    -- position against the latest committed event matching that context.
-    IF criteria IS NOT NULL THEN
-        -- Build the content query as an OR of criteria, where each criterion is
-        -- an AND of tag equality checks.
-        all_parts := '{}';
-        FOR crit IN SELECT jsonb_array_elements(criteria)
-            LOOP
-                crit_parts := '{}';
-                FOR k, v IN SELECT * FROM jsonb_each_text(crit)
-                    LOOP
-                        crit_parts := crit_parts || format('(data->>%L = %L)', k, v);
-                    END LOOP;
-                IF array_length(crit_parts, 1) > 0 THEN
+    FOR observation IN SELECT value FROM jsonb_array_elements(consistency)
+        LOOP
+            expected_tx_id := (observation -> 'position' ->> 'transaction_id')::BIGINT;
+            expected_gid := (observation -> 'position' ->> 'global_id')::BIGINT;
+            criteria := observation -> 'query' -> 'criteria';
+            actual_tx_id := NULL;
+            actual_gid := NULL;
+
+            all_parts := '{}';
+            FOR crit IN SELECT jsonb_array_elements(criteria)
+                LOOP
+                    crit_parts := '{}';
+                    FOR k, v IN SELECT * FROM jsonb_each_text(crit)
+                        LOOP
+                            crit_parts := crit_parts || format('(data->>%L = %L)', k, v);
+                        END LOOP;
+                    IF array_length(crit_parts, 1) IS NULL THEN
+                        RAISE EXCEPTION 'consistency criterion has no tags';
+                    END IF;
                     all_parts := all_parts || ('(' || array_to_string(crit_parts, ' AND ') || ')');
-                END IF;
-            END LOOP;
-        criteria_sql := CASE
-                            WHEN array_length(all_parts, 1) > 0
-                                THEN '(' || array_to_string(all_parts, ' OR ') || ')'
-                            ELSE 'TRUE'
-            END;
+                END LOOP;
+            IF array_length(all_parts, 1) IS NULL THEN
+                RAISE EXCEPTION 'consistency query has no criteria';
+            END IF;
+            criteria_sql := '(' || array_to_string(all_parts, ' OR ') || ')';
 
-        -- Version check: read the latest event matching this content query from
-        -- the schema-qualified boundary table.
-        EXECUTE format('
-            SELECT DISTINCT oe.transaction_id, oe.global_id
-            FROM %I.%I oe
-            WHERE %s
-            ORDER BY oe.transaction_id DESC, oe.global_id DESC
-            LIMIT 1',
-                       schema, boundary_name || '_orisun_es_event', criteria_sql
-                ) INTO latest_tx_id, latest_gid;
+            EXECUTE format(
+                'SELECT transaction_id, global_id
+                 FROM %I.%I
+                 WHERE %s
+                 ORDER BY transaction_id DESC, global_id DESC
+                 LIMIT 1',
+                schema,
+                boundary_name || '_orisun_es_event',
+                criteria_sql
+            ) INTO actual_tx_id, actual_gid;
 
-        IF latest_tx_id IS NULL THEN
-            latest_tx_id := -1;
-            latest_gid := -1;
-        END IF;
-
-        -- If expected_position is not provided, default to the empty context.
-        IF expected_tx_id IS NULL OR expected_gid IS NULL THEN
-            expected_tx_id := -1;
-            expected_gid := -1;
-        END IF;
-
-        IF latest_tx_id <> expected_tx_id OR latest_gid <> expected_gid THEN
+            actual_tx_id := COALESCE(actual_tx_id, -1);
+            actual_gid := COALESCE(actual_gid, -1);
+            IF actual_tx_id <> expected_tx_id OR actual_gid <> expected_gid THEN
             RAISE EXCEPTION 'OptimisticConcurrencyException:StreamVersionConflict: Expected (%, %), Actual (%, %)',
-                expected_tx_id, expected_gid, latest_tx_id, latest_gid;
-        END IF;
-    END IF;
+                    expected_tx_id, expected_gid, actual_tx_id, actual_gid;
+            END IF;
+        END LOOP;
 
     -- CTE-based insert using only schema-qualified table/sequence names.
     EXECUTE format('
@@ -356,11 +341,10 @@ END;
 $$;
 
 
--- Group-commit entry point. Each request runs in its own PL/pgSQL exception
--- block, which PostgreSQL implements as a subtransaction. A failed CCC check
--- therefore rolls back only that request while later requests observe all
--- earlier successful writes in this outer transaction.
-CREATE OR REPLACE FUNCTION insert_event_requests_with_consistency_v1(
+-- Group-commit V2 entry point. Each request gets a subtransaction so one
+-- conflict rejects only that request and later requests observe earlier
+-- accepted writes in queue order.
+CREATE OR REPLACE FUNCTION insert_event_requests_v2(
     boundary_name TEXT,
     schema TEXT,
     requests JSONB
@@ -378,13 +362,13 @@ CREATE OR REPLACE FUNCTION insert_event_requests_with_consistency_v1(
 AS
 $$
 DECLARE
-    request                     JSONB;
-    current_index               INT := 0;
-    request_new_global_id       BIGINT;
-    request_transaction_id      BIGINT;
-    request_global_id           BIGINT;
-    request_error_code          TEXT;
-    request_error_message       TEXT;
+    request JSONB;
+    current_index INT := 0;
+    request_new_global_id BIGINT;
+    request_transaction_id BIGINT;
+    request_global_id BIGINT;
+    request_error_code TEXT;
+    request_error_message TEXT;
 BEGIN
     IF requests IS NULL OR jsonb_typeof(requests) <> 'array' THEN
         RAISE EXCEPTION 'requests must be a JSON array';
@@ -401,11 +385,11 @@ BEGIN
             BEGIN
                 EXECUTE format(
                     'SELECT new_global_id, latest_transaction_id, latest_global_id
-                     FROM %I.insert_events_with_consistency_v3($1, $2, $3, $4)',
+                     FROM %I.insert_events_v2($1, $2, $3, $4)',
                     schema
                 )
                     INTO request_new_global_id, request_transaction_id, request_global_id
-                    USING boundary_name, schema, request -> 'query', request -> 'events';
+                    USING boundary_name, schema, request -> 'consistency', request -> 'events';
             EXCEPTION
                 WHEN OTHERS THEN
                     GET STACKED DIAGNOSTICS
@@ -546,7 +530,7 @@ $$;
 -- value. Under those conditions no event in the batch can invalidate another
 -- request, so all contexts can be checked against one position-locked snapshot
 -- and every accepted event can be inserted in one statement.
-CREATE OR REPLACE FUNCTION insert_independent_event_requests_with_consistency_v1(
+CREATE OR REPLACE FUNCTION insert_independent_event_requests_v2(
     boundary_name TEXT,
     schema TEXT,
     criterion_key TEXT,
@@ -584,13 +568,13 @@ BEGIN
         WITH request_rows AS MATERIALIZED (
             SELECT (ordinality - 1)::INT AS request_index,
                    request,
-                   request -> ''query'' -> ''criteria'' -> 0 ->> %L AS context_value,
+                   request -> ''consistency'' -> 0 -> ''query'' -> ''criteria'' -> 0 ->> %L AS context_value,
                    COALESCE(
-                       (request -> ''query'' -> ''expected_position'' ->> ''transaction_id'')::BIGINT,
+                       (request -> ''consistency'' -> 0 -> ''position'' ->> ''transaction_id'')::BIGINT,
                        -1
                    ) AS expected_transaction_id,
                    COALESCE(
-                       (request -> ''query'' -> ''expected_position'' ->> ''global_id'')::BIGINT,
+                       (request -> ''consistency'' -> 0 -> ''position'' ->> ''global_id'')::BIGINT,
                        -1
                    ) AS expected_global_id
             FROM jsonb_array_elements($2) WITH ORDINALITY AS request_items(request, ordinality)
@@ -715,7 +699,7 @@ $$;
 -- requests are then evaluated in queue order before one bulk insert. This
 -- preserves arbitrary AND/OR CCC semantics without one event-table query or
 -- subtransaction per request.
-CREATE OR REPLACE FUNCTION insert_canonical_event_requests_with_consistency_v1(
+CREATE OR REPLACE FUNCTION insert_canonical_event_requests_v2(
     boundary_name TEXT,
     schema TEXT,
     requests JSONB
@@ -734,8 +718,9 @@ AS
 $$
 DECLARE
     request                  JSONB;
-    query_json                JSONB;
+    observation              JSONB;
     criteria                  JSONB;
+    request_rejected         BOOLEAN;
     all_criteria              JSONB := '[]'::JSONB;
     criterion_ids             JSONB := '{}'::JSONB;
     criterion_tx_ids          BIGINT[] := '{}'::BIGINT[];
@@ -750,8 +735,6 @@ DECLARE
     criterion_count            INT := 0;
     expected_tx_id            BIGINT;
     expected_gid              BIGINT;
-    latest_tx_id              BIGINT;
-    latest_gid                BIGINT;
     criterion_tx_id           BIGINT;
     criterion_gid             BIGINT;
     inserted_tx_id            BIGINT;
@@ -763,8 +746,6 @@ DECLARE
     current_index             INT := 0;
     current_pg_xact_id        BIGINT;
     prefixed_seq_name         TEXT;
-    has_nonempty_criterion    BOOLEAN;
-    needs_global_state        BOOLEAN;
     criterion_shape           JSONB;
     shape_criteria            JSONB;
     criterion_key             TEXT;
@@ -793,7 +774,10 @@ BEGIN
         SELECT DISTINCT criterion
         FROM jsonb_array_elements(requests) AS request_items(request_item)
         CROSS JOIN LATERAL jsonb_array_elements(
-            COALESCE(request_item -> 'query' -> 'criteria', '[]'::JSONB)
+            COALESCE(request_item -> 'consistency', '[]'::JSONB)
+        ) AS observation_items(observation_item)
+        CROSS JOIN LATERAL jsonb_array_elements(
+            COALESCE(observation_item -> 'query' -> 'criteria', '[]'::JSONB)
         ) AS criteria_items(criterion)
         WHERE jsonb_typeof(criterion) = 'object'
           AND criterion <> '{}'::JSONB
@@ -939,96 +923,69 @@ BEGIN
         event_matches := dependency_record.match_map;
     END IF;
 
-    -- A present but empty criteria array has historically meant "all events".
-    -- Query-less saves have no criteria property and remain unconditional.
-    SELECT EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements(requests) AS request_items(request_item)
-        WHERE (request_item -> 'query') ? 'criteria'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM jsonb_array_elements(request_item -> 'query' -> 'criteria')
-                  AS criteria_items(criterion)
-              WHERE jsonb_typeof(criterion) = 'object'
-                AND criterion <> '{}'::JSONB
-          )
-    ) INTO needs_global_state;
-
-    latest_tx_id := -1;
-    latest_gid := -1;
-    IF needs_global_state THEN
-        EXECUTE format(
-            'SELECT transaction_id, global_id
-             FROM %I.%I
-             ORDER BY transaction_id DESC, global_id DESC
-             LIMIT 1',
-            schema,
-            boundary_name || '_orisun_es_event'
-        ) INTO latest_tx_id, latest_gid;
-        latest_tx_id := COALESCE(latest_tx_id, -1);
-        latest_gid := COALESCE(latest_gid, -1);
-    END IF;
-
     FOR request IN SELECT value FROM jsonb_array_elements(requests)
         LOOP
-            query_json := request -> 'query';
-            criteria := query_json -> 'criteria';
-            expected_tx_id := COALESCE(
-                (query_json -> 'expected_position' ->> 'transaction_id')::BIGINT,
-                -1
-            );
-            expected_gid := COALESCE(
-                (query_json -> 'expected_position' ->> 'global_id')::BIGINT,
-                -1
-            );
+            request_rejected := FALSE;
+            FOR observation IN
+                SELECT value
+                FROM jsonb_array_elements(
+                    COALESCE(request -> 'consistency', '[]'::JSONB)
+                )
+                LOOP
+                    criteria := observation -> 'query' -> 'criteria';
+                    IF criteria IS NULL OR jsonb_typeof(criteria) <> 'array' OR
+                       jsonb_array_length(criteria) = 0 THEN
+                        RAISE EXCEPTION 'consistency query has no criteria';
+                    END IF;
 
-            IF criteria IS NOT NULL THEN
-                has_nonempty_criterion := FALSE;
-                criterion_tx_id := -1;
-                criterion_gid := -1;
-                FOR crit IN SELECT jsonb_array_elements(criteria)
-                    LOOP
-                        IF jsonb_typeof(crit) = 'object' AND crit <> '{}'::JSONB THEN
-                            has_nonempty_criterion := TRUE;
-                            criterion_id := (criterion_ids ->> crit::TEXT)::INT + 1;
-                            IF criterion_id IS NOT NULL THEN
-                                IF criterion_tx_ids[criterion_id] > criterion_tx_id OR
-                                   (
-                                       criterion_tx_ids[criterion_id] = criterion_tx_id AND
-                                       criterion_gids[criterion_id] > criterion_gid
-                                   ) THEN
-                                    criterion_tx_id := criterion_tx_ids[criterion_id];
-                                    criterion_gid := criterion_gids[criterion_id];
-                                END IF;
+                    expected_tx_id :=
+                        (observation -> 'position' ->> 'transaction_id')::BIGINT;
+                    expected_gid :=
+                        (observation -> 'position' ->> 'global_id')::BIGINT;
+                    criterion_tx_id := -1;
+                    criterion_gid := -1;
+
+                    FOR crit IN SELECT jsonb_array_elements(criteria)
+                        LOOP
+                            IF jsonb_typeof(crit) <> 'object' OR crit = '{}'::JSONB THEN
+                                RAISE EXCEPTION 'consistency criterion has no tags';
                             END IF;
-                        END IF;
-                    END LOOP;
+                            criterion_id := (criterion_ids ->> crit::TEXT)::INT + 1;
+                            IF criterion_id IS NULL THEN
+                                RAISE EXCEPTION 'consistency criterion was not planned';
+                            END IF;
+                            IF criterion_tx_ids[criterion_id] > criterion_tx_id OR
+                               (
+                                   criterion_tx_ids[criterion_id] = criterion_tx_id AND
+                                   criterion_gids[criterion_id] > criterion_gid
+                               ) THEN
+                                criterion_tx_id := criterion_tx_ids[criterion_id];
+                                criterion_gid := criterion_gids[criterion_id];
+                            END IF;
+                        END LOOP;
 
-                IF has_nonempty_criterion THEN
-                    criterion_tx_id := COALESCE(criterion_tx_id, -1);
-                    criterion_gid := COALESCE(criterion_gid, -1);
-                ELSE
-                    criterion_tx_id := latest_tx_id;
-                    criterion_gid := latest_gid;
-                END IF;
+                    IF criterion_tx_id <> expected_tx_id OR criterion_gid <> expected_gid THEN
+                        RETURN QUERY
+                            SELECT current_index,
+                                   NULL::BIGINT,
+                                   NULL::BIGINT,
+                                   NULL::BIGINT,
+                                   'P0001'::TEXT,
+                                   format(
+                                       'OptimisticConcurrencyException:StreamVersionConflict: Expected (%s, %s), Actual (%s, %s)',
+                                       expected_tx_id,
+                                       expected_gid,
+                                       criterion_tx_id,
+                                       criterion_gid
+                                   );
+                        current_index := current_index + 1;
+                        request_rejected := TRUE;
+                        EXIT;
+                    END IF;
+                END LOOP;
 
-                IF criterion_tx_id <> expected_tx_id OR criterion_gid <> expected_gid THEN
-                    RETURN QUERY
-                        SELECT current_index,
-                               NULL::BIGINT,
-                               NULL::BIGINT,
-                               NULL::BIGINT,
-                               'P0001'::TEXT,
-                               format(
-                                   'OptimisticConcurrencyException:StreamVersionConflict: Expected (%s, %s), Actual (%s, %s)',
-                                   expected_tx_id,
-                                   expected_gid,
-                                   criterion_tx_id,
-                                   criterion_gid
-                               );
-                    current_index := current_index + 1;
-                    CONTINUE;
-                END IF;
+            IF request_rejected THEN
+                CONTINUE;
             END IF;
 
             request_global_ids := '{}'::BIGINT[];
@@ -1048,9 +1005,6 @@ BEGIN
             inserted_tx_id := inserted_gid + 1;
 
             last_inserted_gid := inserted_gid;
-            latest_tx_id := inserted_tx_id;
-            latest_gid := inserted_gid;
-
             -- Advance every criterion matched by this accepted request. Each
             -- criterion keeps the highest matching event's global ID and the
             -- transaction ID shared by the entire multi-event request.
@@ -1255,11 +1209,8 @@ $$;
 
 -- get_latest_by_criteria_v1 returns the newest event matching each requested
 -- criterion, all from ONE statement and therefore one PostgreSQL snapshot. The
--- Go caller computes context_position as the maximum returned event position and
--- uses it as SaveEvents.query.expected_position. One snapshot is the point:
--- assembling the same context from independent queries lets an event commit in
--- between with a position below the observed maximum, which a scalar
--- expected-position check cannot detect.
+-- Go caller computes the complete OR query's position as the maximum returned
+-- event position and returns that query-level observation to the caller.
 --
 -- This function returns one row per matching criterion only. Criteria with no
 -- matching event are omitted; the Go caller maps missing indexes back to empty

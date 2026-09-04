@@ -216,7 +216,7 @@ func BenchmarkSavePreparedMetricsGate(b *testing.B) {
 	b.Run("baseline", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			_, _, _ = saver.SavePrepared(ctx, events, "orders", nil, nil)
+			_, _, _ = saver.SavePrepared(ctx, events, "orders", nil)
 		}
 	})
 
@@ -229,7 +229,6 @@ func BenchmarkSavePreparedMetricsGate(b *testing.B) {
 				saver,
 				events,
 				"orders",
-				nil,
 				nil,
 			)
 		}
@@ -257,7 +256,6 @@ func BenchmarkSavePreparedMetricsGate(b *testing.B) {
 				events,
 				"orders",
 				nil,
-				nil,
 			)
 		}
 	})
@@ -274,8 +272,7 @@ func (s *metricsSaver) SavePrepared(
 	_ context.Context,
 	events PreparedEventBatch,
 	_ string,
-	_ *Position,
-	_ *Query,
+	_ []ConsistencyCheck,
 ) (string, int64, error) {
 	s.prepared = events
 	return s.transactionID, s.globalID, s.err

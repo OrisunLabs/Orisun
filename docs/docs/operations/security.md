@@ -53,7 +53,8 @@ Role values are validated and compared exactly. A user-creation request with
 
 | RPC | Authentication | Role required |
 | --- | --- | --- |
-| `EventStore/SaveEvents` | Yes | `ADMIN` or `OPERATIONS` |
+| `EventStore/SaveEventsV2` | Yes | `ADMIN` or `OPERATIONS` |
+| `EventStore/SaveEvents` (deprecated) | Yes | `ADMIN` or `OPERATIONS` |
 | `EventStore/CreateIndex` | Yes | `ADMIN` |
 | `EventStore/DropIndex` | Yes | `ADMIN` |
 | `EventStore/ListIndexes` | Yes | `ADMIN` or `OPERATIONS` |

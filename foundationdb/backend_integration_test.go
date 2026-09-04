@@ -13,10 +13,13 @@ import (
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/OrisunLabs/Orisun/logging"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
+	"github.com/OrisunLabs/Orisun/orisun/grpcapi"
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // readEventPosition rebuilds a Position from packed scalar fields for
@@ -26,6 +29,23 @@ func readEventPosition(e eventstore.ReadEvent) *eventstore.Position {
 		CommitPosition:  e.CommitPosition,
 		PreparePosition: e.PreparePosition,
 	}
+}
+
+func countEventsByType(t *testing.T, backend *Backend, eventType string) int {
+	t.Helper()
+	events, err := backend.GetBatch(t.Context(), &eventstore.GetEventsRequest{
+		Boundary: "test", Count: 100, Direction: eventstore.Direction_ASC,
+	})
+	if err != nil {
+		t.Fatalf("GetBatch: %v", err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.EventType == eventType {
+			count++
+		}
+	}
+	return count
 }
 
 func TestFoundationDBSaveGetCCCAndIndexes(t *testing.T) {
@@ -419,6 +439,284 @@ func TestFoundationDBCCCSuccessAndStaleExpected(t *testing.T) {
 		Metadata:  map[string]any{},
 	}}, "test", &current, criteria); statuscode.CodeOf(err) != statuscode.AlreadyExists {
 		t.Fatalf("expected ALREADY_EXISTS for stale expected position, got %v", err)
+	}
+}
+
+func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
+	backend := newTestBackend(t)
+	ctx := context.Background()
+	for _, field := range []string{"account_id", "customer_id", "transfer_id"} {
+		if err := backend.CreateBoundaryIndex(ctx, "test", field, []eventstore.BoundaryIndexField{
+			{JsonKey: field, ValueType: "text"},
+		}, nil, eventstore.IndexCombinatorAND); err != nil {
+			t.Fatalf("CreateBoundaryIndex(%s): %v", field, err)
+		}
+	}
+	for _, index := range []struct {
+		name   string
+		fields []eventstore.BoundaryIndexField
+	}{
+		{name: "account_state", fields: []eventstore.BoundaryIndexField{
+			{JsonKey: "eventType", ValueType: "text"}, {JsonKey: "account_id", ValueType: "text"},
+		}},
+		{name: "customer_state", fields: []eventstore.BoundaryIndexField{
+			{JsonKey: "eventType", ValueType: "text"}, {JsonKey: "customer_id", ValueType: "text"},
+		}},
+	} {
+		if err := backend.CreateBoundaryIndex(ctx, "test", index.name, index.fields, nil, eventstore.IndexCombinatorAND); err != nil {
+			t.Fatalf("CreateBoundaryIndex(%s): %v", index.name, err)
+		}
+	}
+
+	accountTx, accountGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
+		EventId: uuid.NewString(), EventType: "AccountOpened",
+		Data: map[string]any{"account_id": "a-1"}, Metadata: map[string]any{},
+	}}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customerTx, customerGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
+		EventId: uuid.NewString(), EventType: "CustomerRegistered",
+		Data: map[string]any{"customer_id": "c-1"}, Metadata: map[string]any{},
+	}}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountCommit, _ := strconv.ParseInt(accountTx, 10, 64)
+	customerCommit, _ := strconv.ParseInt(customerTx, 10, 64)
+	checks := []eventstore.ConsistencyCheck{
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "account_id", Value: "a-1"}}}},
+			Position: eventstore.Position{CommitPosition: accountCommit, PreparePosition: accountGID},
+		},
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "customer_id", Value: "c-1"}}}},
+			Position: eventstore.Position{CommitPosition: customerCommit, PreparePosition: customerGID},
+		},
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "transfer_id", Value: "t-1"}}}},
+			Position: eventstore.NotExistsPosition(),
+		},
+	}
+	prepared, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{{
+		EventId: uuid.NewString(), EventType: "Decision",
+		Data: map[string]any{"unrelated": true}, Metadata: map[string]any{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = backend.SavePrepared(ctx, prepared, "test", checks); err != nil {
+		t.Fatalf("unchanged observations failed: %v", err)
+	}
+
+	orCheck := eventstore.ConsistencyCheck{
+		Criteria: []eventstore.ReadCriterion{
+			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "AccountOpened"}, {Key: "account_id", Value: "a-1"}}},
+			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "CustomerRegistered"}, {Key: "customer_id", Value: "c-1"}}},
+		},
+		Position: eventstore.Position{CommitPosition: customerCommit, PreparePosition: customerGID},
+	}
+	if _, _, err = backend.SavePrepared(ctx, prepared, "test", []eventstore.ConsistencyCheck{orCheck}); err != nil {
+		t.Fatalf("unchanged OR-query observation failed: %v", err)
+	}
+	accountTx, accountGID, err = backend.Save(ctx, []eventstore.EventWithMapTags{{
+		EventId: uuid.NewString(), EventType: "AccountOpened",
+		Data: map[string]any{"account_id": "a-1"}, Metadata: map[string]any{},
+	}}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountCommit, _ = strconv.ParseInt(accountTx, 10, 64)
+	checks[0].Position = eventstore.Position{CommitPosition: accountCommit, PreparePosition: accountGID}
+	rejectedOR, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		{EventId: uuid.NewString(), EventType: "RejectedOR", Data: map[string]any{"part": "first"}, Metadata: map[string]any{}},
+		{EventId: uuid.NewString(), EventType: "RejectedOR", Data: map[string]any{"part": "second"}, Metadata: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = backend.SavePrepared(ctx, rejectedOR, "test", []eventstore.ConsistencyCheck{orCheck}); statuscode.CodeOf(err) != statuscode.AlreadyExists {
+		t.Fatalf("stale OR-query observation error = %v", err)
+	}
+	if count := countEventsByType(t, backend, "RejectedOR"); count != 0 {
+		t.Fatalf("stale OR observation persisted %d events", count)
+	}
+
+	_, _, err = backend.Save(ctx, []eventstore.EventWithMapTags{{
+		EventId: uuid.NewString(), EventType: "CustomerUpdated",
+		Data: map[string]any{"customer_id": "c-1"}, Metadata: map[string]any{},
+	}}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedSecond, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		{EventId: uuid.NewString(), EventType: "RejectedSecond", Data: map[string]any{"part": "first"}, Metadata: map[string]any{}},
+		{EventId: uuid.NewString(), EventType: "RejectedSecond", Data: map[string]any{"part": "second"}, Metadata: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = backend.SavePrepared(ctx, rejectedSecond, "test", checks); statuscode.CodeOf(err) != statuscode.AlreadyExists {
+		t.Fatalf("stale second observation error = %v", err)
+	}
+	if count := countEventsByType(t, backend, "RejectedSecond"); count != 0 {
+		t.Fatalf("stale later observation persisted %d events", count)
+	}
+
+	transferTx, transferGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
+		EventId: uuid.NewString(), EventType: "TransferRecorded",
+		Data: map[string]any{"transfer_id": "t-1"}, Metadata: map[string]any{},
+	}}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedAbsent, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		{EventId: uuid.NewString(), EventType: "RejectedAbsent", Data: map[string]any{"part": "first"}, Metadata: map[string]any{}},
+		{EventId: uuid.NewString(), EventType: "RejectedAbsent", Data: map[string]any{"part": "second"}, Metadata: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = backend.SavePrepared(ctx, rejectedAbsent, "test", []eventstore.ConsistencyCheck{checks[2]}); statuscode.CodeOf(err) != statuscode.AlreadyExists {
+		t.Fatalf("no-match becoming a match error = %v", err)
+	}
+	if count := countEventsByType(t, backend, "RejectedAbsent"); count != 0 {
+		t.Fatalf("invalidated not-exists observation persisted %d events", count)
+	}
+
+	transferCommit, _ := strconv.ParseInt(transferTx, 10, 64)
+	unindexedChecks := []eventstore.ConsistencyCheck{
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "transfer_id", Value: "t-1"}}}},
+			Position: eventstore.Position{CommitPosition: transferCommit, PreparePosition: transferGID},
+		},
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "uncovered_key", Value: "missing"}}}},
+			Position: eventstore.NotExistsPosition(),
+		},
+	}
+	rejectedUnindexed, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		{EventId: uuid.NewString(), EventType: "RejectedUnindexed", Data: map[string]any{"part": "first"}, Metadata: map[string]any{}},
+		{EventId: uuid.NewString(), EventType: "RejectedUnindexed", Data: map[string]any{"part": "second"}, Metadata: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = backend.SavePrepared(ctx, rejectedUnindexed, "test", unindexedChecks); statuscode.CodeOf(err) != statuscode.FailedPrecondition {
+		t.Fatalf("mixed indexed/unindexed observations error = %v", err)
+	}
+	if count := countEventsByType(t, backend, "RejectedUnindexed"); count != 0 {
+		t.Fatalf("unindexed observation persisted %d events", count)
+	}
+
+	api := grpcapi.AdaptEventStore(eventstore.NewEventStoreServer(
+		nil, backend, nil, nil, nil, eventstore.EventStreamConfig{}, backend.logger,
+	))
+	rpcConsistency := []*grpcapi.ConsistencyObservation{
+		{
+			Query: &grpcapi.Query{Criteria: []*grpcapi.Criterion{{Tags: []*grpcapi.Tag{
+				{Key: "transfer_id", Value: "rpc-v2"},
+			}}}},
+			Position: &grpcapi.Position{CommitPosition: -1, PreparePosition: -1},
+		},
+		{
+			Query: &grpcapi.Query{Criteria: []*grpcapi.Criterion{{Tags: []*grpcapi.Tag{
+				{Key: "account_id", Value: "a-1"},
+			}}}},
+			Position: &grpcapi.Position{
+				CommitPosition: checks[0].Position.CommitPosition, PreparePosition: checks[0].Position.PreparePosition,
+			},
+		},
+	}
+	rpcRequest := func() *grpcapi.SaveEventsV2Request {
+		return &grpcapi.SaveEventsV2Request{
+			Boundary: "test", Consistency: rpcConsistency,
+			Events: []*grpcapi.EventToSave{{
+				EventId: uuid.NewString(), EventType: "RPCWinner",
+				Data: `{"transfer_id":"rpc-v2"}`, Metadata: `{}`,
+			}},
+		}
+	}
+	if _, err = api.SaveEventsV2(t.Context(), rpcRequest()); err != nil {
+		t.Fatalf("SaveEventsV2 RPC backed by FoundationDB: %v", err)
+	}
+	if _, err = api.SaveEventsV2(t.Context(), rpcRequest()); grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("stale SaveEventsV2 RPC error = %v", err)
+	}
+	if count := countEventsByType(t, backend, "RPCWinner"); count != 1 {
+		t.Fatalf("stale RPC retry left %d persisted events", count)
+	}
+}
+
+func TestFoundationDBConcurrentMultiObservationOnlyOneWins(t *testing.T) {
+	backend := newTestBackend(t)
+	ctx := context.Background()
+	for _, field := range []string{"race_id", "guard_id"} {
+		if err := backend.CreateBoundaryIndex(ctx, "test", field, []eventstore.BoundaryIndexField{
+			{JsonKey: field, ValueType: "text"},
+		}, nil, eventstore.IndexCombinatorAND); err != nil {
+			t.Fatalf("CreateBoundaryIndex(%s): %v", field, err)
+		}
+	}
+	guardTx, guardGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
+		EventId: uuid.NewString(), EventType: "Guard",
+		Data: map[string]any{"guard_id": "stable"}, Metadata: map[string]any{},
+	}}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardCommit, _ := strconv.ParseInt(guardTx, 10, 64)
+	checks := []eventstore.ConsistencyCheck{
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "race_id", Value: "shared"}}}},
+			Position: eventstore.NotExistsPosition(),
+		},
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "guard_id", Value: "stable"}}}},
+			Position: eventstore.Position{CommitPosition: guardCommit, PreparePosition: guardGID},
+		},
+	}
+
+	const contenders = 16
+	start := make(chan struct{})
+	errs := make(chan error, contenders)
+	var wg sync.WaitGroup
+	for contender := 0; contender < contenders; contender++ {
+		prepared, prepareErr := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{{
+			EventId: uuid.NewString(), EventType: "Raced",
+			Data: map[string]any{"race_id": "shared", "contender": contender}, Metadata: map[string]any{},
+		}})
+		if prepareErr != nil {
+			t.Fatal(prepareErr)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, saveErr := backend.SavePrepared(context.Background(), prepared, "test", checks)
+			errs <- saveErr
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	succeeded, rejected := 0, 0
+	for err := range errs {
+		switch statuscode.CodeOf(err) {
+		case statuscode.OK:
+			succeeded++
+		case statuscode.AlreadyExists:
+			rejected++
+		default:
+			t.Fatalf("unexpected contender result: %v", err)
+		}
+	}
+	if succeeded != 1 || rejected != contenders-1 {
+		t.Fatalf("expected one success and %d conflicts, got %d and %d", contenders-1, succeeded, rejected)
+	}
+	if count := countEventsByType(t, backend, "Raced"); count != 1 {
+		t.Fatalf("expected exactly one persisted contender, got %d", count)
 	}
 }
 

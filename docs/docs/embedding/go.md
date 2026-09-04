@@ -132,7 +132,7 @@ go build -tags foundationdb ./...
 ```
 
 Application boundaries must exist and be `ACTIVE` before they are used by
-`SaveEvents`, reads, subscriptions, or index management. Embedded stores expose
+`SaveEventsV2`, reads, subscriptions, or index management. Embedded stores expose
 the same event-backed lifecycle as the Admin gRPC API.
 
 ## Embedded boundary management
@@ -299,7 +299,7 @@ if latest.Matches[0].Found {
 }
 ```
 
-Use `latest.ContextCommitPosition` and `latest.ContextPreparePosition` as the expected position for the next `SaveEvents` with the same combined criteria, exactly as over gRPC.
+For the next `SaveEventsV2`, construct one `ConsistencyObservation` from the same complete query and a `Position` containing `latest.ContextCommitPosition` and `latest.ContextPreparePosition`. The position belongs to the whole OR query.
 
 The public gRPC and protobuf contract is unchanged; these packed types apply only to in-process callers.
 

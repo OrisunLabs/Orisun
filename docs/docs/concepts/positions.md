@@ -11,7 +11,7 @@ A position has two fields:
 
 | Field | Backed by | Meaning |
 | --- | --- | --- |
-| `commit_position` | `transaction_id` | Groups events committed together. Every event saved in one `SaveEvents` batch shares the same `commit_position`. |
+| `commit_position` | `transaction_id` | Groups events committed together. Every event saved in one `SaveEventsV2` batch shares the same `commit_position`. |
 | `prepare_position` | `global_id` | The per-boundary monotonic sequence of the individual event. Unique and strictly increasing within a boundary. |
 
 Ordering within a boundary is the tuple `(commit_position, prepare_position)`, ascending. Positions are per boundary, so they are not comparable across boundaries.
@@ -33,13 +33,13 @@ metadata and clear them when detected as stale.
 
 ## Empty and beginning positions
 
-Use `{-1, -1}` as the empty expected position for writes:
+Use `{-1, -1}` as the empty observed position for writes:
 
 ```json
 {"commit_position": -1, "prepare_position": -1}
 ```
 
-As `expected_position` in `SaveEvents`, it asserts the consistency context is still empty.
+As a `SaveEventsV2` observation position, it asserts that observation's query is still empty.
 
 Use `{0, 0}` as the beginning cursor for reads and subscriptions:
 
@@ -51,19 +51,19 @@ No event is assigned the exact position `{0, 0}`. The first event in a boundary 
 
 ## Batch semantics
 
-`SaveEvents` is atomic. For a batch of N events:
+`SaveEventsV2` is atomic. For a batch of N events:
 
 - all N share one `commit_position`,
 - each gets an increasing `prepare_position`,
-- the `WriteResult.log_position` returns the position of the batch, which is the value you pass as the next `expected_position`.
+- the `WriteResult.log_position` returns the position of the batch.
 
 This is why a single account, processed one command at a time, advances through ordered positions while `prepare_position` identifies the event within that ordering. Do not rely on positions increasing by exactly one.
 
 ## Positions and consistency
 
-[Command Context Consistency](./command-context-consistency) uses positions as the optimistic-lock token. You read a context, remember the position returned by that context read, and pass it as `expected_position` on the next write. If any newer event matched the context, the save is rejected with `ALREADY_EXISTS`.
+[Command Context Consistency](./command-context-consistency) uses query-level observations as optimistic-lock tokens. You preserve each context query with its latest matching position and pass the observations to `SaveEventsV2`. If any query no longer has exactly that latest position, the save is rejected with `ALREADY_EXISTS`.
 
-For a `GetEvents` history read, the context position is the position of the last event returned. For `GetLatestByCriteria`, use the response `context_position`; it is computed from one server-side read snapshot across all criteria. Independent reads do not provide the same guarantee for a multi-criterion command context.
+For a complete `GetEvents` history read, the observed position is the latest matching event's position. `GetLatestByCriteria` returns the latest matching `context_position` for its complete criteria list from one snapshot. Pair that position with the exact request criteria to construct a V2 observation. Separate complete reads can each contribute an observation because `SaveEventsV2` validates every one atomically.
 
 PostgreSQL serializes position assignment per boundary from position draw through commit. That keeps public positions commit-ordered, so an observed context position is a valid stable upper bound for later consistency checks. SQLite naturally has one writer per boundary file.
 

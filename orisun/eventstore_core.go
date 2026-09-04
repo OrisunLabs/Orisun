@@ -13,8 +13,7 @@ type EventsSaver interface {
 		ctx context.Context,
 		events PreparedEventBatch,
 		boundary string,
-		expectedPosition *Position,
-		subSet *Query,
+		consistency []ConsistencyCheck,
 	) (transactionID string, globalID int64, err error)
 }
 

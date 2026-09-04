@@ -55,7 +55,7 @@ func TestSqliteBoundaryProvisionerMakesBoundaryAvailableToRuntime(t *testing.T) 
 		EventId: "event-1", EventType: "SaleOpened", Data: map[string]any{"sale_id": "1"},
 	}})
 	require.NoError(t, err)
-	_, _, err = runtime.SaveEvents.SavePrepared(ctx, prepared, "sales", nil, nil)
+	_, _, err = runtime.SaveEvents.SavePrepared(ctx, prepared, "sales", nil)
 	require.NoError(t, err)
 	events, err := runtime.GetEvents.GetBatch(ctx, &orisun.GetEventsRequest{Boundary: "sales"})
 	require.NoError(t, err)

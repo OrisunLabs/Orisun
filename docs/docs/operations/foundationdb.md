@@ -95,11 +95,11 @@ This keeps conflict ranges narrow: commands that touch different indexed subsets
 
 ## Transaction Limits
 
-FoundationDB has a hard 10 MB transaction limit. Orisun rejects oversized `SaveEvents` batches before commit using an estimate that includes payloads and matching index entries, and maps any final FoundationDB `transaction_too_large` error to `INVALID_ARGUMENT`.
+FoundationDB has a hard 10 MB transaction limit. Orisun rejects oversized `SaveEventsV2` batches before commit using an estimate that includes payloads and matching index entries, and maps any final FoundationDB `transaction_too_large` error to `INVALID_ARGUMENT`.
 
 Operational guidance:
 
-- Keep bulk imports chunked well below 9 MB per `SaveEvents` request.
+- Keep bulk imports chunked well below 9 MB per `SaveEventsV2` request.
 - Remember that every matching index increases transaction size.
 - Keep `ORISUN_GRPC_MAX_RECEIVE_MESSAGE_SIZE` above your expected request size, but do not use the gRPC cap as the storage transaction budget.
 

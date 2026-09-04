@@ -19,7 +19,7 @@ publishing, indexes, auth, and gRPC APIs ship as one deployable server.
 ## Guarantees
 
 - **Decisions scoped to real context.** A write declares the event subset it depends on with JSON criteria and commits only if that subset is unchanged. You do not need to force every invariant into a single stream.
-- **Content-scoped consistency checks.** Use `expected_position` plus `subsetQuery` to save only while a command's event context is current.
+- **Content-scoped consistency checks.** Carry query-level observations into `SaveEventsV2` and save only while every context the command read is current.
 - **No skipped committed events.** A durable per-boundary checkpoint drives at-least-once publishing. Wake-up signals can be missed; committed events still drain sequentially within the boundary.
 - **Per-boundary ordering.** Events publish in ascending log position within each boundary.
 - **Runtime boundary management.** New and imported physical boundaries are

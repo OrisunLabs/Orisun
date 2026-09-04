@@ -65,6 +65,30 @@ func NewOrisunServer(
 // SaveEvents saves a batch of events to the event store
 func (c *OrisunServer) SaveEvents(ctx context.Context, events []EventWithMapTags, boundary string,
 	expectedPosition *Position, streamSubSet *Query) (*Position, error) {
+	return c.SaveEventsV2(ctx, events, boundary, legacyConsistencyObservations(expectedPosition, streamSubSet))
+}
+
+// SaveEventsV2 saves events after atomically validating every supplied query
+// observation.
+func (c *OrisunServer) SaveEventsV2(
+	ctx context.Context,
+	events []EventWithMapTags,
+	boundary string,
+	consistency []*ConsistencyObservation,
+) (*Position, error) {
+	checks, err := consistencyChecksFromObservations(consistency)
+	if err != nil {
+		return nil, err
+	}
+	return c.saveWithConsistency(ctx, events, boundary, checks)
+}
+
+func (c *OrisunServer) saveWithConsistency(
+	ctx context.Context,
+	events []EventWithMapTags,
+	boundary string,
+	consistency []ConsistencyCheck,
+) (*Position, error) {
 	if err := c.RequireBoundaryActive(boundary); err != nil {
 		return nil, err
 	}
@@ -77,8 +101,7 @@ func (c *OrisunServer) SaveEvents(ctx context.Context, events []EventWithMapTags
 		c.saveEvents,
 		prepared,
 		boundary,
-		expectedPosition,
-		streamSubSet,
+		consistency,
 	)
 
 	if err != nil {

@@ -331,12 +331,8 @@ func TestE2E_SaveAndGetEvents(t *testing.T) {
 	ctx := createAuthenticatedContext("admin", "changeit")
 
 	// Test SaveEvents
-	position := pb.Position{CommitPosition: -1, PreparePosition: -1}
-	saveReq := &pb.SaveEventsRequest{
+	saveReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query: &pb.SaveQuery{
-			ExpectedPosition: &position,
-		},
 		Events: []*pb.EventToSave{
 			{
 				EventId:   uuid.New().String(),
@@ -353,7 +349,7 @@ func TestE2E_SaveAndGetEvents(t *testing.T) {
 		},
 	}
 
-	saveResp, err := suite.eventStoreClient.SaveEvents(ctx, saveReq)
+	saveResp, err := suite.eventStoreClient.SaveEventsV2(ctx, saveReq)
 	require.NoError(t, err)
 	require.NotNil(t, saveResp)
 	assert.GreaterOrEqual(t, saveResp.LogPosition.PreparePosition, int64(0))
@@ -386,12 +382,8 @@ func TestE2E_SQLite_SaveAndGetEvents(t *testing.T) {
 	defer suite.teardown(t)
 
 	ctx := createAuthenticatedContext("admin", "changeit")
-	position := pb.Position{CommitPosition: -1, PreparePosition: -1}
-	saveReq := &pb.SaveEventsRequest{
+	saveReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query: &pb.SaveQuery{
-			ExpectedPosition: &position,
-		},
 		Events: []*pb.EventToSave{
 			{
 				EventId:   uuid.New().String(),
@@ -402,7 +394,7 @@ func TestE2E_SQLite_SaveAndGetEvents(t *testing.T) {
 		},
 	}
 
-	saveResp, err := suite.eventStoreClient.SaveEvents(ctx, saveReq)
+	saveResp, err := suite.eventStoreClient.SaveEventsV2(ctx, saveReq)
 	require.NoError(t, err)
 	require.NotNil(t, saveResp.LogPosition)
 	assert.GreaterOrEqual(t, saveResp.LogPosition.PreparePosition, int64(1))
@@ -565,7 +557,7 @@ func appendBoundaryEvent(
 	t.Helper()
 	dataJSON, err := json.Marshal(data)
 	require.NoError(t, err)
-	_, err = suite.eventStoreClient.SaveEvents(ctx, &pb.SaveEventsRequest{
+	_, err = suite.eventStoreClient.SaveEventsV2(ctx, &pb.SaveEventsV2Request{
 		Boundary: boundary,
 		Events: []*pb.EventToSave{{
 			EventId:   uuid.NewString(),
@@ -625,7 +617,7 @@ func TestE2E_SQLite_CreateBoundary(t *testing.T) {
 		return getErr == nil && response.Boundary.Status == pb.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE
 	}, 5*time.Second, 25*time.Millisecond)
 
-	_, err = suite.eventStoreClient.SaveEvents(ctx, &pb.SaveEventsRequest{
+	_, err = suite.eventStoreClient.SaveEventsV2(ctx, &pb.SaveEventsV2Request{
 		Boundary: "dynamic_sales",
 		Events: []*pb.EventToSave{{
 			EventId: uuid.NewString(), EventType: "SaleOpened", Data: `{"sale_id":"1"}`, Metadata: `{}`,
@@ -643,12 +635,8 @@ func TestE2E_OptimisticConcurrency(t *testing.T) {
 	ctx := createAuthenticatedContext("admin", "changeit")
 
 	// Save first event
-	expectedPosition := pb.Position{CommitPosition: -1, PreparePosition: -1}
-	firstSaveReq := &pb.SaveEventsRequest{
+	firstSaveReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query: &pb.SaveQuery{
-			ExpectedPosition: &expectedPosition,
-		},
 		Events: []*pb.EventToSave{
 			{
 				EventId:   uuid.New().String(),
@@ -659,25 +647,21 @@ func TestE2E_OptimisticConcurrency(t *testing.T) {
 		},
 	}
 
-	firstSaveResp, err := suite.eventStoreClient.SaveEvents(ctx, firstSaveReq)
+	firstSaveResp, err := suite.eventStoreClient.SaveEventsV2(ctx, firstSaveReq)
 	require.NoError(t, err)
 	require.NotNil(t, firstSaveResp.LogPosition)
 
 	// Try to save with wrong expected version (should fail)
-	wrongVersionReq := &pb.SaveEventsRequest{
+	notExists := &pb.Position{CommitPosition: -1, PreparePosition: -1}
+	firstEventQuery := &pb.Query{Criteria: []*pb.Criterion{{
+		Tags: []*pb.Tag{{Key: "eventType", Value: "FirstEvent"}},
+	}}}
+	wrongVersionReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query: &pb.SaveQuery{
-			ExpectedPosition: &expectedPosition,
-			SubsetQuery: &pb.Query{
-				Criteria: []*pb.Criterion{
-					{
-						Tags: []*pb.Tag{
-							{Key: "eventType", Value: "FirstEvent"},
-						},
-					},
-				},
-			},
-		},
+		Consistency: []*pb.ConsistencyObservation{{
+			Position: notExists,
+			Query:    firstEventQuery,
+		}},
 		Events: []*pb.EventToSave{
 			{
 				EventId:   uuid.New().String(),
@@ -688,15 +672,16 @@ func TestE2E_OptimisticConcurrency(t *testing.T) {
 		},
 	}
 
-	_, err = suite.eventStoreClient.SaveEvents(ctx, wrongVersionReq)
+	_, err = suite.eventStoreClient.SaveEventsV2(ctx, wrongVersionReq)
 	assert.Error(t, err, "Expected optimistic concurrency error")
 
 	// Save with correct expected version (should succeed)
-	correctVersionReq := &pb.SaveEventsRequest{
+	correctVersionReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query: &pb.SaveQuery{
-			ExpectedPosition: firstSaveResp.LogPosition, // Correct version
-		},
+		Consistency: []*pb.ConsistencyObservation{{
+			Position: firstSaveResp.LogPosition,
+			Query:    firstEventQuery,
+		}},
 		Events: []*pb.EventToSave{
 			{
 				EventId:   uuid.New().String(),
@@ -707,7 +692,7 @@ func TestE2E_OptimisticConcurrency(t *testing.T) {
 		},
 	}
 
-	correctSaveResp, err := suite.eventStoreClient.SaveEvents(ctx, correctVersionReq)
+	correctSaveResp, err := suite.eventStoreClient.SaveEventsV2(ctx, correctVersionReq)
 	require.NoError(t, err)
 	require.NotNil(t, correctSaveResp.LogPosition)
 }
@@ -722,13 +707,9 @@ func TestE2E_MultipleBoundaries(t *testing.T) {
 	// Save events in different boundaries
 	boundaries := []string{"orisun_test_1", "orisun_test_2"}
 
-	expectedPosition := pb.Position{CommitPosition: -1, PreparePosition: -1}
 	for i, boundary := range boundaries {
-		saveReq := &pb.SaveEventsRequest{
+		saveReq := &pb.SaveEventsV2Request{
 			Boundary: boundary,
-			Query: &pb.SaveQuery{
-				ExpectedPosition: &expectedPosition,
-			},
 			Events: []*pb.EventToSave{
 				{
 					EventId:   uuid.New().String(),
@@ -739,7 +720,7 @@ func TestE2E_MultipleBoundaries(t *testing.T) {
 			},
 		}
 
-		saveResp, err := suite.eventStoreClient.SaveEvents(ctx, saveReq)
+		saveResp, err := suite.eventStoreClient.SaveEventsV2(ctx, saveReq)
 		require.NoError(t, err)
 		require.NotNil(t, saveResp.LogPosition)
 	}
@@ -769,12 +750,8 @@ func TestE2E_CatchUpSubscribeToEvents(t *testing.T) {
 	defer cancel()
 
 	// Save events first
-	expectedPosition := pb.Position{CommitPosition: -1, PreparePosition: -1}
-	saveReq := &pb.SaveEventsRequest{
+	saveReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query: &pb.SaveQuery{
-			ExpectedPosition: &expectedPosition,
-		},
 		Events: []*pb.EventToSave{
 			{
 				EventId:   uuid.New().String(),
@@ -785,7 +762,7 @@ func TestE2E_CatchUpSubscribeToEvents(t *testing.T) {
 		},
 	}
 
-	_, err := suite.eventStoreClient.SaveEvents(ctx, saveReq)
+	_, err := suite.eventStoreClient.SaveEventsV2(ctx, saveReq)
 	require.NoError(t, err)
 
 	// Create subscription request to catch up from beginning
@@ -863,12 +840,8 @@ func TestE2E_PostgresLiveSubscribeToEvents(t *testing.T) {
 	// write-after-subscribe path for the Postgres backend.
 	time.Sleep(2 * time.Second)
 
-	expectedPosition := pb.Position{CommitPosition: -1, PreparePosition: -1}
-	saveReq := &pb.SaveEventsRequest{
+	saveReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
-		Query: &pb.SaveQuery{
-			ExpectedPosition: &expectedPosition,
-		},
 		Events: []*pb.EventToSave{
 			{
 				EventId:   eventID,
@@ -879,7 +852,7 @@ func TestE2E_PostgresLiveSubscribeToEvents(t *testing.T) {
 		},
 	}
 
-	_, err = suite.eventStoreClient.SaveEvents(ctx, saveReq)
+	_, err = suite.eventStoreClient.SaveEventsV2(ctx, saveReq)
 	require.NoError(t, err)
 
 	select {

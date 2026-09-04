@@ -135,7 +135,7 @@ func (c *benchmarkClient) prepopulate(ctx context.Context) error {
 			events[i] = c.makeEvent("BenchmarkSeed", fmt.Sprintf("seed-%d", contextID), offset+i)
 		}
 		requestCtx, cancel := c.requestContext(ctx)
-		_, err := c.eventStore.SaveEvents(requestCtx, &grpcapi.SaveEventsRequest{
+		_, err := c.eventStore.SaveEventsV2(requestCtx, &grpcapi.SaveEventsV2Request{
 			Boundary: c.config.Boundary,
 			Events:   events,
 		})
@@ -397,23 +397,23 @@ func (c *benchmarkClient) write(
 	for i := range eventsPerRequest {
 		events[i] = c.makeEvent("BenchmarkWrite", contextValue, i)
 	}
-	request := &grpcapi.SaveEventsRequest{
+	request := &grpcapi.SaveEventsV2Request{
 		Boundary: c.config.Boundary,
 		Events:   events,
 	}
 	if conditional {
-		request.Query = &grpcapi.SaveQuery{
-			ExpectedPosition: &grpcapi.Position{
+		request.Consistency = []*grpcapi.ConsistencyObservation{{
+			Position: &grpcapi.Position{
 				CommitPosition:  -1,
 				PreparePosition: -1,
 			},
-			SubsetQuery: &grpcapi.Query{Criteria: []*grpcapi.Criterion{{
+			Query: &grpcapi.Query{Criteria: []*grpcapi.Criterion{{
 				Tags: []*grpcapi.Tag{{Key: "benchmark_context", Value: contextValue}},
 			}}},
-		}
+		}}
 	}
 	requestCtx, cancel := c.requestContext(ctx)
-	_, err := c.eventStore.SaveEvents(requestCtx, request)
+	_, err := c.eventStore.SaveEventsV2(requestCtx, request)
 	cancel()
 	if err != nil {
 		return 0, err

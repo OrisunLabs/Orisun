@@ -19,9 +19,9 @@ import (
 )
 
 // PostgreSQL group commit coalesces concurrent SaveEvents calls per boundary.
-// A multi-request flush uses one database transaction. Requests that require
-// failure isolation use subtransactions; canonical requests use narrower SQL
-// paths. Every CCC request is evaluated in queue order, so later checks observe
+// A multi-request flush uses one database transaction. Canonical requests use
+// set-based paths; malformed requests retain request-local subtransactions.
+// Every CCC request is evaluated in queue order, so later checks observe
 // earlier accepted writes in the same flush. The SQL function's advisory lock
 // remains the cross-process serialization boundary.
 const (
@@ -94,12 +94,11 @@ func newPostgresGroupCommit(cfg config.PostgresGroupCommitConfig) postgresGroupC
 }
 
 type postgresSaveRequest struct {
-	ctx       context.Context
-	events    eventstore.PreparedEventBatch
-	expected  *eventstore.Position
-	query     *eventstore.Query
-	result    chan postgresSaveResult
-	delivered bool
+	ctx         context.Context
+	events      eventstore.PreparedEventBatch
+	consistency []eventstore.ConsistencyCheck
+	result      chan postgresSaveResult
+	delivered   bool
 }
 
 type postgresSaveResult struct {
@@ -138,8 +137,7 @@ func (s *PostgresSaveEvents) enqueue(
 	ctx context.Context,
 	boundary string,
 	events eventstore.PreparedEventBatch,
-	expected *eventstore.Position,
-	query *eventstore.Query,
+	consistency []eventstore.ConsistencyCheck,
 ) (string, int64, error) {
 	s.gc.enqueueMu.RLock()
 	if s.isClosed() {
@@ -156,11 +154,10 @@ func (s *PostgresSaveEvents) enqueue(
 	}
 
 	req := &postgresSaveRequest{
-		ctx:      ctx,
-		events:   events,
-		expected: expected,
-		query:    query,
-		result:   make(chan postgresSaveResult, 1),
+		ctx:         ctx,
+		events:      events,
+		consistency: consistency,
+		result:      make(chan postgresSaveResult, 1),
 	}
 
 	s.gc.enqueueMu.RLock()
@@ -357,8 +354,22 @@ type postgresBatchOutcome struct {
 }
 
 type postgresBatchPayload struct {
-	Query  json.RawMessage `json:"query"`
-	Events json.RawMessage `json:"events"`
+	Consistency json.RawMessage `json:"consistency"`
+	Events      json.RawMessage `json:"events"`
+}
+
+type postgresConsistencyPayload struct {
+	Query    postgresQueryPayload    `json:"query"`
+	Position postgresPositionPayload `json:"position"`
+}
+
+type postgresQueryPayload struct {
+	Criteria []map[string]string `json:"criteria"`
+}
+
+type postgresPositionPayload struct {
+	TransactionID int64 `json:"transaction_id"`
+	GlobalID      int64 `json:"global_id"`
 }
 
 func (s *PostgresSaveEvents) executeBatch(
@@ -375,7 +386,7 @@ func (s *PostgresSaveEvents) executeBatch(
 	requests := make([]*postgresSaveRequest, 0, len(live))
 	outcomes := make([]postgresBatchOutcome, 0, len(live))
 	for _, req := range live {
-		consistencyJSON, err := json.Marshal(getStreamSectionAsMap(req.expected, req.query))
+		consistencyJSON, err := json.Marshal(postgresConsistency(req.consistency))
 		if err != nil {
 			outcomes = append(outcomes, postgresBatchOutcome{
 				req: req,
@@ -400,8 +411,8 @@ func (s *PostgresSaveEvents) executeBatch(
 			continue
 		}
 		payloads = append(payloads, postgresBatchPayload{
-			Query:  json.RawMessage(consistencyJSON),
-			Events: json.RawMessage(eventsJSON),
+			Consistency: json.RawMessage(consistencyJSON),
+			Events:      json.RawMessage(eventsJSON),
 		})
 		requests = append(requests, req)
 	}
@@ -517,7 +528,7 @@ func (s *PostgresSaveEvents) executeBatch(
 // PostgreSQL stay on the subtransaction-isolated path.
 func canUseUnconditionalFastPath(requests []*postgresSaveRequest) bool {
 	for _, req := range requests {
-		if !isUnconditionalFastPathRequest(req.events, req.query) {
+		if len(req.consistency) != 0 || !isCanonicalEventBatchRequest(req.events) {
 			return false
 		}
 	}
@@ -529,28 +540,40 @@ func canUseCanonicalFastPath(requests []*postgresSaveRequest) bool {
 		if !isCanonicalEventBatchRequest(req.events) {
 			return false
 		}
+		for _, check := range req.consistency {
+			if len(check.Criteria) == 0 {
+				return false
+			}
+			for _, criterion := range check.Criteria {
+				if len(criterion.Tags) == 0 {
+					return false
+				}
+				for _, tag := range criterion.Tags {
+					if tag.Key == "" {
+						return false
+					}
+				}
+			}
+		}
 	}
 	return true
 }
 
-// independentCCCKey recognizes a common, fully independent CCC batch:
-// every request has one equality tag on the same field, all values are unique,
-// and each event belongs to its request's context. No accepted event can then
-// change another request's result, so the database can check every context
-// against one locked snapshot and bulk-insert the accepted rows.
+// independentCCCKey recognizes a batch whose requests cannot affect one
+// another: every request has one observation with one equality tag on the
+// same field, all values are unique, and every emitted event belongs to its
+// request's context.
 func independentCCCKey(requests []*postgresSaveRequest) (string, bool) {
 	var criterionKey string
 	values := make(map[string]struct{}, len(requests))
 	for _, req := range requests {
 		if !isCanonicalEventBatchRequest(req.events) ||
-			req.query == nil ||
-			len(req.query.Criteria) != 1 ||
-			req.query.Criteria[0] == nil ||
-			len(req.query.Criteria[0].Tags) != 1 ||
-			req.query.Criteria[0].Tags[0] == nil {
+			len(req.consistency) != 1 ||
+			len(req.consistency[0].Criteria) != 1 ||
+			len(req.consistency[0].Criteria[0].Tags) != 1 {
 			return "", false
 		}
-		tag := req.query.Criteria[0].Tags[0]
+		tag := req.consistency[0].Criteria[0].Tags[0]
 		if tag.Key == "" {
 			return "", false
 		}
@@ -582,8 +605,26 @@ func independentCCCKey(requests []*postgresSaveRequest) (string, bool) {
 	return criterionKey, criterionKey != ""
 }
 
-func isUnconditionalFastPathRequest(events eventstore.PreparedEventBatch, query *eventstore.Query) bool {
-	return query == nil && isCanonicalEventBatchRequest(events)
+func postgresConsistency(checks []eventstore.ConsistencyCheck) []postgresConsistencyPayload {
+	result := make([]postgresConsistencyPayload, len(checks))
+	for index, check := range checks {
+		criteria := make([]map[string]string, len(check.Criteria))
+		for criterionIndex, criterion := range check.Criteria {
+			tags := make(map[string]string, len(criterion.Tags))
+			for _, tag := range criterion.Tags {
+				tags[tag.Key] = tag.Value
+			}
+			criteria[criterionIndex] = tags
+		}
+		result[index] = postgresConsistencyPayload{
+			Query: postgresQueryPayload{Criteria: criteria},
+			Position: postgresPositionPayload{
+				TransactionID: check.Position.CommitPosition,
+				GlobalID:      check.Position.PreparePosition,
+			},
+		}
+	}
+	return result
 }
 
 func isCanonicalEventBatchRequest(events eventstore.PreparedEventBatch) bool {

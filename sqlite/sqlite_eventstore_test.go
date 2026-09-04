@@ -18,6 +18,9 @@ import (
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/OrisunLabs/Orisun/logging"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
+	"github.com/OrisunLabs/Orisun/orisun/grpcapi"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 func newTestPools(t *testing.T) (map[string]*BoundaryPools, func()) {
@@ -318,6 +321,174 @@ func TestSave_CCCViolation(t *testing.T) {
 		"test", expected, criteria)
 	if err != nil {
 		t.Fatalf("expected success with correct expected position, got: %v", err)
+	}
+}
+
+func TestSavePrepared_ValidatesEveryQueryObservation(t *testing.T) {
+	pools, cleanup := newTestPools(t)
+	defer cleanup()
+	logger, _ := logging.ZapLogger("error")
+	saver := NewSqliteSaveEvents(pools, logger)
+	defer saver.close()
+
+	_, accountGID, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
+		mustEvent(t, "AccountOpened", map[string]any{"account_id": "a-1"}, map[string]any{}),
+	}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, customerGID, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
+		mustEvent(t, "CustomerRegistered", map[string]any{"customer_id": "c-1"}, map[string]any{}),
+	}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := []eventstore.ConsistencyCheck{
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "account_id", Value: "a-1"}}}},
+			Position: eventstore.Position{CommitPosition: accountGID, PreparePosition: accountGID},
+		},
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "customer_id", Value: "c-1"}}}},
+			Position: eventstore.Position{CommitPosition: customerGID, PreparePosition: customerGID},
+		},
+		{
+			Criteria: []eventstore.ReadCriterion{{Tags: []eventstore.ReadTag{{Key: "transfer_id", Value: "t-1"}}}},
+			Position: eventstore.NotExistsPosition(),
+		},
+	}
+	prepared, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		mustEvent(t, "TransferRecorded", map[string]any{"transfer_id": "other"}, map[string]any{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = saver.SavePrepared(t.Context(), prepared, "test", checks); err != nil {
+		t.Fatalf("unchanged observations failed: %v", err)
+	}
+
+	if _, _, err = saver.Save(t.Context(), []eventstore.EventWithMapTags{
+		mustEvent(t, "CustomerUpdated", map[string]any{"customer_id": "c-1"}, map[string]any{}),
+	}, "test", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	rejectedSecond, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		mustEvent(t, "RejectedSecondFirst", map[string]any{"test_case": "atomic-second-rejected"}, map[string]any{}),
+		mustEvent(t, "RejectedSecondSecond", map[string]any{"test_case": "atomic-second-rejected"}, map[string]any{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = saver.SavePrepared(t.Context(), rejectedSecond, "test", checks); statuscode.CodeOf(err) != statuscode.AlreadyExists {
+		t.Fatalf("stale second observation error = %v", err)
+	}
+	if count := countEventsMatching(t, pools["test"], map[string]any{"test_case": "atomic-second-rejected"}); count != 0 {
+		t.Fatalf("stale later observation persisted %d events", count)
+	}
+
+	if _, _, err = saver.Save(t.Context(), []eventstore.EventWithMapTags{
+		mustEvent(t, "TransferRecorded", map[string]any{"transfer_id": "t-1"}, map[string]any{}),
+	}, "test", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	checks[1].Position = eventstore.Position{CommitPosition: customerGID + 2, PreparePosition: customerGID + 2}
+	rejectedAbsent, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		mustEvent(t, "RejectedAbsentFirst", map[string]any{"test_case": "atomic-absent-rejected"}, map[string]any{}),
+		mustEvent(t, "RejectedAbsentSecond", map[string]any{"test_case": "atomic-absent-rejected"}, map[string]any{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = saver.SavePrepared(t.Context(), rejectedAbsent, "test", checks); statuscode.CodeOf(err) != statuscode.AlreadyExists {
+		t.Fatalf("no-match becoming a match error = %v", err)
+	}
+	if count := countEventsMatching(t, pools["test"], map[string]any{"test_case": "atomic-absent-rejected"}); count != 0 {
+		t.Fatalf("invalidated not-exists observation persisted %d events", count)
+	}
+
+	api := grpcapi.AdaptEventStore(eventstore.NewEventStoreServer(
+		nil, saver, nil, nil, nil, eventstore.EventStreamConfig{}, logger,
+	))
+	rpcConsistency := []*grpcapi.ConsistencyObservation{
+		{
+			Query: &grpcapi.Query{Criteria: []*grpcapi.Criterion{{Tags: []*grpcapi.Tag{
+				{Key: "rpc_context", Value: "shared"},
+			}}}},
+			Position: &grpcapi.Position{CommitPosition: -1, PreparePosition: -1},
+		},
+		{
+			Query: &grpcapi.Query{Criteria: []*grpcapi.Criterion{{Tags: []*grpcapi.Tag{
+				{Key: "account_id", Value: "a-1"},
+			}}}},
+			Position: &grpcapi.Position{CommitPosition: accountGID, PreparePosition: accountGID},
+		},
+	}
+	rpcRequest := func() *grpcapi.SaveEventsV2Request {
+		return &grpcapi.SaveEventsV2Request{
+			Boundary: "test", Consistency: rpcConsistency,
+			Events: []*grpcapi.EventToSave{{
+				EventId: uuid.NewString(), EventType: "RPCWinner",
+				Data: `{"rpc_context":"shared"}`, Metadata: `{}`,
+			}},
+		}
+	}
+	if _, err = api.SaveEventsV2(t.Context(), rpcRequest()); err != nil {
+		t.Fatalf("SaveEventsV2 RPC backed by SQLite: %v", err)
+	}
+	if _, err = api.SaveEventsV2(t.Context(), rpcRequest()); grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("stale SaveEventsV2 RPC error = %v", err)
+	}
+	if count := countEventsMatching(t, pools["test"], map[string]any{"rpc_context": "shared"}); count != 1 {
+		t.Fatalf("stale RPC retry left %d persisted events", count)
+	}
+}
+
+func TestSavePrepared_UsesOnePositionForAnORQuery(t *testing.T) {
+	pools, cleanup := newTestPools(t)
+	defer cleanup()
+	logger, _ := logging.ZapLogger("error")
+	saver := NewSqliteSaveEvents(pools, logger)
+	defer saver.close()
+
+	_, _, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
+		mustEvent(t, "StockAdjusted", map[string]any{"product_id": "p-1"}, map[string]any{}),
+	}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, latestGID, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
+		mustEvent(t, "StockCounted", map[string]any{"product_id": "p-1"}, map[string]any{}),
+	}, "test", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := eventstore.ConsistencyCheck{
+		Criteria: []eventstore.ReadCriterion{
+			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "StockAdjusted"}, {Key: "product_id", Value: "p-1"}}},
+			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "StockCounted"}, {Key: "product_id", Value: "p-1"}}},
+		},
+		Position: eventstore.Position{CommitPosition: latestGID, PreparePosition: latestGID},
+	}
+	prepared, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
+		mustEvent(t, "StockReserved", map[string]any{"product_id": "other", "test_case": "atomic-or-rejected"}, map[string]any{}),
+		mustEvent(t, "StockNoted", map[string]any{"product_id": "other", "test_case": "atomic-or-rejected"}, map[string]any{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = saver.SavePrepared(t.Context(), prepared, "test", []eventstore.ConsistencyCheck{check}); err != nil {
+		t.Fatalf("OR-query observation failed: %v", err)
+	}
+	if _, _, err = saver.Save(t.Context(), []eventstore.EventWithMapTags{
+		mustEvent(t, "StockAdjusted", map[string]any{"product_id": "p-1"}, map[string]any{}),
+	}, "test", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = saver.SavePrepared(t.Context(), prepared, "test", []eventstore.ConsistencyCheck{check}); statuscode.CodeOf(err) != statuscode.AlreadyExists {
+		t.Fatalf("stale OR-query observation error = %v", err)
+	}
+	if count := countEventsMatching(t, pools["test"], map[string]any{"test_case": "atomic-or-rejected"}); count != 2 {
+		t.Fatalf("stale OR observation changed the accepted two-event count: %d", count)
 	}
 }
 
@@ -784,6 +955,44 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 			{JsonKey: "priority", ValueType: "text"},
 		}, nil, ""); err != nil {
 			t.Fatalf("create composite index: %v", err)
+		}
+		conn, err := pools["test"].Read.Take(ctx)
+		if err != nil {
+			t.Fatalf("take read conn: %v", err)
+		}
+		var ddl, plan strings.Builder
+		err = sqlitex.Execute(conn,
+			"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'cat_prio_idx'",
+			&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+				ddl.WriteString(stmt.ColumnText(0))
+				return nil
+			}})
+		if err == nil {
+			where, buildErr := buildCriteriaSQLForBoundary([]map[string]any{
+				{"category": "orders", "priority": "high"},
+			}, pools["test"].indexes, "test")
+			if buildErr != nil {
+				err = buildErr
+			} else {
+				err = sqlitex.ExecuteTransient(conn,
+					"EXPLAIN QUERY PLAN SELECT transaction_id, global_id FROM orisun_es_event WHERE "+where+
+						" ORDER BY transaction_id DESC, global_id DESC LIMIT 1",
+					&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+						plan.WriteString(stmt.ColumnText(3))
+						plan.WriteByte('\n')
+						return nil
+					}})
+			}
+		}
+		pools["test"].Read.Put(conn)
+		if err != nil {
+			t.Fatalf("inspect composite index: %v", err)
+		}
+		if !sqliteIndexOrdersByPosition(ddl.String()) {
+			t.Fatalf("index does not end in position order: %s", ddl.String())
+		}
+		if !strings.Contains(plan.String(), "cat_prio_idx") || strings.Contains(plan.String(), "USE TEMP B-TREE") {
+			t.Fatalf("latest lookup does not use index ordering:\n%s", plan.String())
 		}
 		if err := admin.DropBoundaryIndex(ctx, "test", "cat_prio"); err != nil {
 			t.Fatalf("drop composite index: %v", err)

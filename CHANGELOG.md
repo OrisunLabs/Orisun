@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- Added `SaveEventsV2`, which atomically validates multiple query-level
+  consistency observations before appending. Each observation binds one
+  complete OR query to its latest matching position.
+
+### Deprecated
+
+- Deprecated `SaveEvents` and `SaveQuery`. The server translates `SaveEvents`
+  into the V2 model and uses the same write implementation.
+
 ## 0.10.0 - 2026-07-30
 
 ### Breaking Changes

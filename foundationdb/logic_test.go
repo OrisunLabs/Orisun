@@ -8,8 +8,8 @@ package foundationdb
 import (
 	"testing"
 
-	"github.com/goccy/go-json"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
+	"github.com/goccy/go-json"
 )
 
 func textField(key string) eventstore.BoundaryIndexField {
