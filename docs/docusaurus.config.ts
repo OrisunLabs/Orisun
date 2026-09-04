@@ -15,17 +15,17 @@ const config: Config = {
   headTags: [
     {
       tagName: 'link',
-      attributes: {rel: 'preconnect', href: 'https://fonts.googleapis.com'},
+      attributes: {rel: 'preconnect', href: 'https://api.fontshare.com'},
     },
     {
       tagName: 'link',
-      attributes: {rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: 'anonymous'},
+      attributes: {rel: 'dns-prefetch', href: 'https://api.fontshare.com'},
     },
     {
       tagName: 'link',
       attributes: {
         rel: 'stylesheet',
-        href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;650&display=swap',
+        href: 'https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700,800&display=swap',
       },
     },
   ],
