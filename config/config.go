@@ -97,8 +97,10 @@ type FoundationDBConfig struct {
 
 // SqliteConfig holds settings for the embedded SQLite backend.
 // Each boundary gets its own event file at {Dir}/{boundary}.db and metadata
-// file at {Dir}/{boundary}_metadata.db.
+// file at {Dir}/{boundary}_metadata.db. InMemory keeps both databases in RAM
+// for the lifetime of their pools and ignores Dir.
 type SqliteConfig struct {
+	InMemory           bool
 	Dir                string
 	Synchronous        string
 	BusyTimeoutMs      int
@@ -278,7 +280,7 @@ func validateConfig(config AppConfig) error {
 		if config.Nats.Cluster.Enabled {
 			return fmt.Errorf("sqlite backend does not support NATS clustering (single-node only); set ORISUN_NATS_CLUSTER_ENABLED=false")
 		}
-		if config.Sqlite.Dir == "" {
+		if !config.Sqlite.InMemory && config.Sqlite.Dir == "" {
 			return fmt.Errorf("sqlite backend requires ORISUN_SQLITE_DIR")
 		}
 		if config.Sqlite.PublisherWakeDelay < 0 {

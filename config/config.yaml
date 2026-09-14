@@ -9,6 +9,7 @@ backend:
 # live in {dir}/{boundary}_metadata.db to keep control-plane writes off each
 # boundary's event writer lock.
 sqlite:
+  inMemory: ${ORISUN_SQLITE_IN_MEMORY:false}
   dir: ${ORISUN_SQLITE_DIR:./data/orisun/sqlite}
   # Recommended: FULL. NORMAL is a throughput opt-out that can lose already
   # acknowledged WAL commits on OS crash or power loss before checkpointing.

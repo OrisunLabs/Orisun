@@ -27,7 +27,7 @@ func main() {
 	if config.Nats.Cluster.Enabled {
 		logger.Fatal("orisun-sqlite does not support ORISUN_NATS_CLUSTER_ENABLED=true")
 	}
-	if config.Sqlite.Dir == "" {
+	if !config.Sqlite.InMemory && config.Sqlite.Dir == "" {
 		logger.Fatal("orisun-sqlite requires ORISUN_SQLITE_DIR")
 	}
 

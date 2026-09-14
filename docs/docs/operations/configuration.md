@@ -31,6 +31,7 @@ For SQLite, set:
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `ORISUN_SQLITE_IN_MEMORY` | `false` | Keep all SQLite databases in RAM for the store lifetime; ignore the database directory. |
 | `ORISUN_SQLITE_DIR` | `./data/orisun/sqlite` | Directory for per-boundary SQLite database files. |
 | `ORISUN_SQLITE_SYNCHRONOUS` | `FULL` | Recommended SQLite durability mode. Use `NORMAL` only when you explicitly accept the power-loss durability tradeoff. |
 | `ORISUN_NATS_CLUSTER_ENABLED` | `false` | Must stay `false` for SQLite. |
@@ -110,8 +111,28 @@ with `existed_before_catalog: true`.
 
 ## SQLite settings
 
+Set `ORISUN_BACKEND=sqlite` and `ORISUN_SQLITE_IN_MEMORY=true` to keep all SQLite
+boundary databases in RAM, including the admin catalog, users, event data,
+publisher checkpoints, and projector state. Embedded Go applications can set
+`cfg.Sqlite.InMemory = true` before calling `embedded/sqlite.Start`.
+
+This mode is ephemeral: closing the store or restarting the process discards all
+SQLite state. Create application boundaries again after starting a fresh store.
+Each embedded store has independent databases, even when names and directories
+match. SQLite remains single-node only; NATS clustering is rejected.
+
+Memory mode ignores `ORISUN_SQLITE_DIR` and creates no SQLite files. Each event
+or metadata database uses one connection shared by reads and writes, so reads
+and writes serialize within that database. `ORISUN_SQLITE_READ_POOL_SIZE`,
+`ORISUN_SQLITE_MMAP_SIZE`, and `ORISUN_SQLITE_WAL_AUTO_CHECKPOINT` do not apply;
+journals and temporary storage stay in memory regardless of `TEMP_STORE`.
+`SYNCHRONOUS` cannot provide restart or power-loss durability in this mode.
+The setting controls SQLite storage; embedded NATS still has its separately
+configured `ORISUN_NATS_STORE_DIR`.
+
 | Variable | Default | Description |
 | --- | --- | --- |
+| `ORISUN_SQLITE_IN_MEMORY` | `false` | Keep all SQLite databases in RAM for the store lifetime; ignore the database directory. |
 | `ORISUN_SQLITE_DIR` | `./data/orisun/sqlite` | Directory containing one `{boundary}.db` event-log file and one `{boundary}_metadata.db` file per boundary. Metadata files hold publisher checkpoints, projector checkpoints, admin users, and count caches. |
 | `ORISUN_SQLITE_SYNCHRONOUS` | `FULL` | Recommended SQLite synchronous mode. `FULL` makes acknowledged WAL commits durable across OS crashes and power loss. `NORMAL` can improve write throughput, but acknowledged commits may be lost until a checkpoint reaches durable storage; use it only as an explicit, measured opt-out. |
 | `ORISUN_SQLITE_BUSY_TIMEOUT_MS` | `5000` | Busy timeout for contended SQLite operations. |

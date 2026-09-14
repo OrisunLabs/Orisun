@@ -1499,14 +1499,16 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	lockProvider eventstore.LockProvider,
 	logger logging.Logger,
 ) (*DatabaseRuntime, error) {
-	if sqliteCfg.Dir == "" {
+	if !sqliteCfg.InMemory && sqliteCfg.Dir == "" {
 		return nil, errors.New("sqlite dir is empty")
 	}
 	if lockProvider == nil {
 		return nil, errors.New("sqlite lock provider is nil")
 	}
-	if err := ensureDir(sqliteCfg.Dir); err != nil {
-		return nil, fmt.Errorf("create sqlite dir: %w", err)
+	if !sqliteCfg.InMemory {
+		if err := ensureDir(sqliteCfg.Dir); err != nil {
+			return nil, fmt.Errorf("create sqlite dir: %w", err)
+		}
 	}
 
 	adminBoundary := adminCfg.Boundary
