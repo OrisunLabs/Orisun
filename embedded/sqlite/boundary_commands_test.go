@@ -12,11 +12,25 @@ import (
 )
 
 func TestEmbeddedSQLiteCreatesBoundaryThroughCatalog(t *testing.T) {
+	for _, inMemory := range []bool{false, true} {
+		name := "disk"
+		if inMemory {
+			name = "memory"
+		}
+		t.Run(name, func(t *testing.T) { testEmbeddedSQLiteCreatesBoundaryThroughCatalog(t, inMemory) })
+	}
+}
+
+func testEmbeddedSQLiteCreatesBoundaryThroughCatalog(t *testing.T, inMemory bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cfg := c.InitializeConfig()
 	cfg.Backend.Type = "sqlite"
 	cfg.Sqlite.Dir = t.TempDir()
+	cfg.Sqlite.InMemory = inMemory
+	if inMemory {
+		cfg.Sqlite.Dir = ""
+	}
 	cfg.Nats.Port = -1
 	cfg.Nats.StoreDir = t.TempDir()
 	cfg.Nats.Cluster.Enabled = false

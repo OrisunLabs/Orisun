@@ -59,7 +59,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	if config.Nats.Cluster.Enabled {
 		return nil, fmt.Errorf("embedded sqlite does not support NATS clustering")
 	}
-	if config.Sqlite.Dir == "" {
+	if !config.Sqlite.InMemory && config.Sqlite.Dir == "" {
 		return nil, fmt.Errorf("embedded sqlite requires ORISUN_SQLITE_DIR")
 	}
 
