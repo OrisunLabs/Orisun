@@ -98,7 +98,13 @@ CREATE TABLE IF NOT EXISTS users_count (
 // a new one. Databases created before versioning report user_version 0 and
 // re-run step 1, which is safe because the baseline DDL is idempotent
 // (IF NOT EXISTS everywhere); they come out stamped at the current version.
-var eventMigrations = []string{eventDDL}
+var eventMigrations = []string{eventDDL, `
+CREATE TABLE IF NOT EXISTS orisun_es_write (
+    write_id INTEGER PRIMARY KEY,
+    consistency TEXT NOT NULL CHECK (json_valid(consistency) AND json_type(consistency) = 'array')
+);
+ALTER TABLE orisun_es_event ADD COLUMN write_id INTEGER REFERENCES orisun_es_write(write_id);
+`}
 
 var metadataMigrations = []string{metadataDDL}
 

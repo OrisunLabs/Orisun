@@ -26,11 +26,12 @@ const (
 )
 
 type eventRecord struct {
-	EventID     string `json:"event_id"`
-	EventType   string `json:"event_type"`
-	Data        string `json:"data"`
-	Metadata    string `json:"metadata"`
-	DateCreated string `json:"date_created"`
+	WriteLastOffset *uint16 `json:"write_last_offset,omitempty"`
+	EventID         string  `json:"event_id"`
+	EventType       string  `json:"event_type"`
+	Data            string  `json:"data"`
+	Metadata        string  `json:"metadata"`
+	DateCreated     string  `json:"date_created"`
 }
 
 type indexDefinition struct {
@@ -129,7 +130,12 @@ func readEventFromRecord(value []byte, tx, gid int64) (eventstore.ReadEvent, err
 	if err != nil {
 		created = time.Now().UTC()
 	}
+	writeID := ""
+	if record.WriteLastOffset != nil {
+		writeID = eventstore.WriteID(tx, (gid & ^int64(65535))|int64(*record.WriteLastOffset))
+	}
 	return eventstore.ReadEvent{
+		WriteId:         writeID,
 		EventId:         record.EventID,
 		EventType:       record.EventType,
 		Data:            record.Data,

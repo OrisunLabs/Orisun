@@ -21,6 +21,7 @@ const (
 // and timestamps are scalar values so storage and internal consumers do not
 // allocate an object graph for every row.
 type ReadEvent struct {
+	WriteId         string
 	EventId         string
 	EventType       string
 	Data            string
@@ -72,6 +73,7 @@ func fillEvent(event *Event, read *ReadEvent) {
 	if event == nil || read == nil {
 		return
 	}
+	event.WriteId = read.WriteId
 	event.EventId = read.EventId
 	event.EventType = read.EventType
 	event.Data = eventdata.WithoutStorageEventType(read.Data)
@@ -102,6 +104,7 @@ func (e ReadEvent) MarshalJSON() ([]byte, error) {
 	buf := make([]byte, 0, 192+len(e.EventId)+len(e.EventType)+len(e.Data)+len(e.Metadata))
 	buf = append(buf, '{')
 	comma := false
+	buf, comma = appendJSONField(buf, comma, `"write_id":`, e.WriteId)
 	buf, comma = appendJSONField(buf, comma, `"event_id":`, e.EventId)
 	buf, comma = appendJSONField(buf, comma, `"event_type":`, e.EventType)
 	buf, comma = appendJSONField(buf, comma, `"data":`, e.Data)

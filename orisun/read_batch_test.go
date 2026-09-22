@@ -127,3 +127,13 @@ func BenchmarkPublisherEventMarshal(b *testing.B) {
 		}
 	})
 }
+
+func TestReadEventWriteIDSurvivesMaterializationAndPublication(t *testing.T) {
+	event := ReadEvent{EventId: "e", WriteId: "42:7", CommitPosition: 42, PreparePosition: 7, DateCreated: time.Now().UTC()}
+	require.Equal(t, event.WriteId, event.Event().WriteId)
+	payload, err := json.Marshal(event)
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(payload, &fields))
+	require.JSONEq(t, `"42:7"`, string(fields["write_id"]))
+}

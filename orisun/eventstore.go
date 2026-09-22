@@ -508,6 +508,7 @@ func (s *EventStore) saveEvents(
 	}
 
 	return &WriteResult{
+		WriteId: WriteID(tranId, globalID),
 		LogPosition: &Position{
 			CommitPosition:  tranId,
 			PreparePosition: globalID,
@@ -869,6 +870,7 @@ func (s *EventStore) SubscribeToAllEvents(
 }
 
 type publishedEventEnvelope struct {
+	WriteId     string    `json:"write_id,omitempty"`
 	EventId     string    `json:"event_id"`
 	EventType   string    `json:"event_type"`
 	Data        string    `json:"data"`
@@ -883,6 +885,7 @@ type publishedEventEnvelope struct {
 func (e publishedEventEnvelope) event() Event {
 	return Event{
 		EventId:     e.EventId,
+		WriteId:     e.WriteId,
 		EventType:   e.EventType,
 		Data:        e.Data,
 		Metadata:    e.Metadata,
@@ -894,6 +897,7 @@ func (e publishedEventEnvelope) event() Event {
 func neutralSubscriptionReadEvent(event ReadEvent) coreeventstore.ReadEvent {
 	return coreeventstore.ReadEvent{
 		EventID:   event.EventId,
+		WriteID:   event.WriteId,
 		EventType: event.EventType,
 		Data:      eventdata.WithoutStorageEventType(event.Data),
 		Metadata:  event.Metadata,
@@ -908,6 +912,7 @@ func neutralSubscriptionReadEvent(event ReadEvent) coreeventstore.ReadEvent {
 func neutralPublishedEvent(event Event) coreeventstore.ReadEvent {
 	result := coreeventstore.ReadEvent{
 		EventID:   event.EventId,
+		WriteID:   event.WriteId,
 		EventType: event.EventType,
 		Data:      eventdata.WithoutStorageEventType(event.Data),
 		Metadata:  event.Metadata,

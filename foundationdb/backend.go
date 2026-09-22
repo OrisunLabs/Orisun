@@ -246,6 +246,25 @@ func (b *Backend) SavePrepared(
 	if len(prepared) > maxBatchSize {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "batch of %d events exceeds max %d", len(prepared), maxBatchSize)
 	}
+	contextJSON, err := eventstore.MarshalConsistency(consistency)
+	if err != nil {
+		return "", 0, err
+	}
+	// Split the context across values while keeping every chunk in the same
+	// transaction as the events. Query observations can exceed FDB's 100 KB value
+	// limit even when the complete save fits its transaction limit.
+	const contextChunkSize = 90000
+	lastOffset := uint16(len(prepared) - 1)
+	writeKeys := make([]fdb.Key, (len(contextJSON)+contextChunkSize-1)/contextChunkSize)
+	contextBytes := len(contextJSON)
+	for i := range writeKeys {
+		packed, err := (tuple.Tuple{b.root, boundary, "write", tuple.IncompleteVersionstamp(lastOffset), int64(i)}).PackWithVersionstamp(nil)
+		if err != nil {
+			return "", 0, err
+		}
+		writeKeys[i] = fdb.Key(packed)
+		contextBytes += len(packed)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// vsFuture is reassigned on every (re)attempt; after Transact returns it
 	// refers to the committed attempt's versionstamp.
@@ -283,7 +302,7 @@ func (b *Backend) SavePrepared(
 			}
 		}
 
-		if total := estimateSaveBytes(prepared, indexes); total > maxTransactionBytes {
+		if total := estimateSaveBytes(prepared, indexes) + contextBytes; total > maxTransactionBytes {
 			return nil, statuscode.Errorf(statuscode.InvalidArgument,
 				"batch of %d events is ~%d bytes, exceeding the %d-byte FoundationDB transaction budget; split it",
 				len(prepared), total, maxTransactionBytes)
@@ -295,6 +314,7 @@ func (b *Backend) SavePrepared(
 		for i, e := range prepared {
 			userVersion := uint16(i)
 			e.record.DateCreated = now
+			e.record.WriteLastOffset = &lastOffset
 			value, err := json.Marshal(e.record)
 			if err != nil {
 				return nil, err
@@ -319,6 +339,10 @@ func (b *Backend) SavePrepared(
 		}
 		// Plain Set never creates a write conflict, so the wake-up signal does not
 		// serialise writers.
+		for i, key := range writeKeys {
+			start := i * contextChunkSize
+			tr.SetVersionstampedKey(key, contextJSON[start:min(start+contextChunkSize, len(contextJSON))])
+		}
 		tr.Set(b.signalKey(boundary), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
 		vsFuture = tr.GetVersionstamp()
 		return nil, nil
@@ -1715,4 +1739,39 @@ func (s *fdbSignal) poll(ctx context.Context) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func (b *Backend) GetWriteContext(ctx context.Context, req *eventstore.GetWriteContextRequest) (*eventstore.WriteContext, error) {
+	pos, err := eventstore.ValidateWriteContextRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if pos.PreparePosition > 1<<32-1 {
+		return nil, statuscode.New(statuscode.InvalidArgument, "invalid FoundationDB write_id")
+	}
+	if err := contextStatusErr(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.checkBoundary(req.Boundary); err != nil {
+		return nil, err
+	}
+	key := b.tupleKey(req.Boundary, "write", versionstampFromPosition(&pos))
+	result, err := b.db.ReadTransact(func(tr fdb.ReadTransaction) (interface{}, error) {
+		chunks, err := tr.GetRange(prefixRange(key), fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+		if len(chunks) == 0 {
+			return nil, statuscode.New(statuscode.NotFound, "write context not found")
+		}
+		var data []byte
+		for _, chunk := range chunks {
+			data = append(data, chunk.Value...)
+		}
+		return eventstore.DecodeWriteContext(req.WriteId, data)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*eventstore.WriteContext), nil
 }

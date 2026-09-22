@@ -176,6 +176,7 @@ func legacyDirection(direction coreeventstore.Direction) orisun.Direction {
 func neutralReadEvent(event orisun.ReadEvent) coreeventstore.ReadEvent {
 	return coreeventstore.ReadEvent{
 		EventID:   event.EventId,
+		WriteID:   event.WriteId,
 		EventType: event.EventType,
 		Data:      eventdata.WithoutStorageEventType(event.Data),
 		Metadata:  event.Metadata,

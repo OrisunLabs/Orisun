@@ -49,6 +49,7 @@ func TestGroupCommitUnconditionalSetPathPreservesRequestPositions(t *testing.T) 
 			result: make(chan sqliteSaveResult, 1),
 		},
 	}
+	prepareGCWriteContexts(t, requests)
 	saver.runFlush(gcBoundary, bp, requests)
 
 	first, second := <-requests[0].result, <-requests[1].result
@@ -87,6 +88,7 @@ func TestGroupCommitSetPathsFallBackForInvalidPreparedData(t *testing.T) {
 			result: make(chan sqliteSaveResult, 1),
 		},
 	}
+	prepareGCWriteContexts(t, requests)
 	saver.runFlush(gcBoundary, bp, requests)
 
 	invalid, valid := <-requests[0].result, <-requests[1].result
@@ -140,6 +142,7 @@ func TestGroupCommitIndependentCCCSetPath(t *testing.T) {
 		t.Fatalf("seed stale context: %v", err)
 	}
 
+	prepareGCWriteContexts(t, requests)
 	saver.runFlush(gcBoundary, bp, requests)
 	first, second, third := <-requests[0].result, <-requests[1].result, <-requests[2].result
 	if first.err != nil || second.err != nil {
@@ -217,5 +220,17 @@ func TestIndependentCCCSelectorIsConservative(t *testing.T) {
 		request("stream_id", "42.0", "42.0"),
 	}, bp, gcBoundary); ok {
 		t.Fatal("distinct strings can alias under numeric equality")
+	}
+}
+
+// Direct worker tests prepare the same durable representation as enqueue.
+func prepareGCWriteContexts(t *testing.T, requests []*sqliteSaveRequest) {
+	t.Helper()
+	for _, req := range requests {
+		data, err := eventstore.MarshalConsistency(req.consistency)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.consistencyJSON = string(data)
 	}
 }

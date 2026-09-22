@@ -11,6 +11,7 @@ The EventStore service owns event operations:
 - `SaveEventsV2`
 - `SaveEvents` (deprecated)
 - `GetEvents`
+- `GetWriteContext`
 - `GetLatestByCriteria`
 - `CatchUpSubscribeToEvents`
 - `Ping`
@@ -516,6 +517,45 @@ query is still empty, send that query in a V2 observation with position
 V1 can represent at most one observed query. If a command read more than one
 independent context, migrate it to V2 and preserve every complete query as a
 separate observation. `GetLatestByCriteria` itself is unchanged.
+
+## GetWriteContext
+
+Every accepted save records the complete consistency observations checked for
+that atomic batch. Each observation retains its full OR query and the position
+observed before the write. Queries use the server's normalized representation;
+redundant equivalent observations may be deduplicated.
+
+`WriteResult.write_id` identifies the accepted save. Every event in that save
+carries the same `Event.write_id`, including events returned by latest-by-criteria
+reads and catch-up or live subscriptions. Treat the ID as an opaque string scoped
+to its boundary. Separate saves retain separate IDs even when group commit puts
+them in one database transaction.
+
+Call `GetWriteContext` with:
+
+```json
+{
+  "boundary": "orders",
+  "write_id": "<write_id from the save result or event>"
+}
+```
+
+The response contains `write_id` and `consistency`, an array of the same
+`ConsistencyObservation` shape accepted by `SaveEventsV2`. An existing record with
+an empty array means the save was unconditional. The deprecated `SaveEvents` RPC
+also records its effective consistency observation.
+
+Events saved before this feature have an empty `write_id` and no recorded context.
+Their conditions are unknown; the server does not label them unconditional or
+attempt to reconstruct historical queries. Missing records return `NOT_FOUND`;
+malformed IDs return `INVALID_ARGUMENT`. The boundary must be active.
+
+The context is store-owned and commits atomically with its events. Rejected or
+rolled-back saves leave no context record. PostgreSQL and SQLite store one record
+per save alongside the event table. FoundationDB stores the context under the
+save's final versionstamp, splitting large contexts into values within the same
+transaction. Context storage counts toward FoundationDB's transaction-size
+budget. No application metadata fields are reserved or rewritten for this feature.
 
 ## GetEvents
 

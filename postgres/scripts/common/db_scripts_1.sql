@@ -48,6 +48,13 @@ BEGIN
         date_created   TIMESTAMPTZ DEFAULT (NOW() AT TIME ZONE ''UTC'') NOT NULL
     )', schema_name, boundary_name || '_orisun_es_event');
 
+    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
+        write_id BIGINT PRIMARY KEY,
+        consistency JSONB NOT NULL CHECK (jsonb_typeof(consistency) = ''array'')
+    )', schema_name, boundary_name || '_orisun_es_write');
+    EXECUTE format('ALTER TABLE %I.%I ADD COLUMN IF NOT EXISTS write_id BIGINT REFERENCES %I.%I(write_id)',
+        schema_name, boundary_name || '_orisun_es_event', schema_name, boundary_name || '_orisun_es_write');
+
     -- Create the boundary-local global_id sequence.
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I.%I
         START WITH 0
@@ -308,8 +315,14 @@ BEGIN
                    MAX(global_id) + 1 AS logical_transaction_id
             FROM events_with_ids
         ),
+        inserted_write AS (
+            INSERT INTO %I.%I (write_id, consistency)
+            SELECT max_seq_overall, $3 FROM max_global_id
+            RETURNING write_id
+        ),
         inserted_events AS (
             INSERT INTO %I.%I (
+                                         write_id,
                                          transaction_id,
                                          pg_xact_id,
                                          event_id,
@@ -317,7 +330,8 @@ BEGIN
                                          data,
                                          metadata
             )
-            SELECT max_global_id.logical_transaction_id,
+            SELECT inserted_write.write_id,
+                   max_global_id.logical_transaction_id,
                    $1,
                    (e ->> ''event_id'')::UUID,
                    events_with_ids.global_id,
@@ -325,14 +339,17 @@ BEGIN
                    events_with_ids.metadata_json
             FROM events_with_ids
             CROSS JOIN max_global_id
+            CROSS JOIN inserted_write
             RETURNING transaction_id, global_id
         )
         SELECT MAX(global_id), MAX(transaction_id), MAX(global_id)
         FROM inserted_events',
                    prefixed_seq_name,
                    schema,
+                   boundary_name || '_orisun_es_write',
+                   schema,
                    boundary_name || '_orisun_es_event'
-            ) USING current_pg_xact_id, events INTO new_global_id, latest_transaction_id, latest_global_id;
+            ) USING current_pg_xact_id, events, consistency INTO new_global_id, latest_transaction_id, latest_global_id;
 
     PERFORM pg_notify('orisun_events_' || md5(boundary_name), new_global_id::text);
 
@@ -473,8 +490,16 @@ BEGIN
                    MAX(global_id) OVER (PARTITION BY request_index) + 1 AS transaction_id
             FROM events_with_ids
         ),
+        inserted_writes AS (
+            INSERT INTO %I.%I (write_id, consistency)
+            SELECT MAX(global_id), COALESCE($2 -> request_index -> ''consistency'', ''[]''::JSONB)
+            FROM positioned_events
+            GROUP BY request_index
+            RETURNING write_id
+        ),
         inserted_events AS (
             INSERT INTO %I.%I (
+                write_id,
                 transaction_id,
                 pg_xact_id,
                 event_id,
@@ -482,7 +507,8 @@ BEGIN
                 data,
                 metadata
             )
-            SELECT positioned_events.transaction_id,
+            SELECT inserted_writes.write_id,
+                   positioned_events.transaction_id,
                    $1,
                    (event ->> ''event_id'')::UUID,
                    positioned_events.global_id,
@@ -494,6 +520,7 @@ BEGIN
                    ),
                    COALESCE(event -> ''metadata'', ''{}''::JSONB)
             FROM positioned_events
+            JOIN inserted_writes ON inserted_writes.write_id = positioned_events.transaction_id - 1
             ORDER BY request_index, event_index
             RETURNING global_id
         ),
@@ -514,6 +541,8 @@ BEGIN
         FROM inserted_requests
         ORDER BY inserted_requests.request_index',
         prefixed_seq_name,
+        schema,
+        boundary_name || '_orisun_es_write',
         schema,
         boundary_name || '_orisun_es_event'
     ) USING current_pg_xact_id, requests;
@@ -623,8 +652,16 @@ BEGIN
             FROM accepted
             JOIN checked USING (request_index)
         ),
+        inserted_writes AS (
+            INSERT INTO %I.%I (write_id, consistency)
+            SELECT MAX(global_id), COALESCE($2 -> request_index -> ''consistency'', ''[]''::JSONB)
+            FROM positioned
+            GROUP BY request_index
+            RETURNING write_id
+        ),
         inserted AS (
             INSERT INTO %I.%I (
+                write_id,
                 transaction_id,
                 pg_xact_id,
                 event_id,
@@ -632,7 +669,8 @@ BEGIN
                 data,
                 metadata
             )
-            SELECT positioned.transaction_id,
+            SELECT inserted_writes.write_id,
+                   positioned.transaction_id,
                    $1,
                    (positioned.event ->> ''event_id'')::UUID,
                    positioned.global_id,
@@ -644,6 +682,7 @@ BEGIN
                    ),
                    COALESCE(positioned.event -> ''metadata'', ''{}''::JSONB)
             FROM positioned
+            JOIN inserted_writes ON inserted_writes.write_id = positioned.transaction_id - 1
             ORDER BY positioned.request_index, positioned.event_index
             RETURNING global_id
         ),
@@ -681,6 +720,8 @@ BEGIN
         criterion_key,
         criterion_key,
         prefixed_seq_name,
+        schema,
+        boundary_name || '_orisun_es_write',
         schema,
         boundary_name || '_orisun_es_event'
     ) USING current_pg_xact_id, requests;
@@ -1033,7 +1074,15 @@ BEGIN
 
     IF last_inserted_gid IS NOT NULL THEN
         EXECUTE format('
+            WITH inserted_writes AS (
+                INSERT INTO %I.%I (write_id, consistency)
+                SELECT MAX(global_id), COALESCE($5 -> request_index -> ''consistency'', ''[]''::JSONB)
+                FROM unnest($2::INT[], $4::BIGINT[]) AS accepted(request_index, global_id)
+                GROUP BY request_index
+                RETURNING write_id
+            )
             INSERT INTO %I.%I (
+                write_id,
                 transaction_id,
                 pg_xact_id,
                 event_id,
@@ -1051,7 +1100,8 @@ BEGIN
                 FROM unnest($2::INT[], $3::INT[], $4::BIGINT[])
                     AS accepted(request_index, event_index, global_id)
             )
-            SELECT accepted.transaction_id,
+            SELECT inserted_writes.write_id,
+                   accepted.transaction_id,
                    $1,
                    (request_item -> ''events'' -> accepted.event_index ->> ''event_id'')::UUID,
                    accepted.global_id,
@@ -1071,10 +1121,13 @@ BEGIN
                        ''{}''::JSONB
                    )
             FROM accepted_events AS accepted
+            JOIN inserted_writes ON inserted_writes.write_id = accepted.transaction_id - 1
             CROSS JOIN LATERAL (
                 SELECT $5 -> accepted.request_index AS request_item
             ) AS accepted_requests
             ORDER BY accepted.global_id',
+            schema,
+            boundary_name || '_orisun_es_write',
             schema,
             boundary_name || '_orisun_es_event'
         ) USING
@@ -1132,6 +1185,71 @@ CREATE OR REPLACE FUNCTION get_matching_events_v3(
     STABLE
 AS
 $$
+BEGIN
+    RETURN QUERY EXECUTE format(
+        'SELECT transaction_id, global_id, event_id, event_type, data, metadata, date_created FROM %I.get_matching_events_v4($1, $2, $3, $4, $5, $6)', schema
+    ) USING boundary_name, schema, criteria, after_position, sort_dir, max_count;
+END;
+$$;
+
+-- get_latest_by_criteria_v1 returns the newest event matching each requested
+-- criterion, all from ONE statement and therefore one PostgreSQL snapshot. The
+-- Go caller computes the complete OR query's position as the maximum returned
+-- event position and returns that query-level observation to the caller.
+--
+-- This function returns one row per matching criterion only. Criteria with no
+-- matching event are omitted; the Go caller maps missing indexes back to empty
+-- LatestCriterionResult entries.
+CREATE OR REPLACE FUNCTION get_latest_by_criteria_v1(
+    boundary_name TEXT,
+    schema TEXT,
+    criteria JSONB
+)
+    RETURNS TABLE
+            (
+                criterion_idx  INT,
+                transaction_id BIGINT,
+                global_id      BIGINT,
+                event_id       UUID,
+                event_type     TEXT,
+                data           JSONB,
+                metadata       JSONB,
+                date_created   TIMESTAMPTZ
+            )
+    LANGUAGE plpgsql
+    STABLE
+AS
+$$
+BEGIN
+    RETURN QUERY EXECUTE format(
+        'SELECT criterion_idx, transaction_id, global_id, event_id, event_type, data, metadata, date_created FROM %I.get_latest_by_criteria_v2($1, $2, $3)', schema
+    ) USING boundary_name, schema, criteria;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION get_matching_events_v4(
+    boundary_name TEXT,
+    schema TEXT,
+    criteria JSONB DEFAULT NULL,
+    after_position JSONB DEFAULT NULL,
+    sort_dir TEXT DEFAULT 'ASC',
+    max_count INT DEFAULT 1000
+)
+    RETURNS TABLE
+            (
+                transaction_id BIGINT,
+                global_id      BIGINT,
+                event_id       UUID,
+                event_type     TEXT,
+                data           JSONB,
+                metadata       JSONB,
+                date_created   TIMESTAMPTZ,
+                write_id       TEXT
+            )
+    LANGUAGE plpgsql
+    STABLE
+AS
+$$
 DECLARE
     op                   TEXT  := CASE WHEN sort_dir = 'ASC' THEN '>' ELSE '<' END;
     qualified_table_name TEXT;
@@ -1179,7 +1297,7 @@ BEGIN
     -- Use dynamic SQL because the boundary table name and criteria predicate are dynamic.
     RETURN QUERY EXECUTE format(
             $q$
-        SELECT transaction_id, global_id, event_id, data->>'eventType' AS event_type, data, metadata, date_created
+        SELECT transaction_id, global_id, event_id, data->>'eventType' AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE transaction_id::TEXT || ':' || write_id::TEXT END
         FROM %s
         WHERE
             %2$s AND
@@ -1207,7 +1325,7 @@ BEGIN
 END;
 $$;
 
--- get_latest_by_criteria_v1 returns the newest event matching each requested
+-- get_latest_by_criteria_v2 returns the newest event matching each requested
 -- criterion, all from ONE statement and therefore one PostgreSQL snapshot. The
 -- Go caller computes the complete OR query's position as the maximum returned
 -- event position and returns that query-level observation to the caller.
@@ -1215,7 +1333,7 @@ $$;
 -- This function returns one row per matching criterion only. Criteria with no
 -- matching event are omitted; the Go caller maps missing indexes back to empty
 -- LatestCriterionResult entries.
-CREATE OR REPLACE FUNCTION get_latest_by_criteria_v1(
+CREATE OR REPLACE FUNCTION get_latest_by_criteria_v2(
     boundary_name TEXT,
     schema TEXT,
     criteria JSONB
@@ -1229,7 +1347,8 @@ CREATE OR REPLACE FUNCTION get_latest_by_criteria_v1(
                 event_type     TEXT,
                 data           JSONB,
                 metadata       JSONB,
-                date_created   TIMESTAMPTZ
+                date_created   TIMESTAMPTZ,
+                write_id       TEXT
             )
     LANGUAGE plpgsql
     STABLE
@@ -1262,7 +1381,7 @@ BEGIN
                 RAISE EXCEPTION 'criterion % has no tags', idx;
             END IF;
             selects := selects || format(
-                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, e.event_id, e.data->>''eventType'' AS event_type, e.data, e.metadata, e.date_created FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
+                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, e.event_id, e.data->>''eventType'' AS event_type, e.data, e.metadata, e.date_created, CASE WHEN e.write_id IS NULL THEN '''' ELSE e.transaction_id::TEXT || '':'' || e.write_id::TEXT END FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
                     idx, qualified_table_name, array_to_string(crit_parts, ' AND '));
             idx := idx + 1;
         END LOOP;
