@@ -188,7 +188,7 @@ func appendOutcome(
 	if err != nil {
 		return boundarymodel.Boundary{}, statuscode.Errorf(statuscode.Internal, "create %s event id: %v", eventType, err)
 	}
-	dataJSON, err := eventData(eventType, data)
+	dataJSON, err := eventData(data)
 	if err != nil {
 		return boundarymodel.Boundary{}, statuscode.Errorf(statuscode.Internal, "prepare %s data: %v", eventType, err)
 	}
@@ -243,7 +243,7 @@ func lifecycleCriteria(name string) []coreeventstore.Criterion {
 	}
 	criteria := make([]coreeventstore.Criterion, len(eventTypes))
 	for i, eventType := range eventTypes {
-		criteria[i] = coreeventstore.Criterion{Tags: []coreeventstore.Tag{{Key: "boundary", Value: name}, {Key: "eventType", Value: eventType}}}
+		criteria[i] = coreeventstore.Criterion{Tags: []coreeventstore.Tag{{Key: "boundary", Value: name}, {Key: "__eventType", Value: eventType}}}
 	}
 	return criteria
 }
@@ -263,16 +263,7 @@ func metadataWithQuery(metadata map[string]any, query coreeventstore.Query) map[
 	return merged
 }
 
-func eventData(eventType string, value any) (string, error) {
+func eventData(value any) (string, error) {
 	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
-		return "", err
-	}
-	object["eventType"] = eventType
-	encoded, err = json.Marshal(object)
 	return string(encoded), err
 }

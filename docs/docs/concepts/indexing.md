@@ -120,7 +120,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
     {"json_key": "amount", "value_type": "NUMERIC"}
   ],
   "conditions": [
-    {"key": "eventType", "operator": "=", "value": "OrderPlaced"}
+    {"key": "__eventType", "operator": "=", "value": "OrderPlaced"}
   ],
   "condition_combinator": "AND"
 }

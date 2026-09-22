@@ -114,7 +114,7 @@ BEGIN
     -- Create indexes used by latest-position checks and ordered event reads.
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC)',
                    boundary_name || '_idx_global_order_covering', schema_name, boundary_name || '_orisun_es_event');
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I ((data->>''eventType''), transaction_id DESC, global_id DESC)',
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I ((data->>''__eventType''), transaction_id DESC, global_id DESC)',
                    boundary_name || '_idx_event_type_order', schema_name, boundary_name || '_orisun_es_event');
     EXECUTE format(
             'CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC) INCLUDE (pg_xact_id)',
@@ -300,10 +300,10 @@ BEGIN
                            WHEN jsonb_typeof(e -> ''data'') = ''string'' THEN (e ->> ''data'')::jsonb
                            ELSE COALESCE(e -> ''data'', ''{}'')
                        END,
-                       ''{eventType}'',
+                       ''{__eventType}'',
                        to_jsonb(e ->> ''event_type''),
                        true
-                   ) AS data_json,
+                   ) || jsonb_build_object(''__eventId'', (e ->> ''event_id'')::UUID) AS data_json,
                    CASE
                        WHEN jsonb_typeof(e -> ''metadata'') = ''string'' THEN (e ->> ''metadata'')::jsonb
                        ELSE COALESCE(e -> ''metadata'', ''{}'')
@@ -325,7 +325,6 @@ BEGIN
                                          write_id,
                                          transaction_id,
                                          pg_xact_id,
-                                         event_id,
                                          global_id,
                                          data,
                                          metadata
@@ -333,7 +332,6 @@ BEGIN
             SELECT inserted_write.write_id,
                    max_global_id.logical_transaction_id,
                    $1,
-                   (e ->> ''event_id'')::UUID,
                    events_with_ids.global_id,
                    events_with_ids.data_json,
                    events_with_ids.metadata_json
@@ -502,7 +500,6 @@ BEGIN
                 write_id,
                 transaction_id,
                 pg_xact_id,
-                event_id,
                 global_id,
                 data,
                 metadata
@@ -510,14 +507,13 @@ BEGIN
             SELECT inserted_writes.write_id,
                    positioned_events.transaction_id,
                    $1,
-                   (event ->> ''event_id'')::UUID,
                    positioned_events.global_id,
                    jsonb_set(
                        COALESCE(event -> ''data'', ''{}''::JSONB),
-                       ''{eventType}'',
+                       ''{__eventType}'',
                        to_jsonb(event ->> ''event_type''),
                        true
-                   ),
+                   ) || jsonb_build_object(''__eventId'', (event ->> ''event_id'')::UUID),
                    COALESCE(event -> ''metadata'', ''{}''::JSONB)
             FROM positioned_events
             JOIN inserted_writes ON inserted_writes.write_id = positioned_events.transaction_id - 1
@@ -664,7 +660,6 @@ BEGIN
                 write_id,
                 transaction_id,
                 pg_xact_id,
-                event_id,
                 global_id,
                 data,
                 metadata
@@ -672,14 +667,13 @@ BEGIN
             SELECT inserted_writes.write_id,
                    positioned.transaction_id,
                    $1,
-                   (positioned.event ->> ''event_id'')::UUID,
                    positioned.global_id,
                    jsonb_set(
                        COALESCE(positioned.event -> ''data'', ''{}''::JSONB),
-                       ''{eventType}'',
+                       ''{__eventType}'',
                        to_jsonb(positioned.event ->> ''event_type''),
                        true
-                   ),
+                   ) || jsonb_build_object(''__eventId'', (positioned.event ->> ''event_id'')::UUID),
                    COALESCE(positioned.event -> ''metadata'', ''{}''::JSONB)
             FROM positioned
             JOIN inserted_writes ON inserted_writes.write_id = positioned.transaction_id - 1
@@ -1085,7 +1079,6 @@ BEGIN
                 write_id,
                 transaction_id,
                 pg_xact_id,
-                event_id,
                 global_id,
                 data,
                 metadata
@@ -1103,19 +1096,18 @@ BEGIN
             SELECT inserted_writes.write_id,
                    accepted.transaction_id,
                    $1,
-                   (request_item -> ''events'' -> accepted.event_index ->> ''event_id'')::UUID,
                    accepted.global_id,
                    jsonb_set(
                        COALESCE(
                            request_item -> ''events'' -> accepted.event_index -> ''data'',
                            ''{}''::JSONB
                        ),
-                       ''{eventType}'',
+                       ''{__eventType}'',
                        to_jsonb(
                            request_item -> ''events'' -> accepted.event_index ->> ''event_type''
                        ),
                        TRUE
-                   ),
+                   ) || jsonb_build_object(''__eventId'', (request_item -> ''events'' -> accepted.event_index ->> ''event_id'')::UUID),
                    COALESCE(
                        request_item -> ''events'' -> accepted.event_index -> ''metadata'',
                        ''{}''::JSONB
@@ -1297,7 +1289,7 @@ BEGIN
     -- Use dynamic SQL because the boundary table name and criteria predicate are dynamic.
     RETURN QUERY EXECUTE format(
             $q$
-        SELECT transaction_id, global_id, event_id, data->>'eventType' AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE transaction_id::TEXT || ':' || write_id::TEXT END
+        SELECT transaction_id, global_id, (data->>'__eventId')::UUID AS event_id, data->>'__eventType' AS event_type, data - ARRAY(SELECT key FROM jsonb_object_keys(data) AS key WHERE left(key, 2) = '__') AS data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE transaction_id::TEXT || ':' || write_id::TEXT END
         FROM %s
         WHERE
             %2$s AND
@@ -1381,7 +1373,7 @@ BEGIN
                 RAISE EXCEPTION 'criterion % has no tags', idx;
             END IF;
             selects := selects || format(
-                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, e.event_id, e.data->>''eventType'' AS event_type, e.data, e.metadata, e.date_created, CASE WHEN e.write_id IS NULL THEN '''' ELSE e.transaction_id::TEXT || '':'' || e.write_id::TEXT END FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
+                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created, CASE WHEN e.write_id IS NULL THEN '''' ELSE e.transaction_id::TEXT || '':'' || e.write_id::TEXT END FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
                     idx, qualified_table_name, array_to_string(crit_parts, ' AND '));
             idx := idx + 1;
         END LOOP;

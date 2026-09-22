@@ -32,7 +32,7 @@ func TestWriteContextContract(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public.test_boundary_orisun_es_write").Scan(&count))
 	require.Equal(t, 3, count)
 	// Re-running initialization preserves both stored evidence and legacy NULLs.
-	_, err = db.Exec(`INSERT INTO public.test_boundary_orisun_es_event(transaction_id, global_id, event_id, data) VALUES(0, -1, '00000000-0000-0000-0000-000000000001', '{}')`)
+	_, err = db.Exec(`INSERT INTO public.test_boundary_orisun_es_event(transaction_id, global_id, data) VALUES(0, -1, '{"__eventId":"00000000-0000-0000-0000-000000000001"}')`)
 	require.NoError(t, err)
 	require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, t.Context()))
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public.test_boundary_orisun_es_event WHERE write_id IS NULL").Scan(&count))
@@ -147,4 +147,26 @@ func TestWriteContextSQLGroupCommitPaths(t *testing.T) {
 			require.Equal(t, want, count)
 		})
 	}
+}
+
+func TestBackendOwnsEventEnvelope(t *testing.T) {
+	container, err := setupTestContainer(t)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.container.Terminate(context.Background()) })
+	db, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	logger, _ := logging.ZapLogger("error")
+	mapping := map[string]config.BoundaryToPostgresSchemaMapping{"test_boundary": {Boundary: "test_boundary", Schema: "public"}}
+	saver := NewPostgresSaveEvents(t.Context(), db, logger, mapping)
+	defer saver.close()
+	getter := NewPostgresGetEvents(db, logger, mapping)
+	storagecontract.Envelope(t, saver, getter, NewPostgresAdminDB(db, logger, "public", "test_boundary", mapping), "test_boundary", func(fields string) {
+		_, err := db.Exec("UPDATE test_boundary_orisun_es_event SET data = data || $1::jsonb", fields)
+		require.NoError(t, err)
+	})
+	var id, kind string
+	require.NoError(t, db.QueryRow("SELECT data->>'__eventId', data->>'__eventType' FROM test_boundary_orisun_es_event").Scan(&id, &kind))
+	require.NotEmpty(t, id)
+	require.Equal(t, "EnvelopeTest", kind)
 }

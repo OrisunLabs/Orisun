@@ -282,12 +282,12 @@ func positionAfter(commit, prepare, cursorCommit, cursorPrepare int64) bool {
 
 func boundaryDefinitionQuery() coreeventstore.Query {
 	return coreeventstore.Query{Criteria: []coreeventstore.Criterion{
-		{Tags: []coreeventstore.Tag{{Key: "eventType", Value: adminevents.EventTypeBoundaryCreated}}},
+		{Tags: []coreeventstore.Tag{{Key: "__eventType", Value: adminevents.EventTypeBoundaryCreated}}},
 	}}
 }
 
 func boundaryActivationQuery() coreeventstore.Query {
 	return coreeventstore.Query{Criteria: []coreeventstore.Criterion{
-		{Tags: []coreeventstore.Tag{{Key: "eventType", Value: adminevents.EventTypeBoundaryActivated}}},
+		{Tags: []coreeventstore.Tag{{Key: "__eventType", Value: adminevents.EventTypeBoundaryActivated}}},
 	}}
 }

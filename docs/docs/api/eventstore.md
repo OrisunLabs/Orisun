@@ -120,8 +120,52 @@ Events have four caller-supplied fields:
 Orisun also stores a durable `position` and `date_created` on committed events.
 
 :::note
-`event_type` is the API field for the event's type. On save, Orisun writes that value into the stored event data as the canonical `eventType` JSON key, and storage backends derive response `event_type` from `data.eventType`. Criteria and indexes should use the `eventType` JSON key.
+Storage backends persist the envelope's `event_id` and `event_type` inside the
+stored data document as `__eventId` and `__eventType`. On retrieval, the backend
+extracts them into the usual event envelope and removes **all top-level `__*`
+fields** from returned application `data`, including reserved names not currently
+used by the envelope. Nested fields and separate `metadata` remain untouched. API and SDK event shapes remain unchanged. Content queries,
+subscription filters, and indexes can use either reserved key; for example,
+`{"key":"__eventId","value":"your-event-id"}` matches the envelope's event ID.
+
+Top-level keys in application event `data` beginning with `__` are reserved for
+Orisun, including names not currently in use. Writes containing such keys are
+rejected before storage (with `INVALID_ARGUMENT` over gRPC). This restriction
+applies only to the root of `data`: nested objects and the separate `metadata`
+field may contain keys beginning with `__`. The write-request `event_type` field (or SDK `eventType` property) supplies
+`__eventType`; application payloads must not set it themselves. An ordinary
+application key named `eventType` is preserved and is no longer the discriminator.
 :::
+
+### Upgrading stored event fields
+
+Content queries and index definitions now use `__eventType` instead of
+`eventType`. The API `event_type` field and SDK `eventType` property keep their
+existing names. There is no query-time alias for the old JSON key.
+
+Stop all Orisun servers sharing the storage before upgrading. At startup,
+Orisun migrates stored event discriminators, retained CCC observations, and
+index definitions created through the index API. PostgreSQL and SQLite rebuild
+affected managed indexes within their migration transaction. FoundationDB
+migrates in resumable batches before making the boundary available; its index
+entries retain the same values and positions. Existing positions, write IDs,
+and publisher checkpoints are preserved. The upgrade also moves stored event IDs
+into `data.__eventId`, removing the separate PostgreSQL/SQLite `event_id` column
+and FoundationDB record field. Large stores may take time to migrate.
+
+Update application criteria, subscription filters, and index declarations to
+`__eventType` before resuming traffic. Re-read command contexts after the upgrade;
+in-flight observations using the old key must not be reused. Indexes created
+directly with SQL are not managed by Orisun and must be reviewed separately.
+Older server binaries cannot be used with the migrated storage; take a backup
+before upgrading if you need to be able to restore the old format.
+
+If a legacy event already contains both `eventType` and `__eventType`, migration
+stops with a conflict instead of overwriting either value. Existing top-level
+`__eventId` values also block the event-ID migration, including JSON null. Resolve that collision
+while the servers are stopped, then restart. Nested application fields and
+metadata are not renamed. Historical `eventType` was the store discriminator;
+after migration that unprefixed name is available for application data.
 
 ## SaveEventsV2
 
@@ -160,7 +204,7 @@ observation is rechecked atomically with the append.
 criteria := []*eventstore.Criterion{
 	{Tags: []*eventstore.Tag{{Key: "scopes.orderId", Value: "order-17"}}},
 	{Tags: []*eventstore.Tag{
-		{Key: "eventType", Value: "CustomerOrderingSuspended"},
+		{Key: "__eventType", Value: "CustomerOrderingSuspended"},
 		{Key: "customerId", Value: "customer-4"},
 	}},
 }
@@ -209,7 +253,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
         "criteria": [
           {"tags": [{"key": "scopes.orderId", "value": "order-17"}]},
           {"tags": [
-            {"key": "eventType", "value": "OrderCancelled"},
+            {"key": "__eventType", "value": "OrderCancelled"},
             {"key": "orderId", "value": "order-17"}
           ]}
         ]
@@ -220,11 +264,11 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
       "query": {
         "criteria": [
           {"tags": [
-            {"key": "eventType", "value": "CustomerOrderingSuspended"},
+            {"key": "__eventType", "value": "CustomerOrderingSuspended"},
             {"key": "customerId", "value": "customer-4"}
           ]},
           {"tags": [
-            {"key": "eventType", "value": "CustomerOrderingRestored"},
+            {"key": "__eventType", "value": "CustomerOrderingRestored"},
             {"key": "customerId", "value": "customer-4"}
           ]}
         ]
@@ -366,7 +410,7 @@ The response contains the position of the last committed event in the batch:
 }
 ```
 
-Orisun stores the API `event_type` value in event `data` as the canonical `eventType` JSON key and derives returned event types from that key. You do not need to duplicate it in your payload, and later queries or indexes can match `eventType` with normal content criteria.
+Orisun stores the API `event_type` value in event `data` as the canonical `__eventType` JSON key and derives returned event types from that key. You do not need to duplicate it in your payload, and later queries or indexes can match `__eventType` with normal content criteria.
 
 For event-scoped models, put queryable scope keys in `data` as normal JSON keys, for example `scopes.coursePublishedId`, and index them like any other field. See [Event Scopes](../patterns/event-scopes) for the modeling pattern.
 
@@ -818,12 +862,12 @@ resp, err := client.GetLatestByCriteria(ctx, &eventstore.GetLatestByCriteriaRequ
 	Boundary: "ledger",
 	Criteria: []*eventstore.Criterion{
 		{Tags: []*eventstore.Tag{
-			{Key: "eventType", Value: "AccountOpened"},
+			{Key: "__eventType", Value: "AccountOpened"},
 			{Key: "accountOpenedId", Value: "018f2d5e-2001-7000-8000-000000000001"},
 		}},
 		{Tags: []*eventstore.Tag{{Key: "scopes.accountOpenedId", Value: "018f2d5e-2001-7000-8000-000000000001"}}},
 		{Tags: []*eventstore.Tag{
-			{Key: "eventType", Value: "AccountOpened"},
+			{Key: "__eventType", Value: "AccountOpened"},
 			{Key: "accountOpenedId", Value: "018f2d5e-2002-7000-8000-000000000002"},
 		}},
 		{Tags: []*eventstore.Tag{{Key: "scopes.accountOpenedId", Value: "018f2d5e-2002-7000-8000-000000000002"}}},
@@ -848,12 +892,12 @@ const latest = await client.getLatestByCriteria({
   boundary: 'ledger',
   criteria: [
     { tags: [
-      { key: 'eventType', value: 'AccountOpened' },
+      { key: '__eventType', value: 'AccountOpened' },
       { key: 'accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' },
     ] },
     { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' }] },
     { tags: [
-      { key: 'eventType', value: 'AccountOpened' },
+      { key: '__eventType', value: 'AccountOpened' },
       { key: 'accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' },
     ] },
     { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' }] },
@@ -872,14 +916,14 @@ Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
     Eventstore.GetLatestByCriteriaRequest.newBuilder()
         .setBoundary("ledger")
         .addCriteria(Eventstore.Criterion.newBuilder()
-            .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+            .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
             .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
             .addTags(Eventstore.Tag.newBuilder().setKey("scopes.accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
-            .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+            .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
             .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue("018f2d5e-2002-7000-8000-000000000002").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
@@ -899,12 +943,12 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<E
   "boundary": "ledger",
   "criteria": [
     {"tags": [
-      {"key": "eventType", "value": "AccountOpened"},
+      {"key": "__eventType", "value": "AccountOpened"},
       {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
     ]},
     {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]},
     {"tags": [
-      {"key": "eventType", "value": "AccountOpened"},
+      {"key": "__eventType", "value": "AccountOpened"},
       {"key": "accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}
     ]},
     {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}]}
@@ -1029,7 +1073,7 @@ sub, err := client.SubscribeToEvents(ctx, &eventstore.CatchUpSubscribeToEventSto
 	AfterPosition:  &eventstore.Position{CommitPosition: 0, PreparePosition: 0},
 	Query: &eventstore.Query{
 		Criteria: []*eventstore.Criterion{{
-			Tags: []*eventstore.Tag{{Key: "eventType", Value: "OrderPlaced"}},
+			Tags: []*eventstore.Tag{{Key: "__eventType", Value: "OrderPlaced"}},
 		}},
 	},
 }, handler)
@@ -1046,7 +1090,7 @@ const subscription = client.subscribeToEvents(
     afterPosition: { commitPosition: 0, preparePosition: 0 },
     query: {
       criteria: [
-        { tags: [{ key: 'eventType', value: 'OrderPlaced' }] },
+        { tags: [{ key: '__eventType', value: 'OrderPlaced' }] },
       ],
     },
   },
@@ -1066,7 +1110,7 @@ client.subscribeToEvents(Eventstore.CatchUpSubscribeToEventStoreRequest.newBuild
         .setQuery(Eventstore.Query.newBuilder()
             .addCriteria(Eventstore.Criterion.newBuilder()
                 .addTags(Eventstore.Tag.newBuilder()
-                    .setKey("eventType").setValue("OrderPlaced").build())
+                    .setKey("__eventType").setValue("OrderPlaced").build())
                 .build())
             .build())
         .build(),
@@ -1089,7 +1133,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvent
     "criteria": [
       {
         "tags": [
-          {"key": "eventType", "value": "OrderPlaced"}
+          {"key": "__eventType", "value": "OrderPlaced"}
         ]
       }
     ]

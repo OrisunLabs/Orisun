@@ -56,7 +56,7 @@ func TestOrisunServerSaveEventsV2PassesEveryQueryObservation(t *testing.T) {
 	}
 }
 
-func TestOrisunServerSaveEventsAddsEventTypeToData(t *testing.T) {
+func TestOrisunServerSaveEventsKeepsEnvelopeSeparate(t *testing.T) {
 	saver := &capturePreparedSaver{}
 	server := &OrisunServer{eventStore: &EventStore{}, saveEvents: saver}
 
@@ -85,8 +85,11 @@ func TestOrisunServerSaveEventsAddsEventTypeToData(t *testing.T) {
 	if err := json.Unmarshal([]byte(saver.prepared[0].DataJSON), &data); err != nil {
 		t.Fatalf("prepared data is invalid JSON: %v", err)
 	}
-	if data["eventType"] != "OrderPlaced" {
-		t.Fatalf("expected canonical eventType in data, got %v", data["eventType"])
+	if _, exists := data["__eventType"]; exists {
+		t.Fatalf("expected canonical eventType in data, got %v", data["__eventType"])
+	}
+	if data["eventType"] != "stale" {
+		t.Fatalf("application eventType was overwritten: %v", data["eventType"])
 	}
 	if data["order_id"] != "order-1" {
 		t.Fatalf("expected original data to be preserved, got %v", data["order_id"])
@@ -113,7 +116,7 @@ func TestOrisunServerSaveEventsUsesPreparedBatch(t *testing.T) {
 	if err := json.Unmarshal([]byte(saver.prepared[0].DataJSON), &data); err != nil {
 		t.Fatalf("prepared data is invalid JSON: %v", err)
 	}
-	if data["eventType"] != "OrderPlaced" || data["order_id"] != "order-1" {
+	if data["__eventType"] != nil || data["order_id"] != "order-1" || saver.prepared[0].EventType != "OrderPlaced" {
 		t.Fatalf("unexpected prepared data: %v", data)
 	}
 	if saver.prepared[0].MetadataJSON != `{"trace_id":"trace-1"}` {
@@ -149,7 +152,7 @@ func TestOrisunServerGetEventsReturnsPackedBatch(t *testing.T) {
 	retriever := &captureEventsRetriever{batch: ReadEventBatch{{
 		EventId:         "event-1",
 		EventType:       "OrderPlaced",
-		Data:            `{"eventType":"OrderPlaced","orderId":"order-1"}`,
+		Data:            `{"orderId":"order-1"}`,
 		Metadata:        `{}`,
 		CommitPosition:  7,
 		PreparePosition: 8,
@@ -177,10 +180,10 @@ func TestOrisunServerGetEventsReturnsPackedBatch(t *testing.T) {
 	if publicData["orderId"] != "order-1" {
 		t.Fatalf("unexpected public data: %#v", publicData)
 	}
-	if _, leaked := publicData["eventType"]; leaked {
+	if _, leaked := publicData["__eventType"]; leaked {
 		t.Fatalf("storage eventType leaked into public data: %#v", publicData)
 	}
-	if retriever.batch[0].Data != `{"eventType":"OrderPlaced","orderId":"order-1"}` {
+	if retriever.batch[0].Data != `{"orderId":"order-1"}` {
 		t.Fatalf("public translation mutated backend batch: %s", retriever.batch[0].Data)
 	}
 }
@@ -202,7 +205,7 @@ func TestOrisunServerGetLatestByCriteriaUsesPackedTypes(t *testing.T) {
 	retriever := &captureEventsRetriever{latestBatch: LatestByCriteriaBatch{
 		Matches: []LatestCriterionMatch{{
 			Found: true,
-			Event: ReadEvent{EventId: "event-1", EventType: "OrderPlaced", Data: `{"eventType":"OrderPlaced","orderId":"order-1"}`, CommitPosition: 7, PreparePosition: 8},
+			Event: ReadEvent{EventId: "event-1", EventType: "OrderPlaced", Data: `{"orderId":"order-1"}`, CommitPosition: 7, PreparePosition: 8},
 		}},
 		ContextCommitPosition:  7,
 		ContextPreparePosition: 8,
@@ -227,7 +230,7 @@ func TestOrisunServerGetLatestByCriteriaUsesPackedTypes(t *testing.T) {
 	if publicData["orderId"] != "order-1" {
 		t.Fatalf("unexpected public latest data: %#v", publicData)
 	}
-	if _, leaked := publicData["eventType"]; leaked {
+	if _, leaked := publicData["__eventType"]; leaked {
 		t.Fatalf("storage eventType leaked into public latest data: %#v", publicData)
 	}
 	if retriever.latestQuery.Boundary != "orders" || retriever.latestQuery.Criteria[0].Tags[0].Value != "order-1" {

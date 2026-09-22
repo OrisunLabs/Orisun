@@ -104,7 +104,7 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 
 	rows, err := db.QueryContext(
 		t.Context(),
-		`SELECT event_id::text, transaction_id, global_id, pg_xact_id
+		`SELECT data->>'__eventId', transaction_id, global_id, pg_xact_id
 		 FROM public.test_boundary_orisun_es_event
 		 WHERE data->>'aggregate' = 'fast-context'
 		 ORDER BY global_id`,
@@ -254,7 +254,7 @@ func TestPostgresGroupCommit_UnconditionalFastPathMultipleEventsPerRequest(t *te
 
 	rows, err := db.QueryContext(
 		t.Context(),
-		`SELECT transaction_id, global_id, pg_xact_id, data->>'eventType'
+		`SELECT transaction_id, global_id, pg_xact_id, data->>'__eventType'
 		 FROM public.test_boundary_orisun_es_event
 		 WHERE data->>'aggregate' = $1
 		 ORDER BY global_id`,
@@ -442,7 +442,7 @@ func TestPostgresGroupCommit_InBatchWriteInvalidatesLaterCCCCheck(t *testing.T) 
 		t.Context(),
 		`SELECT COUNT(DISTINCT pg_xact_id)
 		 FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'eventType' IN ('First', 'Second', 'Independent')`,
+		 WHERE data->>'__eventType' IN ('First', 'Second', 'Independent')`,
 	).Scan(&transactionCount)
 	require.NoError(t, err)
 	require.Equal(t, 1, transactionCount, "successful requests in the flush must share one database transaction")
@@ -499,8 +499,8 @@ func TestPostgresSavePreparedValidatesEveryQueryObservation(t *testing.T) {
 
 	orCheck := orisun.ConsistencyCheck{
 		Criteria: []orisun.ReadCriterion{
-			{Tags: []orisun.ReadTag{{Key: "eventType", Value: "AccountOpened"}, {Key: "aggregate", Value: "account-a"}}},
-			{Tags: []orisun.ReadTag{{Key: "eventType", Value: "CustomerOpened"}, {Key: "aggregate", Value: "customer-a"}}},
+			{Tags: []orisun.ReadTag{{Key: "__eventType", Value: "AccountOpened"}, {Key: "aggregate", Value: "account-a"}}},
+			{Tags: []orisun.ReadTag{{Key: "__eventType", Value: "CustomerOpened"}, {Key: "aggregate", Value: "customer-a"}}},
 		},
 		Position: checks[1].Position,
 	}
@@ -827,7 +827,7 @@ func TestPostgresGroupCommit_TwoSaversContendOnSameContexts(t *testing.T) {
 		        COUNT(DISTINCT data->>'stream_id'),
 		        MAX(global_id)
 		 FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'eventType' = 'Contention'`,
+		 WHERE data->>'__eventType' = 'Contention'`,
 	).Scan(&persistedCount, &distinctContextCount, &maxGlobalID))
 	require.Equal(t, int64(contextCount), persistedCount)
 	require.Equal(t, int64(contextCount), distinctContextCount)
@@ -1000,7 +1000,7 @@ func TestCanUseUnconditionalFastPathRejectsUnsafeShapes(t *testing.T) {
 	valid := orisun.PreparedEventBatch{{
 		EventId:      uuid.Must(uuid.NewV7()).String(),
 		EventType:    "Valid",
-		DataJSON:     `{"eventType":"Valid"}`,
+		DataJSON:     `{"__eventType":"Valid"}`,
 		MetadataJSON: `{}`,
 	}}
 	require.True(t, canUseUnconditionalFastPath([]*postgresSaveRequest{{events: valid}}))
@@ -1099,7 +1099,7 @@ func TestPostgresGroupCommit_IndependentCCCFastPathV2(t *testing.T) {
 		t.Context(),
 		`SELECT COUNT(*), COUNT(DISTINCT pg_xact_id)
 		 FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'eventType' = 'IndependentV2'`,
+		 WHERE data->>'__eventType' = 'IndependentV2'`,
 	).Scan(&persisted, &transactions))
 	require.Equal(t, 3, persisted, "the stale request must not persist")
 	require.Equal(t, 1, transactions, "accepted requests must share one database transaction")

@@ -682,47 +682,12 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 	if err := validateBoundaryName(name); err != nil {
 		return fmt.Errorf("invalid index name %s: %w", name, err)
 	}
-	if len(fields) == 0 {
-		return fmt.Errorf("at least one field is required")
-	}
 	if combinator == "" {
 		combinator = eventstore.IndexCombinatorAND
 	}
-
-	// Build index expression list
-	exprs := make([]string, len(fields))
-	for i, f := range fields {
-		key := pq.QuoteLiteral(f.JsonKey)
-		switch f.ValueType {
-		case "numeric":
-			exprs[i] = "((data->>" + key + ")::numeric)"
-		case "boolean":
-			exprs[i] = "((data->>" + key + ")::boolean)"
-		case "timestamptz":
-			exprs[i] = "((data->>" + key + ")::timestamptz)"
-		default: // "text"
-			exprs[i] = "(data->>" + key + ")"
-		}
-	}
-
-	// Build WHERE clause
-	var whereClause string
-	if len(conditions) > 0 {
-		validOps := map[string]bool{"=": true, ">": true, "<": true, ">=": true, "<=": true}
-		validCombinators := map[string]bool{eventstore.IndexCombinatorAND: true, eventstore.IndexCombinatorOR: true}
-
-		if !validCombinators[combinator] {
-			return fmt.Errorf("invalid combinator %q: must be AND or OR", combinator)
-		}
-
-		predicates := make([]string, len(conditions))
-		for i, c := range conditions {
-			if !validOps[c.Operator] {
-				return fmt.Errorf("invalid operator %q: must be one of =, >, <, >=, <=", c.Operator)
-			}
-			predicates[i] = "(data->>" + pq.QuoteLiteral(c.Key) + ") " + c.Operator + " " + pq.QuoteLiteral(c.Value)
-		}
-		whereClause = " WHERE " + strings.Join(predicates, " "+combinator+" ")
+	expressions, whereClause, err := boundaryIndexExpressions(fields, conditions, combinator)
+	if err != nil {
+		return err
 	}
 
 	indexName := pq.QuoteIdentifier(boundary + "_" + name + "_idx")
@@ -774,7 +739,7 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		indexName,
 		schemaName,
 		tableName,
-		strings.Join(exprs, ", "),
+		expressions,
 		whereClause,
 	)
 

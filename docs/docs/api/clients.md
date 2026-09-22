@@ -184,7 +184,7 @@ func main() {
 	accountRootQuery := &eventstore.Query{
 		Criteria: []*eventstore.Criterion{{
 			Tags: []*eventstore.Tag{
-				{Key: "eventType", Value: "AccountOpened"},
+				{Key: "__eventType", Value: "AccountOpened"},
 				{Key: "accountOpenedId", Value: accountOpenedID},
 			},
 		}},
@@ -280,7 +280,7 @@ const accountOpenedId = '018f2d5e-0001-7000-8000-000000000001';
 const accountRootQuery = {
   criteria: [{
     tags: [
-      { key: 'eventType', value: 'AccountOpened' },
+      { key: '__eventType', value: 'AccountOpened' },
       { key: 'accountOpenedId', value: accountOpenedId },
     ],
   }],
@@ -364,7 +364,7 @@ try (OrisunClient client = OrisunClient.newBuilder()
 
   String accountOpenedId = "018f2d5e-0001-7000-8000-000000000001";
   Eventstore.Criterion accountRoot = Eventstore.Criterion.newBuilder()
-      .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+      .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
       .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue(accountOpenedId).build())
       .build();
   Eventstore.Query accountRootQuery = Eventstore.Query.newBuilder()

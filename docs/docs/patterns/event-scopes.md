@@ -7,7 +7,7 @@ Event scopes are a modeling convention for grouping related events without forci
 
 This pattern is adapted from Ralf Westphal's article [Scoping Events](https://ralfwestphal.substack.com/p/scoping-events), especially the course-enrollment example. Westphal describes scopes as event-rooted containers: every event can be the root of a scope, and every event can be a member of multiple scopes.
 
-Orisun does not reserve a special `scope` or `scopes` field. Criteria and indexes match JSON keys in event `data`, so scope keys are normal event data keys. The examples below use `scopes.` as a naming convention. When calling `SaveEventsV2`, pass the type through `event_type`; Orisun writes the canonical `eventType` key into `data`.
+Orisun does not reserve a special `scope` or `scopes` field. Criteria and indexes match JSON keys in event `data`, so scope keys are normal event data keys. The examples below use `scopes.` as a naming convention. When calling `SaveEventsV2`, pass the type through `event_type`; Orisun writes the canonical `__eventType` key into `data`.
 
 ## Course enrollment chain
 
@@ -15,7 +15,7 @@ Start with two independent scope roots:
 
 ```json
 {
-  "eventType": "StudentRegistered",
+  "__eventType": "StudentRegistered",
   "studentRegisteredId": "018f2d5e-1001-7000-8000-000000000001",
   "studentName": "Mary"
 }
@@ -23,7 +23,7 @@ Start with two independent scope roots:
 
 ```json
 {
-  "eventType": "CoursePublished",
+  "__eventType": "CoursePublished",
   "coursePublishedId": "018f2d5e-1002-7000-8000-000000000002",
   "courseNumber": "25.2.63.101",
   "title": "Event Sourcing 101"
@@ -34,7 +34,7 @@ The enrollment event belongs to both roots. It also becomes a new scope root of 
 
 ```json
 {
-  "eventType": "StudentEnrolledInCourse",
+  "__eventType": "StudentEnrolledInCourse",
   "studentEnrolledInCourseId": "018f2d5e-1003-7000-8000-000000000003",
   "enrolledAt": "2026-06-22T09:00:00Z",
   "scopes.studentRegisteredId": "018f2d5e-1001-7000-8000-000000000001",
@@ -46,7 +46,7 @@ A grade belongs directly to the enrollment scope and also carries the outer stud
 
 ```json
 {
-  "eventType": "GradeAssigned",
+  "__eventType": "GradeAssigned",
   "gradeAssignedId": "018f2d5e-1004-7000-8000-000000000004",
   "grade": "B+",
   "assignedAt": "2026-06-22T10:00:00Z",
@@ -60,7 +60,7 @@ The article then extends the example: a grade dispute starts a chat in the scope
 
 ```json
 {
-  "eventType": "ChatStarted",
+  "__eventType": "ChatStarted",
   "chatStartedId": "018f2d5e-1005-7000-8000-000000000005",
   "topic": "Grade discussion",
   "startedAt": "2026-06-22T11:00:00Z",
@@ -75,7 +75,7 @@ Messages happen inside the chat scope. They can also carry inherited scopes so a
 
 ```json
 {
-  "eventType": "ChatMessageSent",
+  "__eventType": "ChatMessageSent",
   "chatMessageSentId": "018f2d5e-1006-7000-8000-000000000006",
   "sender": "mary",
   "message": "Can we review the grading rubric?",
@@ -92,7 +92,7 @@ The same course scope can also contain events that are not part of one student's
 
 ```json
 {
-  "eventType": "CourseLiked",
+  "__eventType": "CourseLiked",
   "courseLikedId": "018f2d5e-1007-7000-8000-000000000007",
   "likedBy": "018f2d5e-1001-7000-8000-000000000001",
   "likedAt": "2026-06-22T12:00:00Z",
@@ -102,7 +102,7 @@ The same course scope can also contain events that are not part of one student's
 
 ```json
 {
-  "eventType": "CourseQuestionAsked",
+  "__eventType": "CourseQuestionAsked",
   "courseQuestionAskedId": "018f2d5e-1008-7000-8000-000000000008",
   "askedBy": "018f2d5e-1001-7000-8000-000000000001",
   "question": "Will there be a session on projections?",
@@ -139,7 +139,7 @@ To rebuild everything in a published course scope, read the root event and every
   "criteria": [
     {
       "tags": [
-        {"key": "eventType", "value": "CoursePublished"},
+        {"key": "__eventType", "value": "CoursePublished"},
         {"key": "coursePublishedId", "value": "018f2d5e-1002-7000-8000-000000000002"}
       ]
     },
@@ -159,7 +159,7 @@ To focus on the enrollment, change only the root and scope key:
   "criteria": [
     {
       "tags": [
-        {"key": "eventType", "value": "StudentEnrolledInCourse"},
+        {"key": "__eventType", "value": "StudentEnrolledInCourse"},
         {"key": "studentEnrolledInCourseId", "value": "018f2d5e-1003-7000-8000-000000000003"}
       ]
     },
@@ -174,7 +174,7 @@ To focus on the enrollment, change only the root and scope key:
 
 Criteria entries are ORed together. Tags inside one criterion are ANDed together.
 
-Including `eventType` on root-event criteria keeps query shapes specific and aligns with partial indexes. Scope-only criteria are useful when you intentionally want every event inside that scope.
+Including `__eventType` on root-event criteria keeps query shapes specific and aligns with partial indexes. Scope-only criteria are useful when you intentionally want every event inside that scope.
 
 ## Use scopes with CCC
 
@@ -193,7 +193,7 @@ Scopes are a natural fit for [Command Context Consistency](../concepts/command-c
         "criteria": [
           {
             "tags": [
-              {"key": "eventType", "value": "StudentEnrolledInCourse"},
+              {"key": "__eventType", "value": "StudentEnrolledInCourse"},
               {"key": "studentEnrolledInCourseId", "value": "018f2d5e-1003-7000-8000-000000000003"}
             ]
           },
@@ -235,7 +235,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 EOF
 ```
 
-For high-volume event categories, prefer partial indexes with `eventType` conditions:
+For high-volume event categories, prefer partial indexes with `__eventType` conditions:
 
 ```bash
 grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
@@ -246,7 +246,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
     {"json_key": "scopes.studentEnrolledInCourseId", "value_type": "TEXT"}
   ],
   "conditions": [
-    {"key": "eventType", "operator": "=", "value": "GradeAssigned"}
+    {"key": "__eventType", "operator": "=", "value": "GradeAssigned"}
   ],
   "condition_combinator": "AND"
 }

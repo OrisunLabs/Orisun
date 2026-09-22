@@ -245,13 +245,13 @@ func prepareRequestedEventsForSave(events []*EventToSave) (PreparedEventBatch, e
 		if event == nil {
 			return nil, fmt.Errorf("event %d is nil", i)
 		}
-		dataJSON, err := prepareEventDataJSON(event.Data, event.EventType)
+		dataJSON, err := prepareEventDataJSON(event.Data)
 		if err != nil {
 			return nil, fmt.Errorf("event %d data: %w", i, err)
 		}
 		// The gRPC contract historically accepts metadata objects (or null), not
 		// arbitrary JSON scalars. Keep that validation at the transport edge.
-		metadataJSON, err := prepareJSONObjectJSON(event.Metadata, "", false)
+		metadataJSON, err := prepareJSONObjectJSON(event.Metadata, false)
 		if err != nil {
 			return nil, fmt.Errorf("event %d metadata: %w", i, err)
 		}
@@ -899,7 +899,7 @@ func neutralSubscriptionReadEvent(event ReadEvent) coreeventstore.ReadEvent {
 		EventID:   event.EventId,
 		WriteID:   event.WriteId,
 		EventType: event.EventType,
-		Data:      eventdata.WithoutStorageEventType(event.Data),
+		Data:      event.Data,
 		Metadata:  event.Metadata,
 		Position: coreeventstore.Position{
 			CommitPosition:  event.CommitPosition,
@@ -914,7 +914,7 @@ func neutralPublishedEvent(event Event) coreeventstore.ReadEvent {
 		EventID:   event.EventId,
 		WriteID:   event.WriteId,
 		EventType: event.EventType,
-		Data:      eventdata.WithoutStorageEventType(event.Data),
+		Data:      event.Data,
 		Metadata:  event.Metadata,
 	}
 	if event.Position != nil {
@@ -1003,8 +1003,8 @@ func (s *EventStore) eventMatchesQueryCriteria(event *Event, criteria *Query) bo
 		return true
 	}
 
-	unmarshaledData := map[string]any{}
-	if err := json.Unmarshal([]byte(event.Data), &unmarshaledData); err != nil {
+	unmarshaledData, err := eventdata.EnvelopeFields(event.Data, event.EventId, event.EventType)
+	if err != nil {
 		return false
 	}
 

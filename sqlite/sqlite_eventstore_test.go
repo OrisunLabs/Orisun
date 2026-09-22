@@ -196,7 +196,7 @@ func TestSave_AddsEventTypeToData(t *testing.T) {
 		Count:     100,
 		Query: &eventstore.Query{
 			Criteria: []*eventstore.Criterion{
-				{Tags: []*eventstore.Tag{{Key: "eventType", Value: "OrderPlaced"}}},
+				{Tags: []*eventstore.Tag{{Key: "__eventType", Value: "OrderPlaced"}}},
 			},
 		},
 	})
@@ -211,8 +211,11 @@ func TestSave_AddsEventTypeToData(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp[0].Data), &data); err != nil {
 		t.Fatalf("unmarshal data: %v", err)
 	}
-	if data["eventType"] != "OrderPlaced" {
-		t.Fatalf("expected canonical eventType in data, got %v", data["eventType"])
+	if data["__eventType"] != nil || data["__eventId"] != nil {
+		t.Fatalf("expected canonical eventType in data, got %v", data["__eventType"])
+	}
+	if data["eventType"] != "stale" {
+		t.Fatalf("application eventType was overwritten: %v", data["eventType"])
 	}
 	if resp[0].EventType != "OrderPlaced" {
 		t.Fatalf("expected EventType from data.eventType, got %q", resp[0].EventType)
@@ -464,8 +467,8 @@ func TestSavePrepared_UsesOnePositionForAnORQuery(t *testing.T) {
 	}
 	check := eventstore.ConsistencyCheck{
 		Criteria: []eventstore.ReadCriterion{
-			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "StockAdjusted"}, {Key: "product_id", Value: "p-1"}}},
-			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "StockCounted"}, {Key: "product_id", Value: "p-1"}}},
+			{Tags: []eventstore.ReadTag{{Key: "__eventType", Value: "StockAdjusted"}, {Key: "product_id", Value: "p-1"}}},
+			{Tags: []eventstore.ReadTag{{Key: "__eventType", Value: "StockCounted"}, {Key: "product_id", Value: "p-1"}}},
 		},
 		Position: eventstore.Position{CommitPosition: latestGID, PreparePosition: latestGID},
 	}
@@ -1003,7 +1006,7 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		if err := admin.CreateBoundaryIndex(ctx, "test", "placed_amount", []eventstore.BoundaryIndexField{
 			{JsonKey: "amount", ValueType: "numeric"},
 		}, []eventstore.BoundaryIndexCondition{
-			{Key: "eventType", Operator: "=", Value: "OrderPlaced"},
+			{Key: "__eventType", Operator: "=", Value: "OrderPlaced"},
 		}, eventstore.IndexCombinatorAND); err != nil {
 			t.Fatalf("create partial index: %v", err)
 		}
@@ -1032,7 +1035,7 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		err := admin.CreateBoundaryIndex(ctx, "test", "bad_op", []eventstore.BoundaryIndexField{
 			{JsonKey: "id", ValueType: "text"},
 		}, []eventstore.BoundaryIndexCondition{
-			{Key: "eventType", Operator: "LIKE", Value: "Order%"},
+			{Key: "__eventType", Operator: "LIKE", Value: "Order%"},
 		}, "")
 		if err == nil || !strings.Contains(err.Error(), "invalid operator") {
 			t.Fatalf("expected invalid operator error, got %v", err)
@@ -1043,7 +1046,7 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		err := admin.CreateBoundaryIndex(ctx, "test", "bad_comb", []eventstore.BoundaryIndexField{
 			{JsonKey: "id", ValueType: "text"},
 		}, []eventstore.BoundaryIndexCondition{
-			{Key: "eventType", Operator: "=", Value: "Placed"},
+			{Key: "__eventType", Operator: "=", Value: "Placed"},
 		}, "XOR")
 		if err == nil || !strings.Contains(err.Error(), "invalid combinator") {
 			t.Fatalf("expected invalid combinator error, got %v", err)
@@ -1112,7 +1115,7 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		if err := admin.CreateBoundaryIndex(ctx, "test", "placed_amount2", []eventstore.BoundaryIndexField{
 			{JsonKey: "amount", ValueType: "numeric"},
 		}, []eventstore.BoundaryIndexCondition{
-			{Key: "eventType", Operator: "=", Value: "OrderPlaced"},
+			{Key: "__eventType", Operator: "=", Value: "OrderPlaced"},
 		}, ""); err != nil {
 			t.Fatalf("create partial index: %v", err)
 		}
@@ -1124,7 +1127,7 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 
 		pool := pools["test"]
 		where, err := buildCriteriaSQLForBoundary([]map[string]any{
-			{"eventType": "OrderPlaced", "amount": "150"},
+			{"__eventType": "OrderPlaced", "amount": "150"},
 		}, pool.indexes, "test")
 		if err != nil {
 			t.Fatalf("build criteria: %v", err)

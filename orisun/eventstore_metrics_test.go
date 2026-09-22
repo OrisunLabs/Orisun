@@ -209,7 +209,7 @@ func BenchmarkSavePreparedMetricsGate(b *testing.B) {
 	events := PreparedEventBatch{{
 		EventId:      "event-1",
 		EventType:    "OrderPlaced",
-		DataJSON:     `{"eventType":"OrderPlaced","order_id":"order-1"}`,
+		DataJSON:     `{"__eventType":"OrderPlaced","order_id":"order-1"}`,
 		MetadataJSON: `{}`,
 	}}
 

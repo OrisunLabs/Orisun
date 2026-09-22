@@ -102,7 +102,7 @@ func lifecycleQuery(name string) coreeventstore.Query {
 	}
 	query := coreeventstore.Query{Criteria: make([]coreeventstore.Criterion, len(eventTypes))}
 	for i, eventType := range eventTypes {
-		tags := []coreeventstore.Tag{{Key: "eventType", Value: eventType}}
+		tags := []coreeventstore.Tag{{Key: "__eventType", Value: eventType}}
 		if name != "" {
 			tags = append(tags, coreeventstore.Tag{Key: "boundary", Value: name})
 		}

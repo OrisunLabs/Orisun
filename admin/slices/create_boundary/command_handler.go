@@ -60,7 +60,7 @@ func CreateBoundaryCommandHandler(
 	if err != nil {
 		return CreateBoundaryResult{}, statuscode.Errorf(statuscode.Internal, "create boundary event id: %v", err)
 	}
-	data, err := eventData(adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+	data, err := eventData(adminevents.BoundaryCreated{
 		Boundary:             definition.Name,
 		Description:          definition.Description,
 		Placement:            definition.Placement,
@@ -155,7 +155,7 @@ func normalize(command CreateBoundaryCommand) (boundarymodel.Definition, error) 
 
 func definitionCriteria(name string) []coreeventstore.Criterion {
 	return []coreeventstore.Criterion{
-		{Tags: []coreeventstore.Tag{{Key: "boundary", Value: name}, {Key: "eventType", Value: adminevents.EventTypeBoundaryCreated}}},
+		{Tags: []coreeventstore.Tag{{Key: "boundary", Value: name}, {Key: "__eventType", Value: adminevents.EventTypeBoundaryCreated}}},
 	}
 }
 
@@ -174,16 +174,7 @@ func metadataWithQuery(metadata CommandMetadata, query coreeventstore.Query) map
 	return merged
 }
 
-func eventData(eventType string, value any) (string, error) {
+func eventData(value any) (string, error) {
 	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
-		return "", err
-	}
-	object["eventType"] = eventType
-	encoded, err = json.Marshal(object)
 	return string(encoded), err
 }

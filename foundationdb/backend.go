@@ -158,22 +158,22 @@ var systemAdminIndexes = []struct {
 	fields []eventstore.BoundaryIndexField
 }{
 	{"sys_admin_event_type", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 	}},
 	{"sys_admin_et_username", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "username", ValueType: "text"},
 	}},
 	{"sys_admin_et_user_id", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "user_id", ValueType: "text"},
 	}},
 	{"sys_admin_et_userid", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "userId", ValueType: "text"},
 	}},
 	{"sys_admin_et_boundary", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "boundary", ValueType: "text"},
 	}},
 }
@@ -1430,11 +1430,14 @@ func (b *Backend) ProvisionBoundary(ctx context.Context, definition boundarymode
 	return b.ensureBoundaryMarker(ctx, definition.Name)
 }
 
-func (b *Backend) InstallBoundary(_ context.Context, definition boundarymodel.Definition) error {
+func (b *Backend) InstallBoundary(ctx context.Context, definition boundarymodel.Definition) error {
 	if b == nil {
 		return fmt.Errorf("FoundationDB boundary installer is not configured")
 	}
 	if err := b.validateBoundaryDefinition(definition); err != nil {
+		return err
+	}
+	if err := b.migrateBoundaryStorage(ctx, definition.Name); err != nil {
 		return err
 	}
 	b.boundaryMu.Lock()
@@ -1470,7 +1473,7 @@ func (b *Backend) ensureBoundaryMarker(ctx context.Context, boundary string) err
 	if err != nil {
 		return fmt.Errorf("persist FoundationDB boundary %s: %w", boundary, err)
 	}
-	return nil
+	return b.migrateBoundaryStorage(ctx, boundary)
 }
 
 func (b *Backend) tupleKey(parts ...tuple.TupleElement) fdb.Key {

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
 	"github.com/goccy/go-json"
 )
@@ -27,8 +28,6 @@ const (
 
 type eventRecord struct {
 	WriteLastOffset *uint16 `json:"write_last_offset,omitempty"`
-	EventID         string  `json:"event_id"`
-	EventType       string  `json:"event_type"`
 	Data            string  `json:"data"`
 	Metadata        string  `json:"metadata"`
 	DateCreated     string  `json:"date_created"`
@@ -59,16 +58,18 @@ type preparedEvent struct {
 func prepareEvents(events eventstore.PreparedEventBatch) ([]preparedEvent, error) {
 	out := make([]preparedEvent, len(events))
 	for i, event := range events {
+		stored, err := eventdata.WithEnvelope(event.DataJSON, event.EventId, event.EventType)
+		if err != nil {
+			return nil, err
+		}
 		var data map[string]any
-		if err := json.Unmarshal([]byte(event.DataJSON), &data); err != nil {
+		if err := json.Unmarshal([]byte(stored), &data); err != nil {
 			return nil, err
 		}
 		out[i] = preparedEvent{
 			record: eventRecord{
-				EventID:   event.EventId,
-				EventType: event.EventType,
-				Data:      event.DataJSON,
-				Metadata:  event.MetadataJSON,
+				Data:     stored,
+				Metadata: event.MetadataJSON,
 			},
 			data: data,
 		}
@@ -83,7 +84,7 @@ func estimateSaveBytes(prepared []preparedEvent, indexes []indexDefinition) int 
 	total := 0
 	for _, e := range prepared {
 		total += len(e.record.Data) + len(e.record.Metadata) +
-			len(e.record.EventID) + len(e.record.EventType) + perEventOverheadBytes
+			perEventOverheadBytes
 		for _, idx := range indexes {
 			if !eventMatchesIndexConditions(e.data, idx) {
 				continue
@@ -122,10 +123,12 @@ func decodeEventRecord(value []byte) (eventRecord, map[string]any, error) {
 }
 
 func readEventFromRecord(value []byte, tx, gid int64) (eventstore.ReadEvent, error) {
-	record, _, err := decodeEventRecord(value)
+	record, data, err := decodeEventRecord(value)
 	if err != nil {
 		return eventstore.ReadEvent{}, err
 	}
+	eventType, _ := data["__eventType"].(string)
+	eventID, _ := data["__eventId"].(string)
 	created, err := time.Parse(time.RFC3339Nano, record.DateCreated)
 	if err != nil {
 		created = time.Now().UTC()
@@ -136,9 +139,9 @@ func readEventFromRecord(value []byte, tx, gid int64) (eventstore.ReadEvent, err
 	}
 	return eventstore.ReadEvent{
 		WriteId:         writeID,
-		EventId:         record.EventID,
-		EventType:       record.EventType,
-		Data:            record.Data,
+		EventId:         eventID,
+		EventType:       eventType,
+		Data:            eventdata.WithoutStorageEnvelope(record.Data),
 		Metadata:        record.Metadata,
 		CommitPosition:  tx,
 		PreparePosition: gid,

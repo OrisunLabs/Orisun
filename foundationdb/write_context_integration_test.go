@@ -10,6 +10,8 @@ import (
 
 	"github.com/OrisunLabs/Orisun/internal/storagecontract"
 	"github.com/OrisunLabs/Orisun/orisun"
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -45,4 +47,41 @@ func TestFoundationDBWriteContextSpansValues(t *testing.T) {
 	expected, err := orisun.DecodeWriteContext(id, encoded)
 	require.NoError(t, err)
 	require.Equal(t, expected, actual)
+}
+
+func TestFoundationDBBackendOwnsEventEnvelope(t *testing.T) {
+	backend := newTestBackend(t)
+	storagecontract.Envelope(t, backend, backend, backend, "test", func(fields string) {
+		_, err := backend.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
+			rows, err := tr.GetRange(prefixRange(backend.eventPrefix("test")), fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				record, _, err := decodeEventRecord(row.Value)
+				if err != nil {
+					return nil, err
+				}
+				var data map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(record.Data), &data); err != nil {
+					return nil, err
+				}
+				if err := json.Unmarshal([]byte(fields), &data); err != nil {
+					return nil, err
+				}
+				encoded, err := json.Marshal(data)
+				if err != nil {
+					return nil, err
+				}
+				record.Data = string(encoded)
+				encoded, err = json.Marshal(record)
+				if err != nil {
+					return nil, err
+				}
+				tr.Set(row.Key, encoded)
+			}
+			return nil, nil
+		})
+		require.NoError(t, err)
+	})
 }

@@ -69,7 +69,7 @@ func TestSubscribeToAllEventsDeliversNeutralEventAndPropagatesHandlerError(t *te
 	retriever.add(ReadEvent{
 		EventId:         "event-1",
 		EventType:       "OrderPlaced",
-		Data:            `{"eventType":"OrderPlaced","orderId":"o-1"}`,
+		Data:            `{"orderId":"o-1"}`,
 		Metadata:        `{}`,
 		CommitPosition:  1,
 		PreparePosition: 1,
@@ -111,7 +111,7 @@ func TestNeutralPublishedEventExcludesStorageEventTypeFromData(t *testing.T) {
 	event := Event{
 		EventId:   "event-1",
 		EventType: "OrderPlaced",
-		Data:      `{"eventType":"OrderPlaced","orderId":"o-1"}`,
+		Data:      `{"orderId":"o-1"}`,
 	}
 
 	got := neutralPublishedEvent(event)

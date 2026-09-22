@@ -151,11 +151,11 @@ func TestMigrationsRefuseNewerSchema(t *testing.T) {
 func TestMigrationStepFailureRollsBackAtomically(t *testing.T) {
 	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "partial.db"))
 
-	steps := []string{
-		"CREATE TABLE step_one (id INTEGER PRIMARY KEY);",
+	steps := []migrationStep{
+		{sql: "CREATE TABLE step_one (id INTEGER PRIMARY KEY);"},
 		// Second statement fails after the first succeeds: the whole step,
 		// including the version bump, must roll back.
-		"CREATE TABLE step_two (id INTEGER PRIMARY KEY);\nCREATE TABLE step_one (id INTEGER PRIMARY KEY);",
+		{sql: "CREATE TABLE step_two (id INTEGER PRIMARY KEY);\nCREATE TABLE step_one (id INTEGER PRIMARY KEY);"},
 	}
 	err := applyVersionedMigrations(conn, steps)
 	if err == nil {
@@ -183,7 +183,7 @@ func TestMigrationStepFailureRollsBackAtomically(t *testing.T) {
 	}
 
 	// A rerun with the step fixed resumes from where it left off.
-	steps[1] = "CREATE TABLE step_two (id INTEGER PRIMARY KEY);"
+	steps[1] = migrationStep{sql: "CREATE TABLE step_two (id INTEGER PRIMARY KEY);"}
 	if err := applyVersionedMigrations(conn, steps); err != nil {
 		t.Fatalf("rerun after fix: %v", err)
 	}

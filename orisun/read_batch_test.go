@@ -13,7 +13,7 @@ func TestReadEventMarshalJSONPreservesPublishedEnvelope(t *testing.T) {
 	event := ReadEvent{
 		EventId:         "event-1",
 		EventType:       "AccountCredited",
-		Data:            `{"eventType":"AccountCredited","amount":10}`,
+		Data:            `{"amount":10}`,
 		Metadata:        `{"trace":"abc"}`,
 		CommitPosition:  42,
 		PreparePosition: 7,
@@ -25,7 +25,7 @@ func TestReadEventMarshalJSONPreservesPublishedEnvelope(t *testing.T) {
 	assert.JSONEq(t, `{
 		"event_id":"event-1",
 		"event_type":"AccountCredited",
-		"data":"{\"eventType\":\"AccountCredited\",\"amount\":10}",
+		"data":"{\"amount\":10}",
 		"metadata":"{\"trace\":\"abc\"}",
 		"position":{"commit_position":42,"prepare_position":7},
 		"date_created":{"seconds":1700000000,"nanos":123000000}
@@ -55,7 +55,7 @@ func TestReadEventBatchResponsePreservesRows(t *testing.T) {
 		{
 			EventId:         "event-1",
 			EventType:       "Opened",
-			Data:            `{"eventType":"Opened"}`,
+			Data:            `{}`,
 			Metadata:        `{}`,
 			CommitPosition:  4,
 			PreparePosition: 9,
@@ -64,7 +64,7 @@ func TestReadEventBatchResponsePreservesRows(t *testing.T) {
 		{
 			EventId:         "event-2",
 			EventType:       "Closed",
-			Data:            `{"eventType":"Closed"}`,
+			Data:            `{}`,
 			Metadata:        `{"reason":"done"}`,
 			CommitPosition:  5,
 			PreparePosition: 10,
@@ -88,21 +88,21 @@ func TestReadEventMaterializationExcludesStorageEventType(t *testing.T) {
 	read := ReadEvent{
 		EventId:   "event-1",
 		EventType: "AccountCredited",
-		Data:      `{"eventType":"AccountCredited","accountId":"account-1"}`,
+		Data:      `{"accountId":"account-1"}`,
 	}
 
 	event := read.Event()
 	require.NotNil(t, event)
 	assert.Equal(t, "AccountCredited", event.EventType)
 	assert.JSONEq(t, `{"accountId":"account-1"}`, event.Data)
-	assert.JSONEq(t, `{"eventType":"AccountCredited","accountId":"account-1"}`, read.Data)
+	assert.JSONEq(t, `{"accountId":"account-1"}`, read.Data)
 }
 
 func BenchmarkPublisherEventMarshal(b *testing.B) {
 	event := ReadEvent{
 		EventId:         "event-1",
 		EventType:       "AccountCredited",
-		Data:            `{"eventType":"AccountCredited","account_id":"account-1","amount":10}`,
+		Data:            `{"account_id":"account-1","amount":10}`,
 		Metadata:        `{"trace_id":"trace-1"}`,
 		CommitPosition:  42,
 		PreparePosition: 7,

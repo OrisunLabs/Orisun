@@ -457,10 +457,10 @@ func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
 		fields []eventstore.BoundaryIndexField
 	}{
 		{name: "account_state", fields: []eventstore.BoundaryIndexField{
-			{JsonKey: "eventType", ValueType: "text"}, {JsonKey: "account_id", ValueType: "text"},
+			{JsonKey: "__eventType", ValueType: "text"}, {JsonKey: "account_id", ValueType: "text"},
 		}},
 		{name: "customer_state", fields: []eventstore.BoundaryIndexField{
-			{JsonKey: "eventType", ValueType: "text"}, {JsonKey: "customer_id", ValueType: "text"},
+			{JsonKey: "__eventType", ValueType: "text"}, {JsonKey: "customer_id", ValueType: "text"},
 		}},
 	} {
 		if err := backend.CreateBoundaryIndex(ctx, "test", index.name, index.fields, nil, eventstore.IndexCombinatorAND); err != nil {
@@ -511,8 +511,8 @@ func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
 
 	orCheck := eventstore.ConsistencyCheck{
 		Criteria: []eventstore.ReadCriterion{
-			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "AccountOpened"}, {Key: "account_id", Value: "a-1"}}},
-			{Tags: []eventstore.ReadTag{{Key: "eventType", Value: "CustomerRegistered"}, {Key: "customer_id", Value: "c-1"}}},
+			{Tags: []eventstore.ReadTag{{Key: "__eventType", Value: "AccountOpened"}, {Key: "account_id", Value: "a-1"}}},
+			{Tags: []eventstore.ReadTag{{Key: "__eventType", Value: "CustomerRegistered"}, {Key: "customer_id", Value: "c-1"}}},
 		},
 		Position: eventstore.Position{CommitPosition: customerCommit, PreparePosition: customerGID},
 	}

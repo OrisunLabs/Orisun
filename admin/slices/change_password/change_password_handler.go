@@ -64,7 +64,7 @@ func ChangePassword(
 					{
 						Tags: []*orisun.Tag{
 							{Key: "user_id", Value: currentUserId},
-							{Key: "eventType", Value: eventType},
+							{Key: "__eventType", Value: eventType},
 						},
 					},
 				},
@@ -151,7 +151,7 @@ func ChangePassword(
 	}
 
 	tags := []*orisun.Tag{
-		{Key: "eventType", Value: admin_events.EventTypeUserPasswordChanged},
+		{Key: "__eventType", Value: admin_events.EventTypeUserPasswordChanged},
 		{Key: "user_id", Value: currentUserId},
 	}
 

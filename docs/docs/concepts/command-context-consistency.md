@@ -31,7 +31,7 @@ carrier 2”:
 ```text
 (scopes.shipmentId = shipment-9)
 OR
-(eventType = CarrierSuspended AND carrierId = carrier-2)
+(__eventType = CarrierSuspended AND carrierId = carrier-2)
 ```
 
 It still produces one observation position because it is one query. Two reads
@@ -111,11 +111,11 @@ Some commands use different read shapes. A dispatch might use `GetLatestByCriter
       "query": {
         "criteria": [
           {"tags": [
-            {"key": "eventType", "value": "CarrierSuspended"},
+            {"key": "__eventType", "value": "CarrierSuspended"},
             {"key": "carrierId", "value": "carrier-2"}
           ]},
           {"tags": [
-            {"key": "eventType", "value": "CarrierReinstated"},
+            {"key": "__eventType", "value": "CarrierReinstated"},
             {"key": "carrierId", "value": "carrier-2"}
           ]}
         ]

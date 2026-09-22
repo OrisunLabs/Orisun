@@ -66,7 +66,7 @@ func CreateUser(
 					{
 						Tags: []*orisun.Tag{
 							{Key: "username", Value: username},
-							{Key: "eventType", Value: ev.EventTypeUserCreated},
+							{Key: "__eventType", Value: ev.EventTypeUserCreated},
 						},
 					},
 				},
@@ -105,7 +105,7 @@ func CreateUser(
 					Criteria: []*orisun.Criterion{
 						{
 							Tags: []*orisun.Tag{
-								{Key: "eventType", Value: ev.EventTypeUserDeleted},
+								{Key: "__eventType", Value: ev.EventTypeUserDeleted},
 								{Key: "userId", Value: userCreatedEvent.UserId},
 							},
 						},
@@ -176,12 +176,12 @@ func CreateUser(
 					{
 						Tags: []*orisun.Tag{
 							{Key: "username", Value: username},
-							{Key: "eventType", Value: ev.EventTypeUserCreated},
+							{Key: "__eventType", Value: ev.EventTypeUserCreated},
 						},
 					},
 					{
 						Tags: []*orisun.Tag{
-							{Key: "eventType", Value: ev.EventTypeUserDeleted},
+							{Key: "__eventType", Value: ev.EventTypeUserDeleted},
 							{Key: "userId", Value: userId.String()},
 						},
 					},

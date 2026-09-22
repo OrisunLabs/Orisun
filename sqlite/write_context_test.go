@@ -158,7 +158,7 @@ func TestWriteContextRollsBackOnEventInsertFailure(t *testing.T) {
 	defer cleanup()
 	requests := []*sqliteSaveRequest{
 		{ctx: t.Context(), consistencyJSON: "[]", inserts: orisun.PreparedEventBatch{{EventId: "bad", EventType: "Bad", DataJSON: "invalid json", MetadataJSON: "{}"}}, result: make(chan sqliteSaveResult, 1)},
-		{ctx: t.Context(), consistencyJSON: "[]", inserts: orisun.PreparedEventBatch{{EventId: "good", EventType: "Good", DataJSON: `{"eventType":"Good"}`, MetadataJSON: "{}"}}, result: make(chan sqliteSaveResult, 1)},
+		{ctx: t.Context(), consistencyJSON: "[]", inserts: orisun.PreparedEventBatch{{EventId: "good", EventType: "Good", DataJSON: `{"__eventType":"Good"}`, MetadataJSON: "{}"}}, result: make(chan sqliteSaveResult, 1)},
 	}
 	conn, err := pool.Write.Take(t.Context())
 	require.NoError(t, err)

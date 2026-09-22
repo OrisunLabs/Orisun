@@ -85,7 +85,7 @@ func (m *mappingIndexManager) GetBoundaryIndex(_ context.Context, _ string, name
 func (r *mappingRetriever) GetBatch(_ context.Context, request *orisun.GetEventsRequest) (orisun.ReadEventBatch, error) {
 	r.request = request
 	return orisun.ReadEventBatch{{
-		EventId: "event-1", EventType: "Opened", Data: `{"eventType":"Opened"}`, Metadata: `{}`,
+		EventId: "event-1", EventType: "Opened", Data: `{}`, Metadata: `{}`,
 		CommitPosition: 8, PreparePosition: 9, DateCreated: r.created,
 	}}, nil
 }
@@ -222,7 +222,7 @@ func TestEventStoreAdapterMapsReadAndLatestResponses(t *testing.T) {
 		Direction:    Direction_DESC,
 		FromPosition: &Position{CommitPosition: 2, PreparePosition: 3},
 		Query: &Query{Criteria: []*Criterion{{
-			Tags: []*Tag{{Key: "eventType", Value: "Opened"}},
+			Tags: []*Tag{{Key: "__eventType", Value: "Opened"}},
 		}}},
 	})
 	if err != nil {

@@ -271,12 +271,18 @@ func (s *SqliteSaveEvents) runFlush(
 		}
 	}()
 
-	live := batch[:0]
+	live := make([]*sqliteSaveRequest, 0, len(batch))
 	for _, req := range batch {
 		if ctxErr := req.ctx.Err(); ctxErr != nil {
 			req.deliver(sqliteSaveResult{err: statuscode.FromContextError(ctxErr)})
 			continue
 		}
+		stored, err := prepareStoredEvents(req.inserts)
+		if err != nil {
+			req.deliver(sqliteSaveResult{err: statuscode.Errorf(statuscode.Internal, "invalid prepared event data: %v", err)})
+			continue
+		}
+		req.inserts = stored
 		live = append(live, req)
 	}
 	if len(live) == 0 {

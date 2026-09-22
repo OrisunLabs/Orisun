@@ -22,11 +22,11 @@ func readyIndex(name string, fields ...eventstore.BoundaryIndexField) indexDefin
 
 func TestEstimateSaveBytes(t *testing.T) {
 	prepared := []preparedEvent{
-		{record: eventRecord{EventID: "id", EventType: "T", Data: "1234567890", Metadata: "ab"}},
-		{record: eventRecord{EventID: "id2", EventType: "T2", Data: "xyz", Metadata: ""}},
+		{record: eventRecord{Data: "1234567890", Metadata: "ab"}},
+		{record: eventRecord{Data: "xyz", Metadata: ""}},
 	}
 	got := estimateSaveBytes(prepared, []indexDefinition{readyIndex("by_type", textField("type"))})
-	want := (10 + 2 + 2 + 1 + perEventOverheadBytes) + (3 + 0 + 3 + 2 + perEventOverheadBytes)
+	want := (10 + 2 + perEventOverheadBytes) + (3 + 0 + perEventOverheadBytes)
 	if got != want {
 		t.Fatalf("estimateSaveBytes = %d, want %d", got, want)
 	}
@@ -35,7 +35,7 @@ func TestEstimateSaveBytes(t *testing.T) {
 func TestEstimateSaveBytesIncludesMatchingIndexes(t *testing.T) {
 	prepared := []preparedEvent{
 		{
-			record: eventRecord{EventID: "id", EventType: "T", Data: "{}", Metadata: "{}"},
+			record: eventRecord{Data: "{}", Metadata: "{}"},
 			data:   map[string]any{"type": "Created", "status": "open"},
 		},
 	}
@@ -49,7 +49,7 @@ func TestEstimateSaveBytesIncludesMatchingIndexes(t *testing.T) {
 		State:      indexStateReady,
 	}
 	got := estimateSaveBytes(prepared, []indexDefinition{idx})
-	base := len("{}") + len("{}") + len("id") + len("T") + perEventOverheadBytes
+	base := len("{}") + len("{}") + perEventOverheadBytes
 	want := base + len("by_type") + len("Created") + perIndexEntryOverheadBytes
 	if got != want {
 		t.Fatalf("estimateSaveBytes = %d, want %d", got, want)
@@ -131,25 +131,25 @@ func TestEventMatchesIndexConditionsCombinators(t *testing.T) {
 // dropped post-scan re-check would let non-matching events through.
 func TestChooseCoveringIndexFullCoverage(t *testing.T) {
 	indexes := []indexDefinition{
-		readyIndex("by_et", textField("eventType")),
-		readyIndex("by_et_user", textField("eventType"), textField("user_id")),
+		readyIndex("by_et", textField("__eventType")),
+		readyIndex("by_et_user", textField("__eventType"), textField("user_id")),
 	}
 
 	// Criterion fully covered by the two-field index.
-	crit := map[string]string{"eventType": "Created", "user_id": "u1"}
+	crit := map[string]string{"__eventType": "Created", "user_id": "u1"}
 	idx, ok := chooseCoveringIndex(indexes, crit)
 	if !ok || idx.Name != "by_et_user" {
 		t.Fatalf("expected by_et_user, got ok=%v name=%q", ok, idx.Name)
 	}
 
 	// Criterion references a key no index covers → no covering index.
-	crit2 := map[string]string{"eventType": "Created", "missing": "x"}
+	crit2 := map[string]string{"__eventType": "Created", "missing": "x"}
 	if _, ok := chooseCoveringIndex(indexes, crit2); ok {
 		t.Fatal("expected no covering index for an uncovered key")
 	}
 
 	// A single-field index must not be chosen for a two-key criterion.
-	only := []indexDefinition{readyIndex("by_et", textField("eventType"))}
+	only := []indexDefinition{readyIndex("by_et", textField("__eventType"))}
 	if _, ok := chooseCoveringIndex(only, crit); ok {
 		t.Fatal("single-field index must not cover a two-key criterion")
 	}
@@ -157,17 +157,17 @@ func TestChooseCoveringIndexFullCoverage(t *testing.T) {
 
 func TestIndexCoversCriterionWithEqualityConditions(t *testing.T) {
 	idx := indexDefinition{
-		Fields: []eventstore.BoundaryIndexField{textField("eventType")},
+		Fields: []eventstore.BoundaryIndexField{textField("__eventType")},
 		Conditions: []eventstore.BoundaryIndexCondition{
 			{Key: "status", Operator: "=", Value: "open"},
 		},
 	}
-	if !indexCoversCriterion(idx, map[string]string{"eventType": "X", "status": "open"}) {
+	if !indexCoversCriterion(idx, map[string]string{"__eventType": "X", "status": "open"}) {
 		t.Fatal("equality condition key should count toward coverage")
 	}
 	// A range condition key does not contribute coverage.
 	idx.Conditions[0].Operator = ">"
-	if indexCoversCriterion(idx, map[string]string{"eventType": "X", "status": "open"}) {
+	if indexCoversCriterion(idx, map[string]string{"__eventType": "X", "status": "open"}) {
 		t.Fatal("range condition key must not count as covered")
 	}
 }
@@ -274,11 +274,11 @@ func TestPrepareEventsAndRoundTrip(t *testing.T) {
 }
 
 func TestEventMatchesCriterion(t *testing.T) {
-	data := `{"eventType":"Created","amount":5}`
-	if !eventMatchesCriterion(data, map[string]string{"eventType": "Created", "amount": "5"}) {
+	data := `{"__eventType":"Created","amount":5}`
+	if !eventMatchesCriterion(data, map[string]string{"__eventType": "Created", "amount": "5"}) {
 		t.Fatal("expected criterion match")
 	}
-	if eventMatchesCriterion(data, map[string]string{"eventType": "Other"}) {
+	if eventMatchesCriterion(data, map[string]string{"__eventType": "Other"}) {
 		t.Fatal("expected criterion mismatch")
 	}
 }

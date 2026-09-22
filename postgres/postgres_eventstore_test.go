@@ -241,11 +241,11 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 
 	_, err = db.Exec(`
 		INSERT INTO public.test_boundary_orisun_es_event
-			(transaction_id, global_id, event_id, data, metadata)
+			(transaction_id, global_id, data, metadata)
 		VALUES
-			(2, 0, $1, '{"eventType":"CurrentEvent","key":"first"}', '{}'),
-			(2, 1, $2, '{"eventType":"CurrentEvent","key":"second"}', '{}'),
-			(3, 2, $3, '{"eventType":"CurrentEvent","key":"third"}', '{}')
+			(2, 0, jsonb_build_object('__eventId', $1::text, '__eventType','CurrentEvent','key','first'), '{}'),
+			(2, 1, jsonb_build_object('__eventId', $2::text, '__eventType','CurrentEvent','key','second'), '{}'),
+			(3, 2, jsonb_build_object('__eventId', $3::text, '__eventType','CurrentEvent','key','third'), '{}')
 	`, uuid.NewString(), uuid.NewString(), uuid.NewString())
 	require.NoError(t, err)
 
@@ -263,7 +263,7 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 		DROP INDEX public.test_boundary_idx_event_order_visibility_covering;
 		CREATE INDEX test_boundary_idx_event_order_visibility_covering
 			ON public.test_boundary_orisun_es_event (transaction_id DESC, global_id DESC)
-			INCLUDE (pg_xact_id, event_id, data, metadata, date_created);
+			INCLUDE (pg_xact_id, data, metadata, date_created);
 	`)
 	require.NoError(t, err)
 
@@ -321,7 +321,7 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 		  AND indexname = 'test_boundary_idx_event_type_order'
 	`).Scan(&eventTypeIndexDef)
 	require.NoError(t, err)
-	require.Contains(t, eventTypeIndexDef, "data ->> 'eventType'::text")
+	require.Contains(t, eventTypeIndexDef, "data ->> '__eventType'::text")
 
 	var eventTypeColumnCount int
 	err = db.QueryRow(`
@@ -338,7 +338,7 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	err = db.QueryRow(`
 		SELECT COUNT(*)
 		FROM public.test_boundary_orisun_es_event
-		WHERE data->>'eventType' IS DISTINCT FROM 'CurrentEvent'
+		WHERE data->>'__eventType' IS DISTINCT FROM 'CurrentEvent'
 	`).Scan(&rowsMissingEventType)
 	require.NoError(t, err)
 	require.Equal(t, 0, rowsMissingEventType)
@@ -522,7 +522,7 @@ func TestInsertsSerializePerBoundaryAndPositionsFollowCommitOrder(t *testing.T) 
 
 func insertEventInTx(ctx context.Context, tx *sql.Tx, eventID, eventType string) (int64, error) {
 	eventsJSON := fmt.Sprintf(
-		`[{"event_id":%q,"event_type":%q,"data":{"eventType":%q},"metadata":{}}]`,
+		`[{"event_id":%q,"event_type":%q,"data":{"__eventType":%q},"metadata":{}}]`,
 		eventID,
 		eventType,
 		eventType,
@@ -1054,7 +1054,8 @@ func TestGetEventsByGlobalPosition(t *testing.T) {
 		var data map[string]any
 		require.NoError(t, json.Unmarshal([]byte(event.Data), &data))
 		assert.Equal(t, float64(expectedIndex), data["index"])
-		assert.Equal(t, "TestEvent", data["eventType"])
+		assert.NotContains(t, data, "__eventType")
+		assert.NotContains(t, data, "__eventId")
 	}
 }
 
@@ -1365,7 +1366,7 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 		err := adminDB.CreateBoundaryIndex(ctx, "test_boundary", "placed_amount", []common.IndexField{
 			{JsonKey: "amount", ValueType: "numeric"},
 		}, []common.IndexCondition{
-			{Key: "eventType", Operator: "=", Value: "OrderPlaced"},
+			{Key: "__eventType", Operator: "=", Value: "OrderPlaced"},
 		}, common.CombinatorAND)
 		require.NoError(t, err)
 		assert.True(t, indexExists("test_boundary_placed_amount_idx"))
@@ -1377,8 +1378,8 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 	t.Run("failed concurrent build drops invalid index and retries cleanly", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO public.test_boundary_orisun_es_event
-				(transaction_id, global_id, event_id, data, metadata)
-			VALUES (1, 0, $1, '{"amount":"not-a-number"}', '{}')
+				(transaction_id, global_id, data, metadata)
+			VALUES (1, 0, jsonb_build_object('__eventId', $1::text, 'amount','not-a-number'), '{}')
 		`, uuid.NewString())
 		require.NoError(t, err)
 
@@ -1451,7 +1452,7 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 		err := adminDB.CreateBoundaryIndex(ctx, "test_boundary", "bad_op", []common.IndexField{
 			{JsonKey: "id", ValueType: "text"},
 		}, []common.IndexCondition{
-			{Key: "eventType", Operator: "LIKE", Value: "Order%"},
+			{Key: "__eventType", Operator: "LIKE", Value: "Order%"},
 		}, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid operator")
@@ -1461,7 +1462,7 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 		err := adminDB.CreateBoundaryIndex(ctx, "test_boundary", "bad_comb", []common.IndexField{
 			{JsonKey: "id", ValueType: "text"},
 		}, []common.IndexCondition{
-			{Key: "eventType", Operator: "=", Value: "Placed"},
+			{Key: "__eventType", Operator: "=", Value: "Placed"},
 		}, "XOR")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid combinator")
