@@ -6,7 +6,7 @@
 set -euo pipefail
 
 FDB_VERSION="${FDB_VERSION:-7.3.77}"
-GO_IMAGE="${GO_IMAGE:-golang:1.26.5-bookworm}"
+GO_IMAGE="${GO_IMAGE:-golang:1.27.1-bookworm}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="$(uname -m)"
 case "$ARCH" in

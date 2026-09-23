@@ -168,7 +168,7 @@ tasks:
           -e ORISUN_NATS_STORE_DIR=./data/orisun/nats \
           -e ORISUN_NATS_PORT=4222 \
           -e ORISUN_GRPC_PORT=5006 \
-          golang:1.26.5-bookworm bash -ec '
+          golang:1.27.1-bookworm bash -ec '
             set -euo pipefail
             apt-get update >/dev/null
             apt-get install -y --no-install-recommends curl ca-certificates >/dev/null

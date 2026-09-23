@@ -3,7 +3,7 @@ ARG FDB_VERSION=7.3.77
 
 FROM foundationdb/foundationdb:${FDB_VERSION} AS fdbclient
 
-FROM golang:1.26.5-bookworm AS builder
+FROM golang:1.27.1-bookworm AS builder
 
 WORKDIR /app
 
