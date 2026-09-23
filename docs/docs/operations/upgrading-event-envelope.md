@@ -3,10 +3,10 @@ title: Upgrading the Event Envelope
 description: Upgrade existing storage to reserved event fields with backend-owned encoding and retrieval.
 ---
 
-This guide applies when deploying the event-envelope storage changes from the
-current development branch. It does not describe a migration already included
-in Orisun 0.11.1. New empty stores initialize automatically; existing stores
-migrate when their boundaries are initialized.
+This guide applies when upgrading to Orisun 0.12.0 from 0.11.x or an earlier
+supported storage format. New empty stores initialize automatically; existing
+stores migrate when their boundaries are initialized. Installations older than
+0.8.0 must first complete the [0.8.0 bridge upgrade](./upgrading-0.7-to-0.8).
 
 The public event shape stays the same. PostgreSQL and SQLite move queryable
 envelope values into `data`; FoundationDB stores the fields available before
