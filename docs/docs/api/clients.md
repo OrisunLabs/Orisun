@@ -9,14 +9,15 @@ import TabItem from '@theme/TabItem';
 Orisun exposes gRPC services. You can use the official typed clients, `grpcurl`, or generate bindings for another language from the protobuf files.
 
 :::note
-The examples on this page target client builds that include `SaveEventsV2`.
+The examples on this page target client builds that include `SaveEventsV2`,
+write IDs, and `GetWriteContext`.
 Older client releases continue to work through the deprecated `SaveEvents` RPC,
 but they cannot send more than one query-level observation. Upgrade the client
 before migrating a command that depends on multiple independent reads.
 
-Until V2 client releases are published, build the client repository revision
-referenced by the current Orisun source checkout. The package-manager commands
-below install the latest published clients, which may still expose only V1.
+Use the client repository revisions referenced by the current Orisun source
+checkout for these features. The package-manager commands below may install
+older published clients. Updating source revisions does not publish new packages.
 :::
 
 ## Official Clients
@@ -443,6 +444,80 @@ No install beyond the `grpcurl` binary. See the [Tutorial](../tutorial) for the 
 
   </TabItem>
 </Tabs>
+
+## Write IDs and recorded consistency contexts
+
+Save results and returned events expose `WriteId` in Go, `writeId` in Node.js,
+and `getWriteId()` in Java. Treat this value as opaque and retain its boundary.
+It identifies the complete atomic write, including when a write saves several
+events. Historical events without recorded contexts return an empty write ID.
+
+Use the write ID returned by a save or read to retrieve the observations checked
+when that write committed:
+
+<Tabs groupId="client-lang">
+  <TabItem value="go" label="Go" default>
+
+```go
+writeContext, err := client.GetWriteContext(ctx, &eventstore.GetWriteContextRequest{
+    Boundary: "accounts",
+    WriteId:  write.WriteId,
+})
+if err != nil {
+    return err
+}
+for _, observation := range writeContext.Consistency {
+    // observation.Query is the complete query; observation.Position is its observation.
+    _ = observation
+}
+```
+
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
+```ts
+const writeContext = await client.getWriteContext({
+  boundary: 'accounts',
+  writeId: write.writeId,
+});
+// writeContext.consistency contains complete query/position observations.
+```
+
+Node.js position components are `number | string`: safely representable integers
+remain numbers, and larger int64 values remain decimal strings. Pass positions
+returned by reads directly into cursors and consistency observations. Do not
+convert large position strings with `Number()`, which can round them. Write IDs
+are always strings. Application `data` still uses ordinary JavaScript JSON
+parsing; encode application integers beyond JavaScript's safe range as strings
+when exact client-side representation is required.
+
+  </TabItem>
+  <TabItem value="java" label="Java">
+
+```java
+var request = Eventstore.GetWriteContextRequest.newBuilder()
+    .setBoundary("accounts")
+    .setWriteId(write.getWriteId())
+    .build();
+var writeContext = client.getWriteContext(request);
+// The asynchronous form returns CompletableFuture<Eventstore.WriteContext>.
+var pendingContext = client.getWriteContextAsync(request);
+```
+
+  </TabItem>
+</Tabs>
+
+An unconditional write has an empty observation list. An unknown write context
+returns `NOT_FOUND`; clients preserve the underlying transport error. Recorded
+observations describe the original write and are not fresh reads for a new
+command. Read the command's current context before another checked write.
+
+The clients send application data unchanged by storage-envelope conventions:
+use the ordinary event-type property on save, use `__eventType` in criteria and
+index definitions, and do not add reserved top-level `__*` fields to application
+data. Returned data has already been stripped by the backend. See the
+[upgrade guide](../operations/upgrading-event-envelope) before upgrading an
+existing deployment. The deprecated save methods remain available.
 
 ## Authenticating from a client
 
