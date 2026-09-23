@@ -8,7 +8,7 @@ env:
   ORISUN_PG_SSLMODE: disable
   ORISUN_NATS_STORE_DIR: ./data/orisun/nats
   ORISUN_SQLITE_DIR: ./data/orisun/sqlite
-  ORISUN_BACKEND: "sqlite"
+  ORISUN_BACKEND: "postgres"
   ORISUN_NATS_PORT: 4223
   ORISUN_GRPC_PORT: 5007
   ORISUN_PG_PASSWORD: password@1

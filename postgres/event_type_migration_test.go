@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,7 @@ func TestReservedEventTypeMigration(t *testing.T) {
 	db, err := setupTestDatabase(t, container)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
+	restoreLegacyEnvelopeColumns(t, db)
 	_, err = db.Exec(`
 ALTER TABLE test_boundary_orisun_es_event DROP CONSTRAINT test_boundary_event_id_valid;
 ALTER TABLE test_boundary_orisun_es_event ADD COLUMN event_id UUID NOT NULL;
@@ -62,6 +64,7 @@ func TestEventIDMigrationRejectsCollision(t *testing.T) {
 	db, err := setupTestDatabase(t, container)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
+	restoreLegacyEnvelopeColumns(t, db)
 	_, err = db.Exec(`
 ALTER TABLE test_boundary_orisun_es_event DROP CONSTRAINT test_boundary_event_id_valid;
 ALTER TABLE test_boundary_orisun_es_event ADD COLUMN event_id UUID NOT NULL;
@@ -76,4 +79,21 @@ INSERT INTO test_boundary_orisun_es_event(transaction_id,global_id,event_id,data
 	var id string
 	require.NoError(t, db.QueryRow("SELECT event_id::text FROM test_boundary_orisun_es_event").Scan(&id))
 	require.Equal(t, "00000000-0000-0000-0000-000000000001", id)
+}
+
+// Reconstruct the previous physical schema so migration tests exercise an actual
+// old database, rather than writing into generated projections of the new one.
+func restoreLegacyEnvelopeColumns(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.Exec(`ALTER TABLE test_boundary_orisun_es_event DROP CONSTRAINT test_boundary_event_date_valid;
+ ALTER TABLE test_boundary_orisun_es_event
+ ALTER COLUMN transaction_id DROP EXPRESSION,
+ ALTER COLUMN global_id DROP EXPRESSION,
+ ALTER COLUMN write_id DROP EXPRESSION,
+ ALTER COLUMN metadata DROP EXPRESSION,
+ ALTER COLUMN date_created DROP EXPRESSION;
+ ALTER TABLE test_boundary_orisun_es_event ALTER COLUMN date_created TYPE timestamptz USING date_created::timestamptz;
+ ALTER TABLE test_boundary_orisun_es_event ALTER COLUMN date_created SET DEFAULT now();
+ UPDATE test_boundary_orisun_schema_version SET version=2;`)
+	require.NoError(t, err)
 }

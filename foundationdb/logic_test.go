@@ -7,6 +7,9 @@ package foundationdb
 
 import (
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
 	"github.com/goccy/go-json"
@@ -22,8 +25,8 @@ func readyIndex(name string, fields ...eventstore.BoundaryIndexField) indexDefin
 
 func TestEstimateSaveBytes(t *testing.T) {
 	prepared := []preparedEvent{
-		{record: eventRecord{Data: "1234567890", Metadata: "ab"}},
-		{record: eventRecord{Data: "xyz", Metadata: ""}},
+		{record: eventRecord{Data: "1234567890ab"}},
+		{record: eventRecord{Data: "xyz"}},
 	}
 	got := estimateSaveBytes(prepared, []indexDefinition{readyIndex("by_type", textField("type"))})
 	want := (10 + 2 + perEventOverheadBytes) + (3 + 0 + perEventOverheadBytes)
@@ -35,7 +38,7 @@ func TestEstimateSaveBytes(t *testing.T) {
 func TestEstimateSaveBytesIncludesMatchingIndexes(t *testing.T) {
 	prepared := []preparedEvent{
 		{
-			record: eventRecord{Data: "{}", Metadata: "{}"},
+			record: eventRecord{Data: "{}{}"},
 			data:   map[string]any{"type": "Created", "status": "open"},
 		},
 	}
@@ -251,7 +254,8 @@ func TestPrepareEventsAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareEventsForSave: %v", err)
 	}
-	prepared, err := prepareEvents(batch)
+	created := time.Date(2026, 6, 30, 0, 0, 0, 123456789, time.UTC)
+	prepared, err := prepareEvents(batch, created)
 	if err != nil {
 		t.Fatalf("prepareEvents: %v", err)
 	}
@@ -259,7 +263,7 @@ func TestPrepareEventsAndRoundTrip(t *testing.T) {
 		t.Fatalf("data map not parsed: %+v", prepared[0].data)
 	}
 
-	prepared[0].record.DateCreated = "2026-06-30T00:00:00Z"
+	require.Equal(t, created.Format(time.RFC3339Nano), prepared[0].data["__dateCreated"])
 	value, err := json.Marshal(prepared[0].record)
 	if err != nil {
 		t.Fatalf("marshal record: %v", err)
@@ -271,10 +275,14 @@ func TestPrepareEventsAndRoundTrip(t *testing.T) {
 	if event.EventId != "e1" || event.CommitPosition != 7 || event.PreparePosition != 3 {
 		t.Fatalf("event roundtrip mismatch: %+v", event)
 	}
+	require.Equal(t, created, event.DateCreated)
+	require.Equal(t, eventstore.WriteID(7, 0), event.WriteId)
+	require.JSONEq(t, `{"src":"test"}`, event.Metadata)
+	require.JSONEq(t, `{"user_id":"u1"}`, event.Data)
 }
 
 func TestEventMatchesCriterion(t *testing.T) {
-	data := `{"__eventType":"Created","amount":5}`
+	data := map[string]any{"__eventType": "Created", "amount": float64(5)}
 	if !eventMatchesCriterion(data, map[string]string{"__eventType": "Created", "amount": "5"}) {
 		t.Fatal("expected criterion match")
 	}

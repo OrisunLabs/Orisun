@@ -3,7 +3,7 @@ title: Indexing
 description: Create JSON indexes for criteria queries and CCC checks.
 ---
 
-Criteria queries match JSON payload fields. Without indexes, PostgreSQL and SQLite reads and CCC checks may scan the full boundary event table. FoundationDB is stricter: criteria reads and CCC checks require a ready covering index and return `FAILED_PRECONDITION` when no such index exists.
+Criteria queries match JSON payload fields. Without indexes, PostgreSQL and SQLite reads and CCC checks may scan the full boundary event table. FoundationDB requires either a native position range (anchored by `__commitPosition` or `__writeId`) or a ready covering secondary index. Other uncovered criteria return `FAILED_PRECONDITION`.
 
 Create indexes for fields used in:
 

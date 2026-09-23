@@ -32,7 +32,7 @@ func TestWriteContextContract(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public.test_boundary_orisun_es_write").Scan(&count))
 	require.Equal(t, 3, count)
 	// Re-running initialization preserves both stored evidence and legacy NULLs.
-	_, err = db.Exec(`INSERT INTO public.test_boundary_orisun_es_event(transaction_id, global_id, data) VALUES(0, -1, '{"__eventId":"00000000-0000-0000-0000-000000000001"}')`)
+	_, err = db.Exec(`INSERT INTO public.test_boundary_orisun_es_event(data) VALUES(orisun_event_document('{"__eventId":"00000000-0000-0000-0000-000000000001"}', '{}', 0, -1, NULL, now()))`)
 	require.NoError(t, err)
 	require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, t.Context()))
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public.test_boundary_orisun_es_event WHERE write_id IS NULL").Scan(&count))

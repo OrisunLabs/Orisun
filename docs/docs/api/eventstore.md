@@ -120,13 +120,38 @@ Events have four caller-supplied fields:
 Orisun also stores a durable `position` and `date_created` on committed events.
 
 :::note
-Storage backends persist the envelope's `event_id` and `event_type` inside the
-stored data document as `__eventId` and `__eventType`. On retrieval, the backend
-extracts them into the usual event envelope and removes **all top-level `__*`
-fields** from returned application `data`, including reserved names not currently
-used by the envelope. Nested fields and separate `metadata` remain untouched. API and SDK event shapes remain unchanged. Content queries,
-subscription filters, and indexes can use either reserved key; for example,
-`{"key":"__eventId","value":"your-event-id"}` matches the envelope's event ID.
+Storage backends expose the event envelope through reserved fields in the
+queryable document:
+
+| Document field | Envelope value |
+| --- | --- |
+| `__eventId` | Event ID |
+| `__eventType` | Event type |
+| `__commitPosition` | Commit position, as an integer |
+| `__preparePosition` | Prepare position, as an integer |
+| `__writeId` | ID of the write that committed the event |
+| `__dateCreated` | Creation timestamp, in UTC RFC 3339 format |
+| `__metadata` | The metadata JSON value |
+
+PostgreSQL and SQLite persist these values inside `data`. Their ordering and
+write-context columns are generated projections of that document, not separate
+writable values. PostgreSQL retains `pg_xact_id` as internal visibility bookkeeping.
+FoundationDB stores metadata and timestamps inside the document and derives
+positions from its native commit-ordered key. It derives write IDs from that key
+and the stored batch-end offset; no second transaction fills in positions.
+
+On retrieval, the backend extracts the usual envelope and removes **all
+top-level `__*` fields** from returned application `data`. Nested fields and
+metadata values remain untouched. API and SDK event shapes stay unchanged.
+Content criteria and live subscription filters use reserved names, for example
+`{"key":"__eventId","value":"your-event-id"}`. Metadata is a JSON value under
+`__metadata`; this does not introduce dotted-path querying into nested objects.
+
+FoundationDB uses its native event-key range for criteria containing
+`__commitPosition` or `__writeId`, with any remaining tags applied within that
+range. A `__preparePosition` criterion needs one of those anchors. These three
+fields cannot be secondary-index fields or conditions. Other FoundationDB
+criteria continue to require a ready covering index.
 
 Top-level keys in application event `data` beginning with `__` are reserved for
 Orisun, including names not currently in use. Writes containing such keys are
@@ -151,7 +176,12 @@ migrates in resumable batches before making the boundary available; its index
 entries retain the same values and positions. Existing positions, write IDs,
 and publisher checkpoints are preserved. The upgrade also moves stored event IDs
 into `data.__eventId`, removing the separate PostgreSQL/SQLite `event_id` column
-and FoundationDB record field. Large stores may take time to migrate.
+and FoundationDB record field. The remaining envelope migration replaces SQL
+columns with generated projections and rebuilds their indexes in the same
+transaction. FoundationDB migrates metadata, timestamps, and batch-end offsets
+in resumable batches, maintaining affected indexes. Historical events whose write
+context was never recorded continue to return an empty write ID. Large stores
+may take time to migrate.
 
 Update application criteria, subscription filters, and index declarations to
 `__eventType` before resuming traffic. Re-read command contexts after the upgrade;
@@ -162,7 +192,12 @@ before upgrading if you need to be able to restore the old format.
 
 If a legacy event already contains both `eventType` and `__eventType`, migration
 stops with a conflict instead of overwriting either value. Existing top-level
-`__eventId` values also block the event-ID migration, including JSON null. Resolve that collision
+`__eventId` values also block the event-ID migration, including JSON null. The
+remaining-envelope migration likewise rejects existing `__commitPosition`,
+`__preparePosition`, `__writeId`, `__dateCreated`, or `__metadata` fields;
+FoundationDB also reserves `__writeLastOffset` for its batch-end offset. Existing
+FoundationDB secondary indexes on commit-derived fields must be removed before
+that migration. Resolve any collision
 while the servers are stopped, then restart. Nested application fields and
 metadata are not renamed. Historical `eventType` was the store discriminator;
 after migration that unprefixed name is available for application data.
@@ -312,8 +347,9 @@ observations, and 16,384 tags across those criteria. These bounds prevent an
 individual write from creating unbounded query fan-out.
 
 PostgreSQL and SQLite can evaluate an unindexed equality query correctly by
-scanning. FoundationDB requires every criterion to have a ready covering index
-and returns `FAILED_PRECONDITION` otherwise. See [Indexing](../concepts/indexing).
+scanning. FoundationDB requires each criterion to select a native position range
+through `__commitPosition` or `__writeId`, or have a ready covering secondary
+index; otherwise it returns `FAILED_PRECONDITION`. See [Indexing](../concepts/indexing).
 
 ### Unconditional append
 

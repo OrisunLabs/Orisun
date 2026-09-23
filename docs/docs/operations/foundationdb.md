@@ -82,14 +82,22 @@ ORISUN_FDB_SOAK=1 TEST_PKGS=./cmd/ \
 
 ## Indexes And Query Shape
 
-FoundationDB criteria reads and consistency checks require ready covering
-indexes. For `SaveEventsV2`, every criterion in every observation must be
-covered by an index whose state is `INDEX_STATE_READY`. If even one criterion
-is unindexed or its index is still building, Orisun rejects the whole request
-with `FAILED_PRECONDITION` instead of scanning a boundary or partially checking
-the command context.
+FoundationDB resolves criteria reads and consistency checks through either the
+native event-key range or a ready covering secondary index. A criterion containing
+`__commitPosition` or `__writeId` selects a native range; additional tags, including
+`__preparePosition`, filter that range. Native reads preserve pagination and CCC
+conflict tracking. A prepare position alone has no leading commit key and cannot
+select a native range.
 
-Before using a criterion in production traffic:
+All other criteria must be covered by an index whose state is
+`INDEX_STATE_READY`. An uncovered criterion causes `FAILED_PRECONDITION` rather
+than a boundary scan or an incomplete context check. Commit position, prepare
+position, and write ID cannot be secondary-index fields or conditions: their final
+values are assigned by FoundationDB at commit. Use their native query path.
+Metadata and creation timestamps are persisted inside the event document and can
+participate in ordinary secondary indexes.
+
+Before using a criterion that needs a secondary index in production traffic:
 
 1. Create the boundary index through `EventStore/CreateIndex`.
 2. Poll `EventStore/GetIndex` (or inspect `ListIndexes`) until its state is

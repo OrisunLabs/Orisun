@@ -241,11 +241,11 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 
 	_, err = db.Exec(`
 		INSERT INTO public.test_boundary_orisun_es_event
-			(transaction_id, global_id, data, metadata)
+			(data)
 		VALUES
-			(2, 0, jsonb_build_object('__eventId', $1::text, '__eventType','CurrentEvent','key','first'), '{}'),
-			(2, 1, jsonb_build_object('__eventId', $2::text, '__eventType','CurrentEvent','key','second'), '{}'),
-			(3, 2, jsonb_build_object('__eventId', $3::text, '__eventType','CurrentEvent','key','third'), '{}')
+			(orisun_event_document(jsonb_build_object('__eventId', $1::text, '__eventType','CurrentEvent','key','first'), '{}', 2, 0, NULL, now())),
+			(orisun_event_document(jsonb_build_object('__eventId', $2::text, '__eventType','CurrentEvent','key','second'), '{}', 2, 1, NULL, now())),
+			(orisun_event_document(jsonb_build_object('__eventId', $3::text, '__eventType','CurrentEvent','key','third'), '{}', 3, 2, NULL, now()))
 	`, uuid.NewString(), uuid.NewString(), uuid.NewString())
 	require.NoError(t, err)
 
@@ -1378,8 +1378,8 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 	t.Run("failed concurrent build drops invalid index and retries cleanly", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO public.test_boundary_orisun_es_event
-				(transaction_id, global_id, data, metadata)
-			VALUES (1, 0, jsonb_build_object('__eventId', $1::text, 'amount','not-a-number'), '{}')
+				(data)
+			VALUES (orisun_event_document(jsonb_build_object('__eventId', $1::text, 'amount','not-a-number'), '{}', 1, 0, NULL, now()))
 		`, uuid.NewString())
 		require.NoError(t, err)
 

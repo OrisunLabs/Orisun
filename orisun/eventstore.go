@@ -1003,7 +1003,13 @@ func (s *EventStore) eventMatchesQueryCriteria(event *Event, criteria *Query) bo
 		return true
 	}
 
-	unmarshaledData, err := eventdata.EnvelopeFields(event.Data, event.EventId, event.EventType)
+	envelope := eventdata.Envelope{EventID: event.EventId, EventType: event.EventType, WriteID: event.WriteId, Metadata: event.Metadata}
+	if event.Position != nil {
+		envelope.CommitPosition = event.Position.CommitPosition
+		envelope.PreparePosition = event.Position.PreparePosition
+	}
+	envelope.DateCreated = event.DateCreated
+	unmarshaledData, err := eventdata.EnvelopeFields(event.Data, envelope)
 	if err != nil {
 		return false
 	}

@@ -296,7 +296,7 @@ type SqliteSaveEvents struct {
 }
 
 const (
-	sqliteInsertParamsPerEvent = 5
+	sqliteInsertParamsPerEvent = 1
 	sqliteMaxInsertParams      = 999
 	sqliteMaxEventsPerInsert   = sqliteMaxInsertParams / sqliteInsertParamsPerEvent
 )
@@ -484,30 +484,13 @@ func allocateGlobalIDs(conn *sqlite.Conn, count int) (firstID, lastID int64, err
 // SQLite's bound-parameter limit. Callers hold an open transaction, so the full batch
 // commits atomically regardless of chunking.
 func insertEventBatch(conn *sqlite.Conn, events eventstore.PreparedEventBatch, firstID, transactionID int64) error {
-	for start := 0; start < len(events); start += sqliteMaxEventsPerInsert {
-		end := min(start+sqliteMaxEventsPerInsert, len(events))
-		chunk := events[start:end]
-
-		var sb strings.Builder
-		sb.Grow(64 + len(chunk)*48)
-		sb.WriteString("INSERT INTO orisun_es_event (transaction_id, global_id, data, metadata, write_id) VALUES ")
-		insertArgs := make([]any, 0, len(chunk)*sqliteInsertParamsPerEvent)
-		for i, e := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(?, ?, ?, ?, ?)")
-			gid := firstID + int64(start+i)
-			insertArgs = append(insertArgs,
-				transactionID, gid, e.DataJSON, e.MetadataJSON, transactionID,
-			)
-		}
-
-		if err := sqlitex.Execute(conn, sb.String(), &sqlitex.ExecOptions{Args: insertArgs}); err != nil {
-			return err
+	positioned := make([]positionedPreparedEvent, len(events))
+	for i, event := range events {
+		positioned[i] = positionedPreparedEvent{
+			event: event, globalID: firstID + int64(i), transactionID: transactionID,
 		}
 	}
-	return nil
+	return insertPositionedEventBatch(conn, positioned)
 }
 
 type positionedPreparedEvent struct {
@@ -520,26 +503,25 @@ type positionedPreparedEvent struct {
 // retaining each request's transaction position. The caller has already
 // allocated one contiguous global-ID range for the whole flush.
 func insertPositionedEventBatch(conn *sqlite.Conn, events []positionedPreparedEvent) error {
+	created := time.Now().UTC()
 	for start := 0; start < len(events); start += sqliteMaxEventsPerInsert {
 		end := min(start+sqliteMaxEventsPerInsert, len(events))
 		chunk := events[start:end]
 
 		var sb strings.Builder
-		sb.Grow(64 + len(chunk)*48)
-		sb.WriteString("INSERT INTO orisun_es_event (transaction_id, global_id, data, metadata, write_id) VALUES ")
+		sb.Grow(64 + len(chunk)*5)
+		sb.WriteString("INSERT INTO orisun_es_event (data) VALUES ")
 		insertArgs := make([]any, 0, len(chunk)*sqliteInsertParamsPerEvent)
 		for i, positioned := range chunk {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?)")
-			insertArgs = append(insertArgs,
-				positioned.transactionID,
-				positioned.globalID,
-				positioned.event.DataJSON,
-				positioned.event.MetadataJSON,
-				positioned.transactionID,
-			)
+			sb.WriteString("(?)")
+			data, err := positionedDocument(positioned.event, positioned.transactionID, positioned.globalID, created)
+			if err != nil {
+				return err
+			}
+			insertArgs = append(insertArgs, data)
 		}
 
 		if err := sqlitex.Execute(conn, sb.String(), &sqlitex.ExecOptions{Args: insertArgs}); err != nil {
