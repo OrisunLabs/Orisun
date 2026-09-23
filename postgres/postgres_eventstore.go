@@ -38,11 +38,11 @@ SELECT * FROM %s.insert_independent_event_requests_v2($1::text, $2::text, $3::te
 `
 
 const selectMatchingEvents = `
-SELECT * FROM %s.get_matching_events_v3($1::text, $2::text, $3::jsonb, $4::jsonb, $5, $6::INT)
+SELECT * FROM %s.get_matching_events_v4($1::text, $2::text, $3::jsonb, $4::jsonb, $5, $6::INT)
 `
 
 const selectLatestByCriteria = `
-SELECT * FROM %s.get_latest_by_criteria_v1($1::text, $2::text, $3::jsonb)
+SELECT * FROM %s.get_latest_by_criteria_v2($1::text, $2::text, $3::jsonb)
 `
 
 const invalidIndexCleanupTimeout = 30 * time.Second
@@ -207,20 +207,11 @@ func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEve
 		}
 	}
 
-	// s.logger.Debugf("params: %v", paramsJSON)
-	// s.logger.Debugf("direction: %v", req.Direction)
-	// s.logger.Debugf("count: %v", req.Count)
-
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, statuscode.Errorf(statuscode.Internal, "failed to begin transaction: %v", err)
 	}
 	defer tx.Rollback()
-
-	// _, errr := tx.Exec("SET log_statement = 'all';")
-	// if errr != nil {
-	// 	return nil, status.Errorf(codes.Internal, "failed to set log_statement: %v", err)
-	// }
 
 	rows, err := tx.Query(
 		entry.selectEvents,
@@ -248,6 +239,7 @@ func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEve
 			&event.Data,
 			&event.Metadata,
 			&event.DateCreated,
+			&event.WriteId,
 		); err != nil {
 			return nil, statuscode.Errorf(statuscode.Internal, "failed to scan row: %v", err)
 		}
@@ -311,6 +303,7 @@ func (s *PostgresGetEvents) GetLatestByCriteria(ctx context.Context, query event
 			&event.Data,
 			&event.Metadata,
 			&event.DateCreated,
+			&event.WriteId,
 		); err != nil {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.Internal, "failed to scan row: %v", err)
 		}
@@ -689,47 +682,12 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 	if err := validateBoundaryName(name); err != nil {
 		return fmt.Errorf("invalid index name %s: %w", name, err)
 	}
-	if len(fields) == 0 {
-		return fmt.Errorf("at least one field is required")
-	}
 	if combinator == "" {
 		combinator = eventstore.IndexCombinatorAND
 	}
-
-	// Build index expression list
-	exprs := make([]string, len(fields))
-	for i, f := range fields {
-		key := pq.QuoteLiteral(f.JsonKey)
-		switch f.ValueType {
-		case "numeric":
-			exprs[i] = "((data->>" + key + ")::numeric)"
-		case "boolean":
-			exprs[i] = "((data->>" + key + ")::boolean)"
-		case "timestamptz":
-			exprs[i] = "((data->>" + key + ")::timestamptz)"
-		default: // "text"
-			exprs[i] = "(data->>" + key + ")"
-		}
-	}
-
-	// Build WHERE clause
-	var whereClause string
-	if len(conditions) > 0 {
-		validOps := map[string]bool{"=": true, ">": true, "<": true, ">=": true, "<=": true}
-		validCombinators := map[string]bool{eventstore.IndexCombinatorAND: true, eventstore.IndexCombinatorOR: true}
-
-		if !validCombinators[combinator] {
-			return fmt.Errorf("invalid combinator %q: must be AND or OR", combinator)
-		}
-
-		predicates := make([]string, len(conditions))
-		for i, c := range conditions {
-			if !validOps[c.Operator] {
-				return fmt.Errorf("invalid operator %q: must be one of =, >, <, >=, <=", c.Operator)
-			}
-			predicates[i] = "(data->>" + pq.QuoteLiteral(c.Key) + ") " + c.Operator + " " + pq.QuoteLiteral(c.Value)
-		}
-		whereClause = " WHERE " + strings.Join(predicates, " "+combinator+" ")
+	expressions, whereClause, err := boundaryIndexExpressions(fields, conditions, combinator)
+	if err != nil {
+		return err
 	}
 
 	indexName := pq.QuoteIdentifier(boundary + "_" + name + "_idx")
@@ -781,7 +739,7 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		indexName,
 		schemaName,
 		tableName,
-		strings.Join(exprs, ", "),
+		expressions,
 		whereClause,
 	)
 

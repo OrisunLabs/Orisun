@@ -158,6 +158,10 @@ Persist the NATS store directory for durable JetStream state. PostgreSQL remains
 
 ## PostgreSQL Major Upgrades
 
+For Orisun's event-envelope storage upgrade, use the separate
+[event-envelope upgrade guide](./upgrading-event-envelope). The procedure below
+addresses PostgreSQL server upgrades.
+
 Current Orisun releases store public `commit_position` values as logical
 event-store positions. PostgreSQL's internal transaction ID is retained only as
 disposable `pg_xact_id` visibility metadata.

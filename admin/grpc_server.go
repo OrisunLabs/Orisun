@@ -548,7 +548,7 @@ func isUserDeleted(ctx context.Context, getEvents GetEventsFunc, boundary, userI
 				{
 					Tags: []*orisun.Tag{
 						{Key: "user_id", Value: userId},
-						{Key: "eventType", Value: "UserDeleted"},
+						{Key: "__eventType", Value: "UserDeleted"},
 					},
 				},
 			},

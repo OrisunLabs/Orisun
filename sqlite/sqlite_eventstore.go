@@ -15,6 +15,7 @@ import (
 	common "github.com/OrisunLabs/Orisun/admin/slices/common"
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	config "github.com/OrisunLabs/Orisun/config"
+	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/OrisunLabs/Orisun/logging"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
@@ -295,7 +296,7 @@ type SqliteSaveEvents struct {
 }
 
 const (
-	sqliteInsertParamsPerEvent = 5
+	sqliteInsertParamsPerEvent = 1
 	sqliteMaxInsertParams      = 999
 	sqliteMaxEventsPerInsert   = sqliteMaxInsertParams / sqliteInsertParamsPerEvent
 )
@@ -421,6 +422,7 @@ func (s *SqliteSaveEvents) saveEventsOnConn(
 	boundary string,
 	eventsToInsert eventstore.PreparedEventBatch,
 	consistency []eventstore.ConsistencyCheck,
+	consistencyJSON string,
 ) (transactionID string, globalID int64, err error) {
 	for _, check := range consistency {
 		criteria := readCriteriaAsList(check.Criteria)
@@ -453,6 +455,9 @@ func (s *SqliteSaveEvents) saveEventsOnConn(
 		return "", 0, statuscode.Errorf(statuscode.Internal, "allocate ids: %v", err)
 	}
 
+	if err = insertWriteContext(conn, lastID, consistencyJSON); err != nil {
+		return "", 0, err
+	}
 	if err = insertEventBatch(conn, eventsToInsert, firstID, lastID); err != nil {
 		return "", 0, statuscode.Errorf(statuscode.Internal, "insert events: %v", err)
 	}
@@ -479,30 +484,13 @@ func allocateGlobalIDs(conn *sqlite.Conn, count int) (firstID, lastID int64, err
 // SQLite's bound-parameter limit. Callers hold an open transaction, so the full batch
 // commits atomically regardless of chunking.
 func insertEventBatch(conn *sqlite.Conn, events eventstore.PreparedEventBatch, firstID, transactionID int64) error {
-	for start := 0; start < len(events); start += sqliteMaxEventsPerInsert {
-		end := min(start+sqliteMaxEventsPerInsert, len(events))
-		chunk := events[start:end]
-
-		var sb strings.Builder
-		sb.Grow(64 + len(chunk)*48)
-		sb.WriteString("INSERT INTO orisun_es_event (transaction_id, global_id, event_id, data, metadata) VALUES ")
-		insertArgs := make([]any, 0, len(chunk)*sqliteInsertParamsPerEvent)
-		for i, e := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(?, ?, ?, ?, ?)")
-			gid := firstID + int64(start+i)
-			insertArgs = append(insertArgs,
-				transactionID, gid, e.EventId, e.DataJSON, e.MetadataJSON,
-			)
-		}
-
-		if err := sqlitex.Execute(conn, sb.String(), &sqlitex.ExecOptions{Args: insertArgs}); err != nil {
-			return err
+	positioned := make([]positionedPreparedEvent, len(events))
+	for i, event := range events {
+		positioned[i] = positionedPreparedEvent{
+			event: event, globalID: firstID + int64(i), transactionID: transactionID,
 		}
 	}
-	return nil
+	return insertPositionedEventBatch(conn, positioned)
 }
 
 type positionedPreparedEvent struct {
@@ -515,26 +503,25 @@ type positionedPreparedEvent struct {
 // retaining each request's transaction position. The caller has already
 // allocated one contiguous global-ID range for the whole flush.
 func insertPositionedEventBatch(conn *sqlite.Conn, events []positionedPreparedEvent) error {
+	created := time.Now().UTC()
 	for start := 0; start < len(events); start += sqliteMaxEventsPerInsert {
 		end := min(start+sqliteMaxEventsPerInsert, len(events))
 		chunk := events[start:end]
 
 		var sb strings.Builder
-		sb.Grow(64 + len(chunk)*48)
-		sb.WriteString("INSERT INTO orisun_es_event (transaction_id, global_id, event_id, data, metadata) VALUES ")
+		sb.Grow(64 + len(chunk)*5)
+		sb.WriteString("INSERT INTO orisun_es_event (data) VALUES ")
 		insertArgs := make([]any, 0, len(chunk)*sqliteInsertParamsPerEvent)
 		for i, positioned := range chunk {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?)")
-			insertArgs = append(insertArgs,
-				positioned.transactionID,
-				positioned.globalID,
-				positioned.event.EventId,
-				positioned.event.DataJSON,
-				positioned.event.MetadataJSON,
-			)
+			sb.WriteString("(?)")
+			data, err := positionedDocument(positioned.event, positioned.transactionID, positioned.globalID, created)
+			if err != nil {
+				return err
+			}
+			insertArgs = append(insertArgs, data)
 		}
 
 		if err := sqlitex.Execute(conn, sb.String(), &sqlitex.ExecOptions{Args: insertArgs}); err != nil {
@@ -617,7 +604,7 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 	}
 
 	q := fmt.Sprintf(
-		"SELECT transaction_id, global_id, event_id, json_extract(data, '$.\"eventType\"') AS event_type, data, metadata, date_created "+
+		"SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE CAST(transaction_id AS TEXT) || ':' || CAST(write_id AS TEXT) END "+
 			"FROM orisun_es_event WHERE %s ORDER BY transaction_id %s, global_id %s LIMIT %d",
 		whereSQL, dirSQL, dirSQL, count,
 	)
@@ -687,7 +674,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 		if buildErr != nil {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "invalid criteria: %v", buildErr)
 		}
-		q := "SELECT transaction_id, global_id, event_id, json_extract(data, '$.\"eventType\"') AS event_type, data, metadata, date_created " +
+		q := "SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE CAST(transaction_id AS TEXT) || ':' || CAST(write_id AS TEXT) END " +
 			"FROM orisun_es_event WHERE " + where +
 			" ORDER BY transaction_id DESC, global_id DESC LIMIT 1"
 
@@ -725,11 +712,12 @@ func scanReadEventRow(stmt *sqlite.Stmt) (eventstore.ReadEvent, error) {
 	return eventstore.ReadEvent{
 		EventId:         stmt.ColumnText(2),
 		EventType:       stmt.ColumnText(3),
-		Data:            stmt.ColumnText(4),
+		Data:            eventdata.WithoutStorageEnvelope(stmt.ColumnText(4)),
 		Metadata:        stmt.ColumnText(5),
 		CommitPosition:  stmt.ColumnInt64(0),
 		PreparePosition: stmt.ColumnInt64(1),
 		DateCreated:     created,
+		WriteId:         stmt.ColumnText(7),
 	}, nil
 }
 

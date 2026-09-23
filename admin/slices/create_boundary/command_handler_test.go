@@ -33,7 +33,8 @@ func TestCreateBoundaryCommandHandlerEmitsBoundaryCreatedWithCCCContext(t *testi
 	var data map[string]any
 	require.NoError(t, json.Unmarshal([]byte(saver.events[0].Data), &data))
 	require.Equal(t, "orders", data["boundary"])
-	require.Equal(t, adminevents.EventTypeBoundaryCreated, data["eventType"])
+	require.NotContains(t, data, "__eventType")
+	require.NotContains(t, data, "eventType")
 	var metadata map[string]any
 	require.NoError(t, json.Unmarshal([]byte(saver.events[0].Metadata), &metadata))
 	require.Equal(t, "admin-1", metadata["actor"])

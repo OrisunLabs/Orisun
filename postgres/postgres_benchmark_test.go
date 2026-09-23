@@ -154,7 +154,7 @@ func prepopulateStreams(
 			require.NoError(b, err)
 
 			eventData := fmt.Sprintf(
-				`{"stream_id": "%s", "eventType": "OrderPlaced", "sequence": %d}`,
+				`{"stream_id": "%s", "__eventType": "OrderPlaced", "sequence": %d}`,
 				streamId,
 				eventIdx,
 			)
@@ -231,7 +231,7 @@ func BenchmarkConsistencyCheck_NoIndex(b *testing.B) {
 		require.NoError(b, err)
 
 		eventData := fmt.Sprintf(
-			`{"stream_id": "%s", "eventType": "OrderPlaced", "sequence": %d}`,
+			`{"stream_id": "%s", "__eventType": "OrderPlaced", "sequence": %d}`,
 			streamId,
 			benchEventsPerStream+i,
 		)
@@ -317,7 +317,7 @@ func BenchmarkConsistencyCheck_WithIndex(b *testing.B) {
 		require.NoError(b, err)
 
 		eventData := fmt.Sprintf(
-			`{"stream_id": "%s", "eventType": "OrderPlaced", "sequence": %d}`,
+			`{"stream_id": "%s", "__eventType": "OrderPlaced", "sequence": %d}`,
 			streamId,
 			benchEventsPerStream+i,
 		)

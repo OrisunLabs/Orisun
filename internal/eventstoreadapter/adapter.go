@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
-	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	"github.com/OrisunLabs/Orisun/orisun"
 )
 
@@ -176,8 +175,9 @@ func legacyDirection(direction coreeventstore.Direction) orisun.Direction {
 func neutralReadEvent(event orisun.ReadEvent) coreeventstore.ReadEvent {
 	return coreeventstore.ReadEvent{
 		EventID:   event.EventId,
+		WriteID:   event.WriteId,
 		EventType: event.EventType,
-		Data:      eventdata.WithoutStorageEventType(event.Data),
+		Data:      event.Data,
 		Metadata:  event.Metadata,
 		Position: coreeventstore.Position{
 			CommitPosition:  event.CommitPosition,

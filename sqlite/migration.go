@@ -98,9 +98,20 @@ CREATE TABLE IF NOT EXISTS users_count (
 // a new one. Databases created before versioning report user_version 0 and
 // re-run step 1, which is safe because the baseline DDL is idempotent
 // (IF NOT EXISTS everywhere); they come out stamped at the current version.
-var eventMigrations = []string{eventDDL}
+type migrationStep struct {
+	sql string
+	run func(*sqlite.Conn) error
+}
 
-var metadataMigrations = []string{metadataDDL}
+var eventMigrations = []migrationStep{{sql: eventDDL}, {sql: `
+CREATE TABLE IF NOT EXISTS orisun_es_write (
+    write_id INTEGER PRIMARY KEY,
+    consistency TEXT NOT NULL CHECK (json_valid(consistency) AND json_type(consistency) = 'array')
+);
+ALTER TABLE orisun_es_event ADD COLUMN write_id INTEGER REFERENCES orisun_es_write(write_id);
+`}, {run: migrateReservedEventType}, {run: migrateEventID}, {run: migrateEventEnvelope}}
+
+var metadataMigrations = []migrationStep{{sql: metadataDDL}}
 
 func applyMigrations(conn *sqlite.Conn) error {
 	return applyVersionedMigrations(conn, eventMigrations)
@@ -110,7 +121,7 @@ func applyMetadataMigrations(conn *sqlite.Conn) error {
 	return applyVersionedMigrations(conn, metadataMigrations)
 }
 
-func applyVersionedMigrations(conn *sqlite.Conn, migrations []string) error {
+func applyVersionedMigrations(conn *sqlite.Conn, migrations []migrationStep) error {
 	version, err := schemaVersion(conn)
 	if err != nil {
 		return fmt.Errorf("read schema version: %w", err)
@@ -140,11 +151,16 @@ func schemaVersion(conn *sqlite.Conn) (int, error) {
 	return version, err
 }
 
-func applyMigrationStep(conn *sqlite.Conn, script string, version int) (err error) {
+func applyMigrationStep(conn *sqlite.Conn, step migrationStep, version int) (err error) {
 	releaseFn := sqlitex.Save(conn)
 	defer releaseFn(&err)
-	if err := sqlitex.ExecuteScript(conn, script, nil); err != nil {
+	if err := sqlitex.ExecuteScript(conn, step.sql, nil); err != nil {
 		return err
+	}
+	if step.run != nil {
+		if err := step.run(conn); err != nil {
+			return err
+		}
 	}
 	// user_version lives in the database header and is transactional, so the
 	// bump commits or rolls back together with the step's schema changes.

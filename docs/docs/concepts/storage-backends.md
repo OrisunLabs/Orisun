@@ -69,14 +69,13 @@ ORISUN_FDB_CLUSTER_FILE=/etc/foundationdb/fdb.cluster
 ORISUN_FDB_ROOT=orisun
 ```
 
-Criteria queries keep the same public API, but FoundationDB requires ready
-covering boundary indexes for criteria reads and consistency checks. Every
-criterion in every `SaveEventsV2` observation must be covered. If any one is
-not, the whole request fails with `FAILED_PRECONDITION`; this avoids
-boundary-wide scans and keeps write conflict ranges scoped to the indexed event
-subsets.
+Criteria queries keep the same public API. FoundationDB requires each criterion
+to select a native range through `__commitPosition` or `__writeId`, or have a
+ready covering secondary index. This applies to reads and every `SaveEventsV2`
+observation. Unsupported criteria fail with `FAILED_PRECONDITION`, avoiding
+boundary-wide scans and keeping conflict ranges scoped to the selected events.
 
-FoundationDB assigns event positions with commit versionstamps instead of a per-boundary counter. Plain appends can commit in parallel; writes with consistency observations conflict only on the covered index ranges for those queries, so commands on unrelated contexts in one boundary commit concurrently.
+FoundationDB assigns event positions with commit versionstamps instead of a per-boundary counter. Plain appends can commit in parallel; writes with consistency observations track conflicts on the native event or secondary-index ranges selected by those queries, so commands on unrelated contexts in one boundary commit concurrently.
 
 For cluster layout, process classes, Kubernetes, backups, monitoring, lock failover, and release gates, see [FoundationDB topology](../operations/deployment#foundationdb-topology) and [FoundationDB operations](../operations/foundationdb).
 

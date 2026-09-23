@@ -106,7 +106,7 @@ type saveOutcome struct {
 	err error
 }
 
-// saveBypassingQueue is the pre-group-commit write path, preserved verbatim
+// saveBypassingQueue is the pre-group-commit write path
 // for comparison only: one IMMEDIATE transaction per call under the caller's
 // context, no queue, no savepoint. Production code never calls this — it
 // exists so tests and benchmarks can measure the batched path against the
@@ -129,6 +129,15 @@ func saveBypassingQueue(
 	}
 	inserts := prepared
 
+	consistency, consistencyErr := eventstore.LegacyConsistencyChecks(expectedPosition, query)
+	if consistencyErr != nil {
+		return "", 0, consistencyErr
+	}
+	data, err := eventstore.MarshalConsistency(consistency)
+	if err != nil {
+		return "", 0, err
+	}
+
 	conn, takeErr := pool.Write.Take(ctx)
 	if takeErr != nil {
 		return "", 0, statuscode.Errorf(statuscode.Internal, "take write conn: %v", takeErr)
@@ -146,11 +155,7 @@ func saveBypassingQueue(
 		}
 	}()
 
-	consistency, consistencyErr := eventstore.LegacyConsistencyChecks(expectedPosition, query)
-	if consistencyErr != nil {
-		return "", 0, consistencyErr
-	}
-	return saver.saveEventsOnConn(conn, pool, boundary, inserts, consistency)
+	return saver.saveEventsOnConn(conn, pool, boundary, inserts, consistency, string(data))
 }
 
 // blockWorkerThenQueue occupies the worker with one blocking save, runs

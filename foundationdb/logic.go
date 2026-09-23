@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
 	"github.com/goccy/go-json"
 )
@@ -26,11 +27,7 @@ const (
 )
 
 type eventRecord struct {
-	EventID     string `json:"event_id"`
-	EventType   string `json:"event_type"`
-	Data        string `json:"data"`
-	Metadata    string `json:"metadata"`
-	DateCreated string `json:"date_created"`
+	Data string `json:"data"`
 }
 
 type indexDefinition struct {
@@ -55,19 +52,25 @@ type preparedEvent struct {
 	data   map[string]any
 }
 
-func prepareEvents(events eventstore.PreparedEventBatch) ([]preparedEvent, error) {
+func prepareEvents(events eventstore.PreparedEventBatch, created time.Time) ([]preparedEvent, error) {
 	out := make([]preparedEvent, len(events))
 	for i, event := range events {
+		stored, err := eventdata.WithFields(event.DataJSON, map[string]any{
+			"__eventId": event.EventId, "__eventType": event.EventType,
+			"__metadata":        eventdata.MetadataValue(event.MetadataJSON),
+			"__dateCreated":     created.UTC().Format(time.RFC3339Nano),
+			"__writeLastOffset": uint16(len(events) - 1),
+		})
+		if err != nil {
+			return nil, err
+		}
 		var data map[string]any
-		if err := json.Unmarshal([]byte(event.DataJSON), &data); err != nil {
+		if err := json.Unmarshal([]byte(stored), &data); err != nil {
 			return nil, err
 		}
 		out[i] = preparedEvent{
 			record: eventRecord{
-				EventID:   event.EventId,
-				EventType: event.EventType,
-				Data:      event.DataJSON,
-				Metadata:  event.MetadataJSON,
+				Data: stored,
 			},
 			data: data,
 		}
@@ -81,8 +84,7 @@ func prepareEvents(events eventstore.PreparedEventBatch) ([]preparedEvent, error
 func estimateSaveBytes(prepared []preparedEvent, indexes []indexDefinition) int {
 	total := 0
 	for _, e := range prepared {
-		total += len(e.record.Data) + len(e.record.Metadata) +
-			len(e.record.EventID) + len(e.record.EventType) + perEventOverheadBytes
+		total += len(e.record.Data) + perEventOverheadBytes
 		for _, idx := range indexes {
 			if !eventMatchesIndexConditions(e.data, idx) {
 				continue
@@ -121,19 +123,34 @@ func decodeEventRecord(value []byte) (eventRecord, map[string]any, error) {
 }
 
 func readEventFromRecord(value []byte, tx, gid int64) (eventstore.ReadEvent, error) {
-	record, _, err := decodeEventRecord(value)
-	if err != nil {
+	var record eventRecord
+	if err := json.Unmarshal(value, &record); err != nil {
 		return eventstore.ReadEvent{}, err
 	}
-	created, err := time.Parse(time.RFC3339Nano, record.DateCreated)
+	var fields struct {
+		EventID         string          `json:"__eventId"`
+		EventType       string          `json:"__eventType"`
+		Metadata        json.RawMessage `json:"__metadata"`
+		DateCreated     string          `json:"__dateCreated"`
+		WriteLastOffset *uint16         `json:"__writeLastOffset"`
+	}
+	if err := json.Unmarshal([]byte(record.Data), &fields); err != nil {
+		return eventstore.ReadEvent{}, err
+	}
+	created, err := time.Parse(time.RFC3339Nano, fields.DateCreated)
 	if err != nil {
-		created = time.Now().UTC()
+		return eventstore.ReadEvent{}, fmt.Errorf("invalid stored event timestamp: %w", err)
+	}
+	writeID := ""
+	if fields.WriteLastOffset != nil {
+		writeID = eventstore.WriteID(tx, (gid & ^int64(65535))|int64(*fields.WriteLastOffset))
 	}
 	return eventstore.ReadEvent{
-		EventId:         record.EventID,
-		EventType:       record.EventType,
-		Data:            record.Data,
-		Metadata:        record.Metadata,
+		WriteId:         writeID,
+		EventId:         fields.EventID,
+		EventType:       fields.EventType,
+		Data:            eventdata.WithoutStorageEnvelope(record.Data),
+		Metadata:        string(fields.Metadata),
 		CommitPosition:  tx,
 		PreparePosition: gid,
 		DateCreated:     created,
@@ -172,11 +189,7 @@ func decodeUser(value []byte) (eventstore.User, error) {
 	}, nil
 }
 
-func eventMatchesCriterion(dataJSON string, criterion map[string]string) bool {
-	data := map[string]any{}
-	if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
-		return false
-	}
+func eventMatchesCriterion(data map[string]any, criterion map[string]string) bool {
 	for key, expected := range criterion {
 		actual, ok := data[key]
 		if !ok || !eventValueEquals(actual, expected) {

@@ -27,8 +27,8 @@ func TestSaveEndpointsAuthorizeBeforeValidatingRequests(t *testing.T) {
 func TestConsistencyChecksKeepOnePositionPerCompleteQuery(t *testing.T) {
 	position := &Position{CommitPosition: 12, PreparePosition: 9}
 	query := &Query{Criteria: []*Criterion{
-		{Tags: []*Tag{{Key: "product_id", Value: "p-1"}, {Key: "eventType", Value: "StockAdjusted"}}},
-		{Tags: []*Tag{{Key: "eventType", Value: "StockCounted"}, {Key: "product_id", Value: "p-1"}}},
+		{Tags: []*Tag{{Key: "product_id", Value: "p-1"}, {Key: "__eventType", Value: "StockAdjusted"}}},
+		{Tags: []*Tag{{Key: "__eventType", Value: "StockCounted"}, {Key: "product_id", Value: "p-1"}}},
 	}}
 
 	checks, err := consistencyChecksFromObservations([]*ConsistencyObservation{{
@@ -40,7 +40,7 @@ func TestConsistencyChecksKeepOnePositionPerCompleteQuery(t *testing.T) {
 	if len(checks) != 1 || len(checks[0].Criteria) != 2 || checks[0].Position != *position {
 		t.Fatalf("checks = %#v", checks)
 	}
-	if checks[0].Criteria[0].Tags[0].Key != "eventType" || checks[0].Criteria[1].Tags[0].Key != "eventType" {
+	if checks[0].Criteria[0].Tags[0].Key != "__eventType" || checks[0].Criteria[1].Tags[0].Key != "__eventType" {
 		t.Fatalf("criteria were not normalized: %#v", checks[0].Criteria)
 	}
 

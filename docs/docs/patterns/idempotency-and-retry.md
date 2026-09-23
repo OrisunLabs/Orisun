@@ -53,7 +53,7 @@ eventID := "018f2d5e-00a1-7000-8000-0000000000a1"
 accountOpenedID := "018f2d5e-2001-7000-8000-000000000001"
 accountCriteria := []*eventstore.Criterion{
 	{Tags: []*eventstore.Tag{
-		{Key: "eventType", Value: "AccountOpened"},
+		{Key: "__eventType", Value: "AccountOpened"},
 		{Key: "accountOpenedId", Value: accountOpenedID},
 	}},
 	{Tags: []*eventstore.Tag{{Key: "scopes.accountOpenedId", Value: accountOpenedID}}},
@@ -105,7 +105,7 @@ const eventId = '018f2d5e-00a1-7000-8000-0000000000a1'; // stable per command
 const accountOpenedId = '018f2d5e-2001-7000-8000-000000000001';
 const accountCriteria = [
   { tags: [
-    { key: 'eventType', value: 'AccountOpened' },
+    { key: '__eventType', value: 'AccountOpened' },
     { key: 'accountOpenedId', value: accountOpenedId },
   ] },
   { tags: [{ key: 'scopes.accountOpenedId', value: accountOpenedId }] },
@@ -156,7 +156,7 @@ String eventId = "018f2d5e-00a1-7000-8000-0000000000a1"; // stable per command
 String accountOpenedId = "018f2d5e-2001-7000-8000-000000000001";
 Eventstore.Query accountQuery = Eventstore.Query.newBuilder()
     .addCriteria(Eventstore.Criterion.newBuilder()
-        .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+        .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
         .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue(accountOpenedId).build())
         .build())
     .addCriteria(Eventstore.Criterion.newBuilder()
@@ -206,7 +206,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
     "position": {"commit_position": 2, "prepare_position": 1},
     "query": {"criteria": [
       {"tags": [
-        {"key": "eventType", "value": "AccountOpened"},
+        {"key": "__eventType", "value": "AccountOpened"},
         {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
       ]},
       {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]}

@@ -121,7 +121,7 @@ _, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 		Query: &eventstore.Query{
 			Criteria: []*eventstore.Criterion{{
 				Tags: []*eventstore.Tag{
-					{Key: "eventType", Value: "AccountOpened"},
+					{Key: "__eventType", Value: "AccountOpened"},
 					{Key: "accountOpenedId", Value: "018f2d5e-2001-7000-8000-000000000001"},
 				},
 			}},
@@ -147,7 +147,7 @@ await client.saveEventsV2({
     query: {
       criteria: [{
         tags: [
-          { key: 'eventType', value: 'AccountOpened' },
+          { key: '__eventType', value: 'AccountOpened' },
           { key: 'accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' },
         ],
       }],
@@ -175,7 +175,7 @@ client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
         .setQuery(Eventstore.Query.newBuilder()
             .addCriteria(Eventstore.Criterion.newBuilder()
                 .addTags(Eventstore.Tag.newBuilder()
-                    .setKey("eventType").setValue("AccountOpened").build())
+                    .setKey("__eventType").setValue("AccountOpened").build())
                 .addTags(Eventstore.Tag.newBuilder()
                     .setKey("accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
                 .build())
@@ -200,7 +200,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
     "query": {
       "criteria": [
         {"tags": [
-          {"key": "eventType", "value": "AccountOpened"},
+          {"key": "__eventType", "value": "AccountOpened"},
           {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
         ]}
       ]
@@ -229,7 +229,7 @@ Repeat with a fresh event id to open the transfer's destination account, using t
 
 using event id `018f2d5e-2002-7000-8000-000000000002`. The two opens are independent consistency contexts, so they can run concurrently.
 
-The stored event data includes canonical `eventType` from the caller-supplied API `event_type`, and Orisun derives returned event types from that JSON key. Later queries and indexes can filter by event type without adding it to each `data` JSON payload.
+The stored event data includes canonical `__eventType` from the caller-supplied API `event_type`, and Orisun derives returned event types from that JSON key. Later queries and indexes can filter by event type without adding it to each `data` JSON payload.
 
 ## 2. Read both balances from one snapshot
 
@@ -241,12 +241,12 @@ A transfer's context spans both accounts: the source balance decides whether the
 ```go
 criteria := []*eventstore.Criterion{
 	{Tags: []*eventstore.Tag{
-		{Key: "eventType", Value: "AccountOpened"},
+		{Key: "__eventType", Value: "AccountOpened"},
 		{Key: "accountOpenedId", Value: "018f2d5e-2001-7000-8000-000000000001"},
 	}},
 	{Tags: []*eventstore.Tag{{Key: "scopes.accountOpenedId", Value: "018f2d5e-2001-7000-8000-000000000001"}}},
 	{Tags: []*eventstore.Tag{
-		{Key: "eventType", Value: "AccountOpened"},
+		{Key: "__eventType", Value: "AccountOpened"},
 		{Key: "accountOpenedId", Value: "018f2d5e-2002-7000-8000-000000000002"},
 	}},
 	{Tags: []*eventstore.Tag{{Key: "scopes.accountOpenedId", Value: "018f2d5e-2002-7000-8000-000000000002"}}},
@@ -269,12 +269,12 @@ resp, err := client.GetLatestByCriteria(ctx, &eventstore.GetLatestByCriteriaRequ
 ```typescript
 const criteria = [
   { tags: [
-    { key: 'eventType', value: 'AccountOpened' },
+    { key: '__eventType', value: 'AccountOpened' },
     { key: 'accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' },
   ] },
   { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' }] },
   { tags: [
-    { key: 'eventType', value: 'AccountOpened' },
+    { key: '__eventType', value: 'AccountOpened' },
     { key: 'accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' },
   ] },
   { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' }] },
@@ -302,14 +302,14 @@ Eventstore.GetLatestByCriteriaRequest latestRequest =
     Eventstore.GetLatestByCriteriaRequest.newBuilder()
         .setBoundary("accounts")
         .addCriteria(Eventstore.Criterion.newBuilder()
-            .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+            .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
             .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
             .addTags(Eventstore.Tag.newBuilder().setKey("scopes.accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
-            .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+            .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
             .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue("018f2d5e-2002-7000-8000-000000000002").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
@@ -331,12 +331,12 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<E
   "boundary": "accounts",
   "criteria": [
     {"tags": [
-      {"key": "eventType", "value": "AccountOpened"},
+      {"key": "__eventType", "value": "AccountOpened"},
       {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
     ]},
     {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]},
     {"tags": [
-      {"key": "eventType", "value": "AccountOpened"},
+      {"key": "__eventType", "value": "AccountOpened"},
       {"key": "accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}
     ]},
     {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}]}
@@ -348,7 +348,7 @@ EOF
   </TabItem>
 </Tabs>
 
-The `scopes.accountOpenedId` criterion deliberately omits an `eventType` tag: it matches any later event scoped to that account, regardless of whether it is a debit or a credit, so the response always carries that account's freshest movement. The application derives each balance, decides whether the transfer is valid, and constructs an observation from the request criteria and returned `context_position`. Its one position belongs to the complete four-criterion OR query.
+The `scopes.accountOpenedId` criterion deliberately omits an `__eventType` tag: it matches any later event scoped to that account, regardless of whether it is a debit or a credit, so the response always carries that account's freshest movement. The application derives each balance, decides whether the transfer is valid, and constructs an observation from the request criteria and returned `context_position`. Its one position belongs to the complete four-criterion OR query.
 
 ### When the command performs another read
 
@@ -362,12 +362,12 @@ separate request, preserve that second read separately:
     {
       "query": {"criteria": [
         {"tags": [
-          {"key": "eventType", "value": "AccountOpened"},
+          {"key": "__eventType", "value": "AccountOpened"},
           {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
         ]},
         {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]},
         {"tags": [
-          {"key": "eventType", "value": "AccountOpened"},
+          {"key": "__eventType", "value": "AccountOpened"},
           {"key": "accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}
         ]},
         {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}]}
@@ -376,7 +376,7 @@ separate request, preserve that second read separately:
     },
     {
       "query": {"criteria": [{"tags": [
-        {"key": "eventType", "value": "DailyTransferLimitChanged"},
+        {"key": "__eventType", "value": "DailyTransferLimitChanged"},
         {"key": "customerId", "value": "customer-7"}
       ]}]},
       "position": {"commit_position": 5, "prepare_position": 0}
@@ -488,12 +488,12 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
     "query": {
       "criteria": [
         {"tags": [
-          {"key": "eventType", "value": "AccountOpened"},
+          {"key": "__eventType", "value": "AccountOpened"},
           {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
         ]},
         {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]},
         {"tags": [
-          {"key": "eventType", "value": "AccountOpened"},
+          {"key": "__eventType", "value": "AccountOpened"},
           {"key": "accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}
         ]},
         {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}]}
@@ -585,7 +585,7 @@ Reusing the same `event_id`s on retry keeps the command idempotent at the applic
 
 ## 5. Index the query field
 
-Steps 2 and 3 filter on both the account root (`eventType = AccountOpened` plus `accountOpenedId`) and later movements (`scopes.accountOpenedId`). Create both indexes once, during deployment. FoundationDB requires these ready covering indexes before the criteria reads or CCC checks will run.
+Steps 2 and 3 filter on both the account root (`__eventType = AccountOpened` plus `accountOpenedId`) and later movements (`scopes.accountOpenedId`). Create both indexes once, during deployment. FoundationDB requires these ready covering indexes before the criteria reads or CCC checks will run.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
@@ -599,7 +599,7 @@ _, err = client.CreateIndex(ctx, &eventstore.CreateIndexRequest{
 		ValueType: eventstore.ValueType_TEXT,
 	}},
 	Conditions: []*eventstore.IndexCondition{{
-		Key:      "eventType",
+		Key:      "__eventType",
 		Operator: "=",
 		Value:    "AccountOpened",
 	}},
@@ -624,7 +624,7 @@ await client.createIndex({
   boundary: 'accounts',
   name: 'account_root',
   fields: [{ jsonKey: 'accountOpenedId', valueType: 'TEXT' }],
-  conditions: [{ key: 'eventType', operator: '=', value: 'AccountOpened' }],
+  conditions: [{ key: '__eventType', operator: '=', value: 'AccountOpened' }],
   conditionCombinator: 'AND',
 });
 
@@ -647,7 +647,7 @@ client.createIndex(Eventstore.CreateIndexRequest.newBuilder()
         .setValueType(Eventstore.ValueType.TEXT)
         .build())
     .addConditions(Eventstore.IndexCondition.newBuilder()
-        .setKey("eventType")
+        .setKey("__eventType")
         .setOperator("=")
         .setValue("AccountOpened")
         .build())
@@ -676,7 +676,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
     {"json_key": "accountOpenedId", "value_type": "TEXT"}
   ],
   "conditions": [
-    {"key": "eventType", "operator": "=", "value": "AccountOpened"}
+    {"key": "__eventType", "operator": "=", "value": "AccountOpened"}
   ],
   "condition_combinator": "AND"
 }

@@ -654,7 +654,7 @@ func TestE2E_OptimisticConcurrency(t *testing.T) {
 	// Try to save with wrong expected version (should fail)
 	notExists := &pb.Position{CommitPosition: -1, PreparePosition: -1}
 	firstEventQuery := &pb.Query{Criteria: []*pb.Criterion{{
-		Tags: []*pb.Tag{{Key: "eventType", Value: "FirstEvent"}},
+		Tags: []*pb.Tag{{Key: "__eventType", Value: "FirstEvent"}},
 	}}}
 	wrongVersionReq := &pb.SaveEventsV2Request{
 		Boundary: "orisun_test_1",
@@ -774,7 +774,7 @@ func TestE2E_CatchUpSubscribeToEvents(t *testing.T) {
 			Criteria: []*pb.Criterion{
 				{
 					Tags: []*pb.Tag{
-						{Key: "eventType", Value: "SubscriptionTest"}, // Note: eventType, not event_type
+						{Key: "__eventType", Value: "SubscriptionTest"}, // Note: eventType, not event_type
 					},
 				},
 			},
@@ -813,7 +813,7 @@ func TestE2E_PostgresLiveSubscribeToEvents(t *testing.T) {
 			Criteria: []*pb.Criterion{
 				{
 					Tags: []*pb.Tag{
-						{Key: "eventType", Value: eventType},
+						{Key: "__eventType", Value: eventType},
 					},
 				},
 			},

@@ -292,7 +292,7 @@ latest, err := store.GetLatestByCriteria(ctx, orisun.LatestByCriteriaQuery{
 	Boundary: "orders",
 	Criteria: []orisun.ReadCriterion{
 		{Tags: []orisun.ReadTag{
-			{Key: "eventType", Value: "OrderPlaced"},
+			{Key: "__eventType", Value: "OrderPlaced"},
 			{Key: "orderId", Value: "o-1"},
 		}},
 	},
@@ -322,7 +322,7 @@ _, err = store.SaveEventsV2(
 	[]*orisun.ConsistencyObservation{{
 		Query: &orisun.Query{Criteria: []*orisun.Criterion{{
 			Tags: []*orisun.Tag{
-				{Key: "eventType", Value: "OrderPlaced"},
+				{Key: "__eventType", Value: "OrderPlaced"},
 				{Key: "orderId", Value: "o-1"},
 			},
 		}}},

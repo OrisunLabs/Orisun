@@ -10,7 +10,7 @@ import (
 )
 
 func TestFoundationDBSystemIndexesCoverBoundaryDefinitionReplay(t *testing.T) {
-	want := []eventstore.BoundaryIndexField{{JsonKey: "eventType", ValueType: "text"}}
+	want := []eventstore.BoundaryIndexField{{JsonKey: "__eventType", ValueType: "text"}}
 	for _, index := range systemAdminIndexes {
 		if index.name == "sys_admin_event_type" {
 			if !slices.Equal(index.fields, want) {

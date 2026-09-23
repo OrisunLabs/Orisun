@@ -6,7 +6,7 @@ description: Evolve event data shapes over time without rewriting history.
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-Orisun stores the raw `data` JSON for every event and never rewrites history. Old events keep their original shape forever. That immutability is a feature, but it means your application has to cope with multiple versions of an event type existing side by side as your domain evolves.
+Orisun preserves application event data rather than rewriting it as your domain evolves. Your application therefore has to cope with multiple versions of an event type existing side by side. Storage upgrades may change Orisun-owned envelope fields, such as the migration from `eventType` to `__eventType`; see the [event-type upgrade guidance](../api/eventstore#upgrading-stored-event-fields).
 
 This page covers the three standard strategies and how each interacts with Orisun's content queries and indexes.
 
@@ -28,26 +28,26 @@ Reach for the next two strategies when a change is not purely additive, such as 
 
 ## Strategy 2: Versioned event types
 
-Introduce a **new `eventType`** for a breaking change, and leave the old type untouched. Projectors handle both.
+Introduce a **new `__eventType`** for a breaking change, and leave the old type untouched. Projectors handle both.
 
 ```json
-{"eventType": "OrderPlaced",     "order_id": "ord-1", "total": "45.00"}
-{"eventType": "OrderPlacedV2",   "order_id": "ord-1", "total_cents": 4500, "currency": "USD"}
+{"__eventType": "OrderPlaced",     "order_id": "ord-1", "total": "45.00"}
+{"__eventType": "OrderPlacedV2",   "order_id": "ord-1", "total_cents": 4500, "currency": "USD"}
 ```
 
 - Old events stay valid under the old contract; new writes use the new type.
-- Projectors route on `eventType` and apply the right logic per type.
+- Projectors route on the API event type (`event_type`, or SDK `eventType`) and apply the right logic per type. The examples show its stored `__eventType` representation; supply the type through the write envelope, not inside application `data`.
 - Criteria and indexes that target `OrderPlaced` keep matching the old events exactly; target `OrderPlacedV2` separately.
 
 This is the cleanest option for a structural change. The cost is two code paths in consumers until the old type ages out of relevance.
 
 ## Strategy 3: Version field with upcasting
 
-Keep one `eventType`, but add a `version` inside `data` and **upcast** old versions to the current shape when you read them.
+Keep one `__eventType`, but add a `version` inside `data` and **upcast** old versions to the current shape when you read them.
 
 ```json
-{"eventType": "PaymentCaptured", "version": 1, "amount": "45.00"}
-{"eventType": "PaymentCaptured", "version": 2, "amount_cents": 4500}
+{"__eventType": "PaymentCaptured", "version": 1, "amount": "45.00"}
+{"__eventType": "PaymentCaptured", "version": 2, "amount_cents": 4500}
 ```
 
 The projector normalizes before applying:
@@ -107,7 +107,7 @@ if (!"2".equals(data.get("version"))) {
 Upcasting happens in application code, not at the API. With `grpcurl` you only see the raw stored shapes:
 
 ```bash
-grpcurl -H "$AUTH" -d '{"boundary":"orders","query":{"criteria":[{"tags":[{"key":"eventType","value":"PaymentCaptured"}]}]},"count":100,"direction":"ASC"}' \
+grpcurl -H "$AUTH" -d '{"boundary":"orders","query":{"criteria":[{"tags":[{"key":"__eventType","value":"PaymentCaptured"}]}]},"count":100,"direction":"ASC"}' \
   localhost:5005 orisun.EventStore/GetEvents
 ```
 
@@ -122,8 +122,8 @@ Keep the upcast logic in one place: a normalizer the projector calls for every e
 
 Criteria queries and [indexes](../concepts/indexing) match JSON keys directly. That has two consequences:
 
-- **A new key does not retroactively match old events.** A criterion on `currency` will not match v1 events that lack it. If you need a unified read across versions, query on a key present in all of them (typically `eventType` or a stable domain id), or upcast before querying.
-- **Index stable keys.** Put indexes on fields that do not change across versions (`order_id`, `eventType`). Indexing a field introduced in v2 only speeds up v2+ events.
+- **A new key does not retroactively match old events.** A criterion on `currency` will not match v1 events that lack it. If you need a unified read across versions, query on a key present in all of them (typically `__eventType` or a stable domain id), or upcast before querying.
+- **Index stable keys.** Put indexes on fields that do not change across versions (`order_id`, `__eventType`). Indexing a field introduced in v2 only speeds up v2+ events.
 
 ## Rules of thumb
 
@@ -137,7 +137,7 @@ Criteria queries and [indexes](../concepts/indexing) match JSON keys directly. T
 | Change kind | Strategy | Rewrites history? |
 | --- | --- | --- |
 | Add an optional field | Additive (default the new field) | No |
-| Restructure or repurpose fields | Versioned `eventType` (`X` → `XV2`) | No |
+| Restructure or repurpose fields | Versioned `__eventType` (`X` → `XV2`) | No |
 | Same type, new shape | `version` field + upcast on read | No |
 
 All three keep the log immutable; the difference is where the compatibility work lives: in the writer, in the type name, or in the reader.

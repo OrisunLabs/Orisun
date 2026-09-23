@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	"github.com/goccy/go-json"
 )
 
@@ -60,7 +61,7 @@ type EventWithMapTags struct {
 	Metadata  any    `json:"metadata"`
 }
 
-// PreparedEvent is the canonical backend-facing event representation.
+// PreparedEvent is the validated backend-facing event envelope; DataJSON contains only application data.
 type PreparedEvent struct {
 	EventId      string
 	EventType    string
@@ -89,7 +90,7 @@ type PreparedEventBatch []PreparedEvent
 func PrepareEventsForSave(events []EventWithMapTags) (PreparedEventBatch, error) {
 	prepared := make(PreparedEventBatch, len(events))
 	for i, event := range events {
-		dataJSON, err := prepareEventDataJSON(event.Data, event.EventType)
+		dataJSON, err := prepareEventDataJSON(event.Data)
 		if err != nil {
 			return nil, fmt.Errorf("event %d data: %w", i, err)
 		}
@@ -107,34 +108,30 @@ func PrepareEventsForSave(events []EventWithMapTags) (PreparedEventBatch, error)
 	return prepared, nil
 }
 
-func prepareEventDataJSON(value any, eventType string) (string, error) {
-	return prepareJSONObjectJSON(value, eventType, true)
+func prepareEventDataJSON(value any) (string, error) {
+	return prepareJSONObjectJSON(value, true)
 }
 
-// prepareJSONObjectJSON normalizes an object and optionally sets eventType to
-// the supplied value. The generic object exists only at the API boundary and
-// is discarded after producing the immutable backend representation.
-func prepareJSONObjectJSON(value any, eventType string, setEventType bool) (string, error) {
-	var object map[string]any
+// prepareJSONObjectJSON normalizes an object and, for event data, validates the
+// reserved root namespace without adding storage fields.
+// Raw values preserve integer and decimal precision during normalization.
+// The object is discarded after producing the prepared application data.
+func prepareJSONObjectJSON(value any, validateData bool) (string, error) {
+	var object map[string]json.RawMessage
 	switch value := value.(type) {
 	case nil:
-		object = make(map[string]any, 1)
+		object = make(map[string]json.RawMessage, 1)
 	case string:
 		if value == "" {
-			object = make(map[string]any, 1)
+			object = make(map[string]json.RawMessage, 1)
 		} else if err := json.Unmarshal([]byte(value), &object); err != nil {
 			return "", err
 		}
 	case []byte:
 		if len(value) == 0 {
-			object = make(map[string]any, 1)
+			object = make(map[string]json.RawMessage, 1)
 		} else if err := json.Unmarshal(value, &object); err != nil {
 			return "", err
-		}
-	case map[string]any:
-		object = make(map[string]any, len(value)+1)
-		for key, item := range value {
-			object[key] = item
 		}
 	default:
 		encoded, err := json.Marshal(value)
@@ -146,10 +143,14 @@ func prepareJSONObjectJSON(value any, eventType string, setEventType bool) (stri
 		}
 	}
 	if object == nil {
-		object = make(map[string]any, 1)
+		object = make(map[string]json.RawMessage, 1)
 	}
-	if setEventType {
-		object["eventType"] = eventType
+	if validateData {
+		for key := range object {
+			if eventdata.IsReservedKey(key) {
+				return "", fmt.Errorf("top-level field %q is reserved for Orisun (prefix __)", key)
+			}
+		}
 	}
 	encoded, err := json.Marshal(object)
 	if err != nil {

@@ -16,7 +16,7 @@ and does not expose a separate DCB mode or API.
 
 | DCB concept | Orisun CCC concept |
 | --- | --- |
-| Event type | `event_type` on save; queryable as `eventType` in stored event data |
+| Event type | `event_type` on save; queryable as `__eventType` in stored event data |
 | Tags | Queryable JSON fields in event `data` |
 | Query | `Query.criteria` used by `GetEvents` or `GetLatestByCriteria` |
 | Append condition | One or more `SaveEventsV2.consistency` query/position observations |
@@ -34,7 +34,7 @@ Use the [CCC workflow](./command-context-consistency) and the
   later than the latest match is valid in DCB but fails Orisun's equality check.
 - **Query shape.** DCB query items have first-class event-type and tag filters.
   Orisun criteria match JSON fields; event type is queried through the canonical
-  `eventType` field.
+  `__eventType` field.
 - **Match-all queries.** The DCB specification requires a
   `failIfEventsMatch` query and permits that query to match all events. Orisun
   has no portable match-all CCC condition. Do not use empty criteria as a

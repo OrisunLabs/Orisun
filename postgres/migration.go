@@ -185,6 +185,9 @@ func initializeBoundaryTables(db *sql.DB, boundary string, schema string, isAdmi
 	if err != nil {
 		return fmt.Errorf("failed to initialize boundary tables: %w", err)
 	}
+	if err := migrateBoundaryStorage(ctx, tx, schema, boundary); err != nil {
+		return fmt.Errorf("migrate boundary storage: %w", err)
+	}
 
 	// If admin boundary, also initialize admin tables
 	if isAdminSchema {

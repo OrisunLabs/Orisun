@@ -62,12 +62,12 @@ func TestPositionOrdering(t *testing.T) {
 
 func TestQueryJSONUsesStableWireFieldNames(t *testing.T) {
 	encoded, err := json.Marshal(Query{Criteria: []Criterion{{
-		Tags: []Tag{{Key: "eventType", Value: "$BoundaryCreated"}},
+		Tags: []Tag{{Key: "__eventType", Value: "$BoundaryCreated"}},
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `{"criteria":[{"tags":[{"key":"eventType","value":"$BoundaryCreated"}]}]}`
+	const want = `{"criteria":[{"tags":[{"key":"__eventType","value":"$BoundaryCreated"}]}]}`
 	if string(encoded) != want {
 		t.Fatalf("query JSON = %s, want %s", encoded, want)
 	}
@@ -88,7 +88,7 @@ func TestPositionSentinels(t *testing.T) {
 func TestNeutralRequestAndResultShapes(t *testing.T) {
 	from := Position{CommitPosition: 7, PreparePosition: 8}
 	query := Query{Criteria: []Criterion{{Tags: []Tag{
-		{Key: "eventType", Value: "OrderPlaced"},
+		{Key: "__eventType", Value: "OrderPlaced"},
 		{Key: "orderId", Value: "o-1"},
 	}}}}
 	read := ReadRequest{
@@ -106,7 +106,7 @@ func TestNeutralRequestAndResultShapes(t *testing.T) {
 	event := ReadEvent{
 		EventID:     "event-1",
 		EventType:   "OrderPlaced",
-		Data:        `{"eventType":"OrderPlaced","orderId":"o-1"}`,
+		Data:        `{"__eventType":"OrderPlaced","orderId":"o-1"}`,
 		Metadata:    `{}`,
 		Position:    Position{CommitPosition: 9, PreparePosition: 10},
 		DateCreated: created,

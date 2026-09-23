@@ -358,20 +358,6 @@ type postgresBatchPayload struct {
 	Events      json.RawMessage `json:"events"`
 }
 
-type postgresConsistencyPayload struct {
-	Query    postgresQueryPayload    `json:"query"`
-	Position postgresPositionPayload `json:"position"`
-}
-
-type postgresQueryPayload struct {
-	Criteria []map[string]string `json:"criteria"`
-}
-
-type postgresPositionPayload struct {
-	TransactionID int64 `json:"transaction_id"`
-	GlobalID      int64 `json:"global_id"`
-}
-
 func (s *PostgresSaveEvents) executeBatch(
 	ctx context.Context,
 	boundary string,
@@ -386,7 +372,7 @@ func (s *PostgresSaveEvents) executeBatch(
 	requests := make([]*postgresSaveRequest, 0, len(live))
 	outcomes := make([]postgresBatchOutcome, 0, len(live))
 	for _, req := range live {
-		consistencyJSON, err := json.Marshal(postgresConsistency(req.consistency))
+		consistencyJSON, err := eventstore.MarshalConsistency(req.consistency)
 		if err != nil {
 			outcomes = append(outcomes, postgresBatchOutcome{
 				req: req,
@@ -603,28 +589,6 @@ func independentCCCKey(requests []*postgresSaveRequest) (string, bool) {
 		}
 	}
 	return criterionKey, criterionKey != ""
-}
-
-func postgresConsistency(checks []eventstore.ConsistencyCheck) []postgresConsistencyPayload {
-	result := make([]postgresConsistencyPayload, len(checks))
-	for index, check := range checks {
-		criteria := make([]map[string]string, len(check.Criteria))
-		for criterionIndex, criterion := range check.Criteria {
-			tags := make(map[string]string, len(criterion.Tags))
-			for _, tag := range criterion.Tags {
-				tags[tag.Key] = tag.Value
-			}
-			criteria[criterionIndex] = tags
-		}
-		result[index] = postgresConsistencyPayload{
-			Query: postgresQueryPayload{Criteria: criteria},
-			Position: postgresPositionPayload{
-				TransactionID: check.Position.CommitPosition,
-				GlobalID:      check.Position.PreparePosition,
-			},
-		}
-	}
-	return result
 }
 
 func isCanonicalEventBatchRequest(events eventstore.PreparedEventBatch) bool {

@@ -11,6 +11,7 @@ The EventStore service owns event operations:
 - `SaveEventsV2`
 - `SaveEvents` (deprecated)
 - `GetEvents`
+- `GetWriteContext`
 - `GetLatestByCriteria`
 - `CatchUpSubscribeToEvents`
 - `Ping`
@@ -119,8 +120,90 @@ Events have four caller-supplied fields:
 Orisun also stores a durable `position` and `date_created` on committed events.
 
 :::note
-`event_type` is the API field for the event's type. On save, Orisun writes that value into the stored event data as the canonical `eventType` JSON key, and storage backends derive response `event_type` from `data.eventType`. Criteria and indexes should use the `eventType` JSON key.
+Storage backends expose the event envelope through reserved fields in the
+queryable document:
+
+| Document field | Envelope value |
+| --- | --- |
+| `__eventId` | Event ID |
+| `__eventType` | Event type |
+| `__commitPosition` | Commit position, as an integer |
+| `__preparePosition` | Prepare position, as an integer |
+| `__writeId` | ID of the write that committed the event |
+| `__dateCreated` | Creation timestamp, in UTC RFC 3339 format |
+| `__metadata` | The metadata JSON value |
+
+PostgreSQL and SQLite persist these values inside `data`. Their ordering and
+write-context columns are generated projections of that document, not separate
+writable values. PostgreSQL retains `pg_xact_id` as internal visibility bookkeeping.
+FoundationDB stores metadata and timestamps inside the document and derives
+positions from its native commit-ordered key. It derives write IDs from that key
+and the stored batch-end offset; no second transaction fills in positions.
+
+On retrieval, the backend extracts the usual envelope and removes **all
+top-level `__*` fields** from returned application `data`. Nested fields and
+metadata values remain untouched. API and SDK event shapes stay unchanged.
+Content criteria and live subscription filters use reserved names, for example
+`{"key":"__eventId","value":"your-event-id"}`. Metadata is a JSON value under
+`__metadata`; this does not introduce dotted-path querying into nested objects.
+
+FoundationDB uses its native event-key range for criteria containing
+`__commitPosition` or `__writeId`, with any remaining tags applied within that
+range. A `__preparePosition` criterion needs one of those anchors. These three
+fields cannot be secondary-index fields or conditions. Other FoundationDB
+criteria continue to require a ready covering index.
+
+Top-level keys in application event `data` beginning with `__` are reserved for
+Orisun, including names not currently in use. Writes containing such keys are
+rejected before storage (with `INVALID_ARGUMENT` over gRPC). This restriction
+applies only to the root of `data`: nested objects and the separate `metadata`
+field may contain keys beginning with `__`. The write-request `event_type` field (or SDK `eventType` property) supplies
+`__eventType`; application payloads must not set it themselves. An ordinary
+application key named `eventType` is preserved and is no longer the discriminator.
 :::
+
+### Upgrading stored event fields
+
+Follow the [event-envelope upgrade guide](../operations/upgrading-event-envelope)
+for preparation, rollout, verification, failure recovery, and rollback steps.
+
+Content queries and index definitions now use `__eventType` instead of
+`eventType`. The API `event_type` field and SDK `eventType` property keep their
+existing names. There is no query-time alias for the old JSON key.
+
+Stop all Orisun servers sharing the storage before upgrading. At startup,
+Orisun migrates stored event discriminators, retained CCC observations, and
+index definitions created through the index API. PostgreSQL and SQLite rebuild
+affected managed indexes within their migration transaction. FoundationDB
+migrates in resumable batches before making the boundary available; its index
+entries retain the same values and positions. Existing positions, write IDs,
+and publisher checkpoints are preserved. The upgrade also moves stored event IDs
+into `data.__eventId`, removing the separate PostgreSQL/SQLite `event_id` column
+and FoundationDB record field. The remaining envelope migration replaces SQL
+columns with generated projections and rebuilds their indexes in the same
+transaction. FoundationDB migrates metadata, timestamps, and batch-end offsets
+in resumable batches, maintaining affected indexes. Historical events whose write
+context was never recorded continue to return an empty write ID. Large stores
+may take time to migrate.
+
+Update application criteria, subscription filters, and index declarations to
+`__eventType` before resuming traffic. Re-read command contexts after the upgrade;
+in-flight observations using the old key must not be reused. Indexes created
+directly with SQL are not managed by Orisun and must be reviewed separately.
+Older server binaries cannot be used with the migrated storage; take a backup
+before upgrading if you need to be able to restore the old format.
+
+If a legacy event already contains both `eventType` and `__eventType`, migration
+stops with a conflict instead of overwriting either value. Existing top-level
+`__eventId` values also block the event-ID migration, including JSON null. The
+remaining-envelope migration likewise rejects existing `__commitPosition`,
+`__preparePosition`, `__writeId`, `__dateCreated`, or `__metadata` fields;
+FoundationDB also reserves `__writeLastOffset` for its batch-end offset. Existing
+FoundationDB secondary indexes on commit-derived fields must be removed before
+that migration. Resolve any collision
+while the servers are stopped, then restart. Nested application fields and
+metadata are not renamed. Historical `eventType` was the store discriminator;
+after migration that unprefixed name is available for application data.
 
 ## SaveEventsV2
 
@@ -159,7 +242,7 @@ observation is rechecked atomically with the append.
 criteria := []*eventstore.Criterion{
 	{Tags: []*eventstore.Tag{{Key: "scopes.orderId", Value: "order-17"}}},
 	{Tags: []*eventstore.Tag{
-		{Key: "eventType", Value: "CustomerOrderingSuspended"},
+		{Key: "__eventType", Value: "CustomerOrderingSuspended"},
 		{Key: "customerId", Value: "customer-4"},
 	}},
 }
@@ -208,7 +291,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
         "criteria": [
           {"tags": [{"key": "scopes.orderId", "value": "order-17"}]},
           {"tags": [
-            {"key": "eventType", "value": "OrderCancelled"},
+            {"key": "__eventType", "value": "OrderCancelled"},
             {"key": "orderId", "value": "order-17"}
           ]}
         ]
@@ -219,11 +302,11 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
       "query": {
         "criteria": [
           {"tags": [
-            {"key": "eventType", "value": "CustomerOrderingSuspended"},
+            {"key": "__eventType", "value": "CustomerOrderingSuspended"},
             {"key": "customerId", "value": "customer-4"}
           ]},
           {"tags": [
-            {"key": "eventType", "value": "CustomerOrderingRestored"},
+            {"key": "__eventType", "value": "CustomerOrderingRestored"},
             {"key": "customerId", "value": "customer-4"}
           ]}
         ]
@@ -267,8 +350,9 @@ observations, and 16,384 tags across those criteria. These bounds prevent an
 individual write from creating unbounded query fan-out.
 
 PostgreSQL and SQLite can evaluate an unindexed equality query correctly by
-scanning. FoundationDB requires every criterion to have a ready covering index
-and returns `FAILED_PRECONDITION` otherwise. See [Indexing](../concepts/indexing).
+scanning. FoundationDB requires each criterion to select a native position range
+through `__commitPosition` or `__writeId`, or have a ready covering secondary
+index; otherwise it returns `FAILED_PRECONDITION`. See [Indexing](../concepts/indexing).
 
 ### Unconditional append
 
@@ -365,7 +449,7 @@ The response contains the position of the last committed event in the batch:
 }
 ```
 
-Orisun stores the API `event_type` value in event `data` as the canonical `eventType` JSON key and derives returned event types from that key. You do not need to duplicate it in your payload, and later queries or indexes can match `eventType` with normal content criteria.
+Orisun stores the API `event_type` value in event `data` as the canonical `__eventType` JSON key and derives returned event types from that key. You do not need to duplicate it in your payload, and later queries or indexes can match `__eventType` with normal content criteria.
 
 For event-scoped models, put queryable scope keys in `data` as normal JSON keys, for example `scopes.coursePublishedId`, and index them like any other field. See [Event Scopes](../patterns/event-scopes) for the modeling pattern.
 
@@ -516,6 +600,45 @@ query is still empty, send that query in a V2 observation with position
 V1 can represent at most one observed query. If a command read more than one
 independent context, migrate it to V2 and preserve every complete query as a
 separate observation. `GetLatestByCriteria` itself is unchanged.
+
+## GetWriteContext
+
+Every accepted save records the complete consistency observations checked for
+that atomic batch. Each observation retains its full OR query and the position
+observed before the write. Queries use the server's normalized representation;
+redundant equivalent observations may be deduplicated.
+
+`WriteResult.write_id` identifies the accepted save. Every event in that save
+carries the same `Event.write_id`, including events returned by latest-by-criteria
+reads and catch-up or live subscriptions. Treat the ID as an opaque string scoped
+to its boundary. Separate saves retain separate IDs even when group commit puts
+them in one database transaction.
+
+Call `GetWriteContext` with:
+
+```json
+{
+  "boundary": "orders",
+  "write_id": "<write_id from the save result or event>"
+}
+```
+
+The response contains `write_id` and `consistency`, an array of the same
+`ConsistencyObservation` shape accepted by `SaveEventsV2`. An existing record with
+an empty array means the save was unconditional. The deprecated `SaveEvents` RPC
+also records its effective consistency observation.
+
+Events saved before this feature have an empty `write_id` and no recorded context.
+Their conditions are unknown; the server does not label them unconditional or
+attempt to reconstruct historical queries. Missing records return `NOT_FOUND`;
+malformed IDs return `INVALID_ARGUMENT`. The boundary must be active.
+
+The context is store-owned and commits atomically with its events. Rejected or
+rolled-back saves leave no context record. PostgreSQL and SQLite store one record
+per save alongside the event table. FoundationDB stores the context under the
+save's final versionstamp, splitting large contexts into values within the same
+transaction. Context storage counts toward FoundationDB's transaction-size
+budget. No application metadata fields are reserved or rewritten for this feature.
 
 ## GetEvents
 
@@ -778,12 +901,12 @@ resp, err := client.GetLatestByCriteria(ctx, &eventstore.GetLatestByCriteriaRequ
 	Boundary: "ledger",
 	Criteria: []*eventstore.Criterion{
 		{Tags: []*eventstore.Tag{
-			{Key: "eventType", Value: "AccountOpened"},
+			{Key: "__eventType", Value: "AccountOpened"},
 			{Key: "accountOpenedId", Value: "018f2d5e-2001-7000-8000-000000000001"},
 		}},
 		{Tags: []*eventstore.Tag{{Key: "scopes.accountOpenedId", Value: "018f2d5e-2001-7000-8000-000000000001"}}},
 		{Tags: []*eventstore.Tag{
-			{Key: "eventType", Value: "AccountOpened"},
+			{Key: "__eventType", Value: "AccountOpened"},
 			{Key: "accountOpenedId", Value: "018f2d5e-2002-7000-8000-000000000002"},
 		}},
 		{Tags: []*eventstore.Tag{{Key: "scopes.accountOpenedId", Value: "018f2d5e-2002-7000-8000-000000000002"}}},
@@ -808,12 +931,12 @@ const latest = await client.getLatestByCriteria({
   boundary: 'ledger',
   criteria: [
     { tags: [
-      { key: 'eventType', value: 'AccountOpened' },
+      { key: '__eventType', value: 'AccountOpened' },
       { key: 'accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' },
     ] },
     { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2001-7000-8000-000000000001' }] },
     { tags: [
-      { key: 'eventType', value: 'AccountOpened' },
+      { key: '__eventType', value: 'AccountOpened' },
       { key: 'accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' },
     ] },
     { tags: [{ key: 'scopes.accountOpenedId', value: '018f2d5e-2002-7000-8000-000000000002' }] },
@@ -832,14 +955,14 @@ Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
     Eventstore.GetLatestByCriteriaRequest.newBuilder()
         .setBoundary("ledger")
         .addCriteria(Eventstore.Criterion.newBuilder()
-            .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+            .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
             .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
             .addTags(Eventstore.Tag.newBuilder().setKey("scopes.accountOpenedId").setValue("018f2d5e-2001-7000-8000-000000000001").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
-            .addTags(Eventstore.Tag.newBuilder().setKey("eventType").setValue("AccountOpened").build())
+            .addTags(Eventstore.Tag.newBuilder().setKey("__eventType").setValue("AccountOpened").build())
             .addTags(Eventstore.Tag.newBuilder().setKey("accountOpenedId").setValue("018f2d5e-2002-7000-8000-000000000002").build())
             .build())
         .addCriteria(Eventstore.Criterion.newBuilder()
@@ -859,12 +982,12 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<E
   "boundary": "ledger",
   "criteria": [
     {"tags": [
-      {"key": "eventType", "value": "AccountOpened"},
+      {"key": "__eventType", "value": "AccountOpened"},
       {"key": "accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}
     ]},
     {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2001-7000-8000-000000000001"}]},
     {"tags": [
-      {"key": "eventType", "value": "AccountOpened"},
+      {"key": "__eventType", "value": "AccountOpened"},
       {"key": "accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}
     ]},
     {"tags": [{"key": "scopes.accountOpenedId", "value": "018f2d5e-2002-7000-8000-000000000002"}]}
@@ -989,7 +1112,7 @@ sub, err := client.SubscribeToEvents(ctx, &eventstore.CatchUpSubscribeToEventSto
 	AfterPosition:  &eventstore.Position{CommitPosition: 0, PreparePosition: 0},
 	Query: &eventstore.Query{
 		Criteria: []*eventstore.Criterion{{
-			Tags: []*eventstore.Tag{{Key: "eventType", Value: "OrderPlaced"}},
+			Tags: []*eventstore.Tag{{Key: "__eventType", Value: "OrderPlaced"}},
 		}},
 	},
 }, handler)
@@ -1006,7 +1129,7 @@ const subscription = client.subscribeToEvents(
     afterPosition: { commitPosition: 0, preparePosition: 0 },
     query: {
       criteria: [
-        { tags: [{ key: 'eventType', value: 'OrderPlaced' }] },
+        { tags: [{ key: '__eventType', value: 'OrderPlaced' }] },
       ],
     },
   },
@@ -1026,7 +1149,7 @@ client.subscribeToEvents(Eventstore.CatchUpSubscribeToEventStoreRequest.newBuild
         .setQuery(Eventstore.Query.newBuilder()
             .addCriteria(Eventstore.Criterion.newBuilder()
                 .addTags(Eventstore.Tag.newBuilder()
-                    .setKey("eventType").setValue("OrderPlaced").build())
+                    .setKey("__eventType").setValue("OrderPlaced").build())
                 .build())
             .build())
         .build(),
@@ -1049,7 +1172,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvent
     "criteria": [
       {
         "tags": [
-          {"key": "eventType", "value": "OrderPlaced"}
+          {"key": "__eventType", "value": "OrderPlaced"}
         ]
       }
     ]
@@ -1378,6 +1501,6 @@ The EventStore protobuf source lives at [`proto/eventstore.proto`](https://githu
 | `INVALID_ARGUMENT` | The request is malformed, uses invalid JSON, or references invalid index fields. |
 | `UNAUTHENTICATED` | Missing or invalid credentials. |
 | `PERMISSION_DENIED` | Authenticated user does not have a required role. |
-| `FAILED_PRECONDITION` | The boundary is not active, or FoundationDB lacks a ready covering index for a queried criterion. |
+| `FAILED_PRECONDITION` | The boundary is not active, or a FoundationDB criterion has neither a native position range nor a ready covering secondary index. |
 | `ALREADY_EXISTS` | One or more observations changed during `SaveEventsV2`; re-query and retry if still valid. |
 | `INTERNAL` | Storage, publishing, or unexpected server failure. |

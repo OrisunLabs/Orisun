@@ -83,6 +83,7 @@ Orisun delivery is at least once. Consumers should be idempotent and deduplicate
 Criteria queries read JSON fields from event `data`. On PostgreSQL and SQLite,
 create indexes for high-volume keys used in command contexts,
 `GetLatestByCriteria`, or projector filters. FoundationDB does not fall back to
-a scan: every criterion used by a read or `SaveEventsV2` observation needs a
-ready covering index, or the request fails with `FAILED_PRECONDITION`. See
+a boundary scan: each criterion used by a read or `SaveEventsV2` observation
+needs a native range anchored by `__commitPosition` or `__writeId`, or a ready
+covering secondary index. Otherwise the request fails with `FAILED_PRECONDITION`. See
 [Indexing](../concepts/indexing).

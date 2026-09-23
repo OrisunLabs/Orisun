@@ -41,7 +41,7 @@ func TestAdapterConvertsNeutralAppend(t *testing.T) {
 	if err := json.Unmarshal([]byte(legacy.events[0].DataJSON), &data); err != nil {
 		t.Fatal(err)
 	}
-	if data["eventType"] != "$BoundaryCreated" || data["boundary"] != "orders" {
+	if data["__eventType"] != nil || data["boundary"] != "orders" {
 		t.Fatalf("prepared data = %#v", data)
 	}
 }
@@ -50,13 +50,13 @@ func TestAdapterConvertsNeutralReads(t *testing.T) {
 	created := time.Date(2026, time.July, 23, 10, 0, 0, 0, time.UTC)
 	legacy := &captureLegacyStore{
 		readBatch: orisun.ReadEventBatch{{
-			EventId: "event-1", EventType: "$BoundaryCreated", Data: `{"eventType":"$BoundaryCreated","boundary":"orders"}`,
+			EventId: "event-1", EventType: "$BoundaryCreated", Data: `{"boundary":"orders"}`,
 			CommitPosition: 5, PreparePosition: 6, DateCreated: created,
 		}},
 		latestBatch: orisun.LatestByCriteriaBatch{
 			Matches: []orisun.LatestCriterionMatch{{
 				Found: true,
-				Event: orisun.ReadEvent{EventId: "event-2", EventType: "$BoundaryActivated", Data: `{"eventType":"$BoundaryActivated","boundary":"orders"}`, CommitPosition: 7, PreparePosition: 8},
+				Event: orisun.ReadEvent{EventId: "event-2", EventType: "$BoundaryActivated", Data: `{"boundary":"orders"}`, CommitPosition: 7, PreparePosition: 8},
 			}},
 			ContextCommitPosition:  7,
 			ContextPreparePosition: 8,
@@ -69,7 +69,7 @@ func TestAdapterConvertsNeutralReads(t *testing.T) {
 		Count:        10,
 		Direction:    coreeventstore.DirectionDescending,
 		Query: coreeventstore.Query{Criteria: []coreeventstore.Criterion{{
-			Tags: []coreeventstore.Tag{{Key: "eventType", Value: "$BoundaryCreated"}},
+			Tags: []coreeventstore.Tag{{Key: "__eventType", Value: "$BoundaryCreated"}},
 		}}},
 	})
 	if err != nil {

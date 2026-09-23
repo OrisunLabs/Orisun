@@ -245,13 +245,13 @@ func prepareRequestedEventsForSave(events []*EventToSave) (PreparedEventBatch, e
 		if event == nil {
 			return nil, fmt.Errorf("event %d is nil", i)
 		}
-		dataJSON, err := prepareEventDataJSON(event.Data, event.EventType)
+		dataJSON, err := prepareEventDataJSON(event.Data)
 		if err != nil {
 			return nil, fmt.Errorf("event %d data: %w", i, err)
 		}
 		// The gRPC contract historically accepts metadata objects (or null), not
 		// arbitrary JSON scalars. Keep that validation at the transport edge.
-		metadataJSON, err := prepareJSONObjectJSON(event.Metadata, "", false)
+		metadataJSON, err := prepareJSONObjectJSON(event.Metadata, false)
 		if err != nil {
 			return nil, fmt.Errorf("event %d metadata: %w", i, err)
 		}
@@ -508,6 +508,7 @@ func (s *EventStore) saveEvents(
 	}
 
 	return &WriteResult{
+		WriteId: WriteID(tranId, globalID),
 		LogPosition: &Position{
 			CommitPosition:  tranId,
 			PreparePosition: globalID,
@@ -869,6 +870,7 @@ func (s *EventStore) SubscribeToAllEvents(
 }
 
 type publishedEventEnvelope struct {
+	WriteId     string    `json:"write_id,omitempty"`
 	EventId     string    `json:"event_id"`
 	EventType   string    `json:"event_type"`
 	Data        string    `json:"data"`
@@ -883,6 +885,7 @@ type publishedEventEnvelope struct {
 func (e publishedEventEnvelope) event() Event {
 	return Event{
 		EventId:     e.EventId,
+		WriteId:     e.WriteId,
 		EventType:   e.EventType,
 		Data:        e.Data,
 		Metadata:    e.Metadata,
@@ -894,8 +897,9 @@ func (e publishedEventEnvelope) event() Event {
 func neutralSubscriptionReadEvent(event ReadEvent) coreeventstore.ReadEvent {
 	return coreeventstore.ReadEvent{
 		EventID:   event.EventId,
+		WriteID:   event.WriteId,
 		EventType: event.EventType,
-		Data:      eventdata.WithoutStorageEventType(event.Data),
+		Data:      event.Data,
 		Metadata:  event.Metadata,
 		Position: coreeventstore.Position{
 			CommitPosition:  event.CommitPosition,
@@ -908,8 +912,9 @@ func neutralSubscriptionReadEvent(event ReadEvent) coreeventstore.ReadEvent {
 func neutralPublishedEvent(event Event) coreeventstore.ReadEvent {
 	result := coreeventstore.ReadEvent{
 		EventID:   event.EventId,
+		WriteID:   event.WriteId,
 		EventType: event.EventType,
-		Data:      eventdata.WithoutStorageEventType(event.Data),
+		Data:      event.Data,
 		Metadata:  event.Metadata,
 	}
 	if event.Position != nil {
@@ -998,8 +1003,14 @@ func (s *EventStore) eventMatchesQueryCriteria(event *Event, criteria *Query) bo
 		return true
 	}
 
-	unmarshaledData := map[string]any{}
-	if err := json.Unmarshal([]byte(event.Data), &unmarshaledData); err != nil {
+	envelope := eventdata.Envelope{EventID: event.EventId, EventType: event.EventType, WriteID: event.WriteId, Metadata: event.Metadata}
+	if event.Position != nil {
+		envelope.CommitPosition = event.Position.CommitPosition
+		envelope.PreparePosition = event.Position.PreparePosition
+	}
+	envelope.DateCreated = event.DateCreated
+	unmarshaledData, err := eventdata.EnvelopeFields(event.Data, envelope)
+	if err != nil {
 		return false
 	}
 

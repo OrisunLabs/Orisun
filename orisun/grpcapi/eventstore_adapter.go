@@ -213,7 +213,7 @@ func writeResultToProto(result *orisun.WriteResult) *WriteResult {
 	if result == nil {
 		return nil
 	}
-	return &WriteResult{LogPosition: positionToProto(result.LogPosition)}
+	return &WriteResult{LogPosition: positionToProto(result.LogPosition), WriteId: result.WriteId}
 }
 
 func getEventsRequestFromProto(req *GetEventsRequest) *orisun.GetEventsRequest {
@@ -490,6 +490,7 @@ func fillProtoEventRow(row *protoEventRow, event *orisun.Event) {
 	row.timestamp.Seconds = event.DateCreated.Unix()
 	row.timestamp.Nanos = int32(event.DateCreated.Nanosecond())
 	row.event.DateCreated = &row.timestamp
+	row.event.WriteId = event.WriteId
 }
 
 func readEventToProto(event coreeventstore.ReadEvent) *Event {
@@ -503,5 +504,33 @@ func readEventToProto(event coreeventstore.ReadEvent) *Event {
 			PreparePosition: event.Position.PreparePosition,
 		},
 		DateCreated: timestamppb.New(event.DateCreated),
+		WriteId:     event.WriteID,
 	}
+}
+
+func (a *EventStoreAdapter) GetWriteContext(ctx context.Context, req *GetWriteContextRequest) (*WriteContext, error) {
+	var request *orisun.GetWriteContextRequest
+	if req != nil {
+		request = &orisun.GetWriteContextRequest{Boundary: req.Boundary, WriteId: req.WriteId}
+	}
+	result, err := a.eventStore.GetWriteContext(ctx, request)
+	if err != nil {
+		return nil, grpcstatus.FromError(err)
+	}
+	response := &WriteContext{WriteId: result.WriteId, Consistency: make([]*ConsistencyObservation, len(result.Consistency))}
+	for i, observation := range result.Consistency {
+		response.Consistency[i] = &ConsistencyObservation{Query: queryToProto(observation.Query), Position: positionToProto(observation.Position)}
+	}
+	return response, nil
+}
+
+func queryToProto(query *orisun.Query) *Query {
+	if query == nil {
+		return nil
+	}
+	result := &Query{Criteria: make([]*Criterion, len(query.Criteria))}
+	for i, criterion := range query.Criteria {
+		result.Criteria[i] = criterionToProto(criterion)
+	}
+	return result
 }

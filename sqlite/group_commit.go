@@ -68,6 +68,8 @@ type sqliteSaveRequest struct {
 	ctx         context.Context
 	inserts     eventstore.PreparedEventBatch
 	consistency []eventstore.ConsistencyCheck
+	// consistencyJSON is prepared before enqueueing, outside the writer transaction.
+	consistencyJSON string
 	// result has capacity 1 so the worker's send never blocks on a caller
 	// that abandoned its Save after inclusion in a flush.
 	result chan sqliteSaveResult
@@ -102,16 +104,21 @@ func (s *SqliteSaveEvents) enqueue(
 	inserts eventstore.PreparedEventBatch,
 	consistency []eventstore.ConsistencyCheck,
 ) (string, int64, error) {
+	data, err := eventstore.MarshalConsistency(consistency)
+	if err != nil {
+		return "", 0, err
+	}
 	s.enqueueMu.RLock()
 	if s.isClosed() {
 		s.enqueueMu.RUnlock()
 		return "", 0, errSaverClosed
 	}
 	req := &sqliteSaveRequest{
-		ctx:         ctx,
-		inserts:     inserts,
-		consistency: consistency,
-		result:      make(chan sqliteSaveResult, 1),
+		ctx:             ctx,
+		inserts:         inserts,
+		consistency:     consistency,
+		consistencyJSON: string(data),
+		result:          make(chan sqliteSaveResult, 1),
 	}
 	queue := s.queues[boundary]
 	if queue == nil {
@@ -264,12 +271,18 @@ func (s *SqliteSaveEvents) runFlush(
 		}
 	}()
 
-	live := batch[:0]
+	live := make([]*sqliteSaveRequest, 0, len(batch))
 	for _, req := range batch {
 		if ctxErr := req.ctx.Err(); ctxErr != nil {
 			req.deliver(sqliteSaveResult{err: statuscode.FromContextError(ctxErr)})
 			continue
 		}
+		stored, err := prepareStoredEvents(req.inserts)
+		if err != nil {
+			req.deliver(sqliteSaveResult{err: statuscode.Errorf(statuscode.Internal, "invalid prepared event data: %v", err)})
+			continue
+		}
+		req.inserts = stored
 		live = append(live, req)
 	}
 	if len(live) == 0 {
@@ -409,7 +422,7 @@ func (s *SqliteSaveEvents) flushTx(
 			// so the savepoint pair is redundant. On error the transaction
 			// rolls back whole (via the returned flushErr), which for a single
 			// request is exactly the savepoint rollback.
-			txID, gid, err = s.saveEventsOnConn(conn, pool, boundary, req.inserts, req.consistency)
+			txID, gid, err = s.saveEventsOnConn(conn, pool, boundary, req.inserts, req.consistency, req.consistencyJSON)
 			if err != nil {
 				req.deliver(sqliteSaveResult{err: err})
 				return nil, err
@@ -481,6 +494,9 @@ func (s *SqliteSaveEvents) saveUnconditionalBatch(
 		})
 	}
 
+	if err := insertWriteContextBatch(conn, accepted); err != nil {
+		return nil, err
+	}
 	if err := insertPositionedEventBatch(conn, positioned); err != nil {
 		return nil, statuscode.Errorf(statuscode.Internal, "insert events: %v", err)
 	}
@@ -621,7 +637,7 @@ func (s *SqliteSaveEvents) saveSavepointed(
 ) (transactionID string, globalID int64, err error) {
 	releaseFn := sqlitex.Save(conn)
 	defer releaseFn(&err)
-	return s.saveEventsOnConn(conn, pool, boundary, req.inserts, req.consistency)
+	return s.saveEventsOnConn(conn, pool, boundary, req.inserts, req.consistency, req.consistencyJSON)
 }
 
 func failUndelivered(batch []*sqliteSaveRequest, err error) {

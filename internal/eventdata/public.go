@@ -2,16 +2,15 @@
 // representation and consumer-facing domain event data.
 package eventdata
 
-import "encoding/json"
+import "github.com/goccy/go-json"
 
-// WithoutStorageEventType removes Orisun's top-level eventType discriminator
-// from consumer-facing event data. The discriminator remains in persisted and
-// internally published JSON so criteria and indexes can continue to use it.
+// WithoutStorageEnvelope removes reserved top-level fields from backend read
+// results. Persisted fields remain available for content queries and indexes.
 //
 // Invalid JSON is returned unchanged. Storage backends already enforce valid
 // event objects, and preserving unexpected input keeps this translation from
 // hiding the original corruption from downstream strict decoders.
-func WithoutStorageEventType(encoded string) string {
+func WithoutStorageEnvelope(encoded string) string {
 	if encoded == "" {
 		return encoded
 	}
@@ -19,10 +18,16 @@ func WithoutStorageEventType(encoded string) string {
 	if err := json.Unmarshal([]byte(encoded), &object); err != nil {
 		return encoded
 	}
-	if _, exists := object["eventType"]; !exists {
+	changed := false
+	for key := range object {
+		if IsReservedKey(key) {
+			delete(object, key)
+			changed = true
+		}
+	}
+	if !changed {
 		return encoded
 	}
-	delete(object, "eventType")
 	publicData, err := json.Marshal(object)
 	if err != nil {
 		return encoded

@@ -155,7 +155,7 @@ between them.
 | --- | --- | --- |
 | PostgreSQL | Per-boundary in-process group-commit queue; one SQL transaction per flush | A transaction-scoped PostgreSQL advisory lock orders all writers across processes |
 | SQLite | Per-boundary in-process group-commit queue; one `BEGIN IMMEDIATE` transaction per flush | SQLite's single writer for the boundary file |
-| FoundationDB | One native FoundationDB transaction per `SaveEventsV2` request | None for plain appends; CCC conflicts are scoped by indexed reads |
+| FoundationDB | One native FoundationDB transaction per `SaveEventsV2` request | None for plain appends; CCC conflicts are scoped by native or secondary-index ranges |
 
 ### PostgreSQL group commit
 
@@ -213,11 +213,12 @@ FoundationDB does not use the process-local group-commit queues. Each
 `SaveEventsV2` call executes as one FoundationDB transaction:
 
 - criteria reads and event writes share the transaction;
-- criteria require ready covering indexes and fail with
-  `FAILED_PRECONDITION` when no suitable index exists;
+- criteria require a native range anchored by `__commitPosition` or
+  `__writeId`, or a ready covering secondary index; unsupported criteria fail
+  with `FAILED_PRECONDITION`;
 - the transaction reads the index epoch so an index definition change forces
   an overlapping save to retry with the current index set;
-- matching index ranges provide the conflict ranges for CCC, allowing
+- matching native event or secondary-index ranges provide CCC conflict coverage, allowing
   unrelated contexts in one boundary to commit concurrently;
 - events and their index entries are written with commit versionstamps; and
 - the estimated payload and index footprint is checked before commit to stay
@@ -299,7 +300,7 @@ index API:
 PostgreSQL and SQLite preserve correctness without a matching user index, but a
 CCC check or read may scan the boundary event table. Orisun does not create a
 broad automatic GIN index. FoundationDB instead fails closed when criteria are
-not covered by a ready index; a boundary scan inside a transaction would be
+unable to select a native position range or a ready covering index; a boundary scan inside a transaction would be
 both unsafe for scale and too broad for useful conflict isolation.
 
 The PostgreSQL criterion-state group-commit path builds shape-specific,

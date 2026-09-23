@@ -31,6 +31,7 @@ type EventToSave struct {
 // Event is the transport-neutral event shape used by legacy in-process
 // command handlers. Storage backends use ReadEvent directly.
 type Event struct {
+	WriteId     string    `json:"write_id,omitempty"`
 	EventId     string    `json:"event_id"`
 	EventType   string    `json:"event_type"`
 	Data        string    `json:"data"`
@@ -40,6 +41,7 @@ type Event struct {
 }
 
 type WriteResult struct {
+	WriteId     string
 	LogPosition *Position
 }
 

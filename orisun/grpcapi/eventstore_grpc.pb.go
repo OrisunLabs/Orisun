@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	EventStore_SaveEvents_FullMethodName               = "/orisun.EventStore/SaveEvents"
 	EventStore_SaveEventsV2_FullMethodName             = "/orisun.EventStore/SaveEventsV2"
+	EventStore_GetWriteContext_FullMethodName          = "/orisun.EventStore/GetWriteContext"
 	EventStore_GetEvents_FullMethodName                = "/orisun.EventStore/GetEvents"
 	EventStore_GetLatestByCriteria_FullMethodName      = "/orisun.EventStore/GetLatestByCriteria"
 	EventStore_CatchUpSubscribeToEvents_FullMethodName = "/orisun.EventStore/CatchUpSubscribeToEvents"
@@ -43,6 +44,7 @@ type EventStoreClient interface {
 	// Atomically validate every query-level observation and append the event
 	// batch. An empty consistency list is an unconditional append.
 	SaveEventsV2(ctx context.Context, in *SaveEventsV2Request, opts ...grpc.CallOption) (*WriteResult, error)
+	GetWriteContext(ctx context.Context, in *GetWriteContextRequest, opts ...grpc.CallOption) (*WriteContext, error)
 	GetEvents(ctx context.Context, in *GetEventsRequest, opts ...grpc.CallOption) (*GetEventsResponse, error)
 	GetLatestByCriteria(ctx context.Context, in *GetLatestByCriteriaRequest, opts ...grpc.CallOption) (*GetLatestByCriteriaResponse, error)
 	CatchUpSubscribeToEvents(ctx context.Context, in *CatchUpSubscribeToEventStoreRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
@@ -77,6 +79,16 @@ func (c *eventStoreClient) SaveEventsV2(ctx context.Context, in *SaveEventsV2Req
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WriteResult)
 	err := c.cc.Invoke(ctx, EventStore_SaveEventsV2_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *eventStoreClient) GetWriteContext(ctx context.Context, in *GetWriteContextRequest, opts ...grpc.CallOption) (*WriteContext, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WriteContext)
+	err := c.cc.Invoke(ctx, EventStore_GetWriteContext_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +205,7 @@ type EventStoreServer interface {
 	// Atomically validate every query-level observation and append the event
 	// batch. An empty consistency list is an unconditional append.
 	SaveEventsV2(context.Context, *SaveEventsV2Request) (*WriteResult, error)
+	GetWriteContext(context.Context, *GetWriteContextRequest) (*WriteContext, error)
 	GetEvents(context.Context, *GetEventsRequest) (*GetEventsResponse, error)
 	GetLatestByCriteria(context.Context, *GetLatestByCriteriaRequest) (*GetLatestByCriteriaResponse, error)
 	CatchUpSubscribeToEvents(*CatchUpSubscribeToEventStoreRequest, grpc.ServerStreamingServer[Event]) error
@@ -217,6 +230,9 @@ func (UnimplementedEventStoreServer) SaveEvents(context.Context, *SaveEventsRequ
 }
 func (UnimplementedEventStoreServer) SaveEventsV2(context.Context, *SaveEventsV2Request) (*WriteResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SaveEventsV2 not implemented")
+}
+func (UnimplementedEventStoreServer) GetWriteContext(context.Context, *GetWriteContextRequest) (*WriteContext, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetWriteContext not implemented")
 }
 func (UnimplementedEventStoreServer) GetEvents(context.Context, *GetEventsRequest) (*GetEventsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetEvents not implemented")
@@ -298,6 +314,24 @@ func _EventStore_SaveEventsV2_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(EventStoreServer).SaveEventsV2(ctx, req.(*SaveEventsV2Request))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EventStore_GetWriteContext_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetWriteContextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EventStoreServer).GetWriteContext(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EventStore_GetWriteContext_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EventStoreServer).GetWriteContext(ctx, req.(*GetWriteContextRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -471,6 +505,10 @@ var EventStore_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SaveEventsV2",
 			Handler:    _EventStore_SaveEventsV2_Handler,
+		},
+		{
+			MethodName: "GetWriteContext",
+			Handler:    _EventStore_GetWriteContext_Handler,
 		},
 		{
 			MethodName: "GetEvents",

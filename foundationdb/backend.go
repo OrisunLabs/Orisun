@@ -15,6 +15,7 @@ import (
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	config "github.com/OrisunLabs/Orisun/config"
+	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/OrisunLabs/Orisun/logging"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
@@ -158,22 +159,22 @@ var systemAdminIndexes = []struct {
 	fields []eventstore.BoundaryIndexField
 }{
 	{"sys_admin_event_type", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 	}},
 	{"sys_admin_et_username", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "username", ValueType: "text"},
 	}},
 	{"sys_admin_et_user_id", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "user_id", ValueType: "text"},
 	}},
 	{"sys_admin_et_userid", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "userId", ValueType: "text"},
 	}},
 	{"sys_admin_et_boundary", []eventstore.BoundaryIndexField{
-		{JsonKey: "eventType", ValueType: "text"},
+		{JsonKey: "__eventType", ValueType: "text"},
 		{JsonKey: "boundary", ValueType: "text"},
 	}},
 }
@@ -238,15 +239,33 @@ func (b *Backend) SavePrepared(
 	if err := b.checkBoundary(boundary); err != nil {
 		return "", 0, err
 	}
-	prepared, err := prepareEvents(events)
+	if len(events) > maxBatchSize {
+		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "batch of %d events exceeds max %d", len(events), maxBatchSize)
+	}
+	prepared, err := prepareEvents(events, time.Now())
 	if err != nil {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid event JSON: %v", err)
 	}
 
-	if len(prepared) > maxBatchSize {
-		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "batch of %d events exceeds max %d", len(prepared), maxBatchSize)
+	contextJSON, err := eventstore.MarshalConsistency(consistency)
+	if err != nil {
+		return "", 0, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Split the context across values while keeping every chunk in the same
+	// transaction as the events. Query observations can exceed FDB's 100 KB value
+	// limit even when the complete save fits its transaction limit.
+	const contextChunkSize = 90000
+	lastOffset := uint16(len(prepared) - 1)
+	writeKeys := make([]fdb.Key, (len(contextJSON)+contextChunkSize-1)/contextChunkSize)
+	contextBytes := len(contextJSON)
+	for i := range writeKeys {
+		packed, err := (tuple.Tuple{b.root, boundary, "write", tuple.IncompleteVersionstamp(lastOffset), int64(i)}).PackWithVersionstamp(nil)
+		if err != nil {
+			return "", 0, err
+		}
+		writeKeys[i] = fdb.Key(packed)
+		contextBytes += len(packed)
+	}
 	// vsFuture is reassigned on every (re)attempt; after Transact returns it
 	// refers to the committed attempt's versionstamp.
 	var vsFuture fdb.FutureKey
@@ -265,6 +284,7 @@ func (b *Backend) SavePrepared(
 		consistencyIndexes := readyIndexes(indexes)
 		for _, check := range consistency {
 			actualTx, actualGid, err := b.latestMatchingPosition(
+				ctx,
 				tr,
 				boundary,
 				consistencyIndexes,
@@ -283,7 +303,7 @@ func (b *Backend) SavePrepared(
 			}
 		}
 
-		if total := estimateSaveBytes(prepared, indexes); total > maxTransactionBytes {
+		if total := estimateSaveBytes(prepared, indexes) + contextBytes; total > maxTransactionBytes {
 			return nil, statuscode.Errorf(statuscode.InvalidArgument,
 				"batch of %d events is ~%d bytes, exceeding the %d-byte FoundationDB transaction budget; split it",
 				len(prepared), total, maxTransactionBytes)
@@ -294,7 +314,6 @@ func (b *Backend) SavePrepared(
 		// and is ordered by its user version (the batch offset).
 		for i, e := range prepared {
 			userVersion := uint16(i)
-			e.record.DateCreated = now
 			value, err := json.Marshal(e.record)
 			if err != nil {
 				return nil, err
@@ -319,6 +338,10 @@ func (b *Backend) SavePrepared(
 		}
 		// Plain Set never creates a write conflict, so the wake-up signal does not
 		// serialise writers.
+		for i, key := range writeKeys {
+			start := i * contextChunkSize
+			tr.SetVersionstampedKey(key, contextJSON[start:min(start+contextChunkSize, len(contextJSON))])
+		}
 		tr.Set(b.signalKey(boundary), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
 		vsFuture = tr.GetVersionstamp()
 		return nil, nil
@@ -386,13 +409,10 @@ func (b *Backend) GetBatch(ctx context.Context, req *eventstore.GetEventsRequest
 	return result.(eventstore.ReadEventBatch), nil
 }
 
-// GetLatestByCriteria returns the latest event per criterion plus the max
-// observed position, all from ONE FDB read transaction (one read version =
-// one snapshot). Like every FDB criteria read, each criterion needs a ready
-// covering index — the newest entry of the criterion's index slice IS the
-// latest match, so a criterion costs one reverse Limit-1 range read plus one
-// event get. Because FDB positions are commit-ordered, no later commit can
-// place an event below the returned context position.
+// GetLatestByCriteria resolves every criterion in one read transaction. Ready
+// covering indexes need one reverse index read plus one event get. Native
+// position predicates filter their commit/write range. Commit ordering ensures
+// no later commit can place an event below the returned context position.
 func (b *Backend) GetLatestByCriteria(ctx context.Context, query eventstore.LatestByCriteriaQuery) (eventstore.LatestByCriteriaBatch, error) {
 	if err := contextStatusErr(ctx); err != nil {
 		return eventstore.LatestByCriteriaBatch{}, err
@@ -424,38 +444,19 @@ func (b *Backend) GetLatestByCriteria(ctx context.Context, query eventstore.Late
 		}
 		found := false
 		for i, criterion := range criteria {
-			idx, ok := chooseCoveringIndex(indexes, criterion)
-			if !ok {
-				return nil, b.unindexedQueryErr(query.Boundary, criterion)
+			events, err := b.scanCriterion(ctx, rt, query.Boundary, indexes, criterion, nil, eventstore.Direction_DESC, 1)
+			if err != nil {
+				return nil, err
 			}
-			slice := prefixRange(b.indexLookupPrefix(query.Boundary, idx, criterion))
-			iter := rt.GetRange(slice, fdb.RangeOptions{
-				Limit:   1,
-				Mode:    fdb.StreamingModeWantAll,
-				Reverse: true,
-			}).Iterator()
-			for iter.Advance() {
-				kv, err := iter.Get()
-				if err != nil {
-					return nil, err
-				}
-				tx, gid, err := indexPositionFromKey(kv.Key)
-				if err != nil {
-					return nil, err
-				}
-				event, ok, err := b.getReadEventByPosition(rt, query.Boundary, tx, gid)
-				if err != nil {
-					return nil, err
-				}
-				if ok {
-					batch.Matches[i] = eventstore.LatestCriterionMatch{Event: event, Found: true}
-					if !found || event.CommitPosition > batch.ContextCommitPosition ||
-						(event.CommitPosition == batch.ContextCommitPosition && event.PreparePosition > batch.ContextPreparePosition) {
-						batch.ContextCommitPosition = event.CommitPosition
-						batch.ContextPreparePosition = event.PreparePosition
-						found = true
-					}
-				}
+			if len(events) == 0 {
+				continue
+			}
+			event := events[0]
+			batch.Matches[i] = eventstore.LatestCriterionMatch{Event: event, Found: true}
+			if !found || event.CommitPosition > batch.ContextCommitPosition || (event.CommitPosition == batch.ContextCommitPosition && event.PreparePosition > batch.ContextPreparePosition) {
+				batch.ContextCommitPosition = event.CommitPosition
+				batch.ContextPreparePosition = event.PreparePosition
+				found = true
 			}
 		}
 		return batch, nil
@@ -865,6 +866,17 @@ func (b *Backend) CreateBoundaryIndex(
 	if len(fields) == 0 {
 		return fmt.Errorf("at least one field is required")
 	}
+	for _, field := range fields {
+		if eventdata.IsPositionKey(field.JsonKey) {
+			return statuscode.Errorf(statuscode.InvalidArgument, "field %s is derived from the native position key and cannot be a secondary index field", field.JsonKey)
+		}
+	}
+	for _, condition := range conditions {
+		if eventdata.IsPositionKey(condition.Key) {
+			return statuscode.Errorf(statuscode.InvalidArgument, "field %s is derived from the native position key and cannot be a secondary index condition", condition.Key)
+		}
+	}
+
 	if combinator == "" {
 		combinator = eventstore.IndexCombinatorAND
 	}
@@ -1113,18 +1125,12 @@ func (b *Backend) query(ctx context.Context, req *eventstore.GetEventsRequest) (
 			if err := contextStatusErr(ctx); err != nil {
 				return nil, err
 			}
-			idx, ok := chooseCoveringIndex(indexes, criterion)
-			if !ok {
-				return nil, b.unindexedQueryErr(req.Boundary, criterion)
-			}
-			candidates, err := b.scanIndexCandidates(ctx, rt, req.Boundary, idx, criterion, req.FromPosition, req.Direction, int(req.Count))
+			candidates, err := b.scanCriterion(ctx, rt, req.Boundary, indexes, criterion, req.FromPosition, req.Direction, int(req.Count))
 			if err != nil {
 				return nil, err
 			}
-			// scanIndexCandidates already restricted to this criterion's covering
-			// index slice (exact field/condition match) and applied the cursor, so
-			// candidates need only be de-duplicated across criteria here — no
-			// per-event re-parse of the payload.
+			// Each access path already applied the criterion and cursor.
+			// Only de-duplication across OR criteria remains.
 			for i := range candidates {
 				event := candidates[i]
 				eventsByPosition[[2]int64{event.CommitPosition, event.PreparePosition}] = event
@@ -1217,38 +1223,8 @@ func (b *Backend) scanEvents(ctx context.Context, rt fdb.ReadTransaction, req *e
 	if limit <= 0 {
 		limit = int(req.Count)
 	}
-	if limit <= 0 {
-		limit = int(eventstore.DefaultReadBatchSize)
-	}
 	begin, end := b.eventRangeForCursor(req.Boundary, req.FromPosition, req.Direction)
-	iter := rt.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{
-		Limit:   limit,
-		Mode:    fdb.StreamingModeWantAll,
-		Reverse: req.Direction == eventstore.Direction_DESC,
-	}).Iterator()
-	events := make(eventstore.ReadEventBatch, 0, limit)
-	for iter.Advance() {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		kv, err := iter.Get()
-		if err != nil {
-			return nil, err
-		}
-		tx, gid, err := eventPositionFromKey(kv.Key)
-		if err != nil {
-			return nil, err
-		}
-		event, err := readEventFromRecord(kv.Value, tx, gid)
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, event)
-		if len(events) >= limit {
-			break
-		}
-	}
-	return events, nil
+	return scanEventRange(ctx, rt, fdb.KeyRange{Begin: begin, End: end}, req.Direction, limit, nil)
 }
 
 // eventRangeForCursor seeks the event range to the read cursor instead of
@@ -1280,14 +1256,12 @@ func (b *Backend) eventRangeForCursor(boundary string, from *eventstore.Position
 	return cursor, end
 }
 
-// latestMatchingPosition resolves the newest event position matching the
-// consistency criteria using only ready covering indexes. A covering index
-// slice fully encodes the match — field values live in the key, and condition
-// membership was checked when the entry was written — so the newest entry's
-// versionstamp IS the answer. No event records are fetched inside the write
-// transaction: each criterion costs one Limit-1 reverse range read regardless
-// of how long the aggregate's history is.
+// latestMatchingPosition uses a native position range or a ready covering
+// index. Covering indexes encode the full match and need only a reverse Limit-1
+// range read. Native ranges inspect event documents for remaining predicates;
+// both paths register the conflict range needed for CCC.
 func (b *Backend) latestMatchingPosition(
+	ctx context.Context,
 	tr fdb.Transaction,
 	boundary string,
 	indexes []indexDefinition,
@@ -1296,6 +1270,22 @@ func (b *Backend) latestMatchingPosition(
 	bestTx, bestGid := int64(-1), int64(-1)
 	found := false
 	for _, criterion := range readCriteriaAsMaps(criteria) {
+		if native, ok := b.nativeCriterionRange(boundary, criterion); ok {
+			if string(native.Begin.FDBKey()) == string(native.End.FDBKey()) {
+				continue
+			}
+			if err := tr.AddReadConflictRange(native); err != nil {
+				return -1, -1, err
+			}
+			events, err := b.scanNativeCriterion(ctx, tr, boundary, criterion, native, nil, eventstore.Direction_DESC, 1)
+			if err != nil {
+				return -1, -1, err
+			}
+			if len(events) > 0 && (!found || events[0].CommitPosition > bestTx || (events[0].CommitPosition == bestTx && events[0].PreparePosition > bestGid)) {
+				bestTx, bestGid, found = events[0].CommitPosition, events[0].PreparePosition, true
+			}
+			continue
+		}
 		idx, ok := chooseCoveringIndex(indexes, criterion)
 		if !ok {
 			// Fail closed: an unindexed consistency condition cannot be checked
@@ -1347,6 +1337,9 @@ func (b *Backend) unindexedQueryErr(boundary string, criterion map[string]string
 }
 
 func (b *Backend) unindexedCriteriaErr(kind, boundary string, criterion map[string]string, guidance string) error {
+	if _, ok := criterion["__preparePosition"]; ok {
+		return statuscode.Errorf(statuscode.FailedPrecondition, "%s on boundary %s needs __commitPosition or __writeId alongside __preparePosition to select a native position range", kind, boundary)
+	}
 	keys := make([]string, 0, len(criterion))
 	for key := range criterion {
 		keys = append(keys, key)
@@ -1406,11 +1399,14 @@ func (b *Backend) ProvisionBoundary(ctx context.Context, definition boundarymode
 	return b.ensureBoundaryMarker(ctx, definition.Name)
 }
 
-func (b *Backend) InstallBoundary(_ context.Context, definition boundarymodel.Definition) error {
+func (b *Backend) InstallBoundary(ctx context.Context, definition boundarymodel.Definition) error {
 	if b == nil {
 		return fmt.Errorf("FoundationDB boundary installer is not configured")
 	}
 	if err := b.validateBoundaryDefinition(definition); err != nil {
+		return err
+	}
+	if err := b.migrateBoundaryStorage(ctx, definition.Name); err != nil {
 		return err
 	}
 	b.boundaryMu.Lock()
@@ -1446,7 +1442,7 @@ func (b *Backend) ensureBoundaryMarker(ctx context.Context, boundary string) err
 	if err != nil {
 		return fmt.Errorf("persist FoundationDB boundary %s: %w", boundary, err)
 	}
-	return nil
+	return b.migrateBoundaryStorage(ctx, boundary)
 }
 
 func (b *Backend) tupleKey(parts ...tuple.TupleElement) fdb.Key {
@@ -1715,4 +1711,39 @@ func (s *fdbSignal) poll(ctx context.Context) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func (b *Backend) GetWriteContext(ctx context.Context, req *eventstore.GetWriteContextRequest) (*eventstore.WriteContext, error) {
+	pos, err := eventstore.ValidateWriteContextRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if pos.PreparePosition > 1<<32-1 {
+		return nil, statuscode.New(statuscode.InvalidArgument, "invalid FoundationDB write_id")
+	}
+	if err := contextStatusErr(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.checkBoundary(req.Boundary); err != nil {
+		return nil, err
+	}
+	key := b.tupleKey(req.Boundary, "write", versionstampFromPosition(&pos))
+	result, err := b.db.ReadTransact(func(tr fdb.ReadTransaction) (interface{}, error) {
+		chunks, err := tr.GetRange(prefixRange(key), fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+		if len(chunks) == 0 {
+			return nil, statuscode.New(statuscode.NotFound, "write context not found")
+		}
+		var data []byte
+		for _, chunk := range chunks {
+			data = append(data, chunk.Value...)
+		}
+		return eventstore.DecodeWriteContext(req.WriteId, data)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*eventstore.WriteContext), nil
 }

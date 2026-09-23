@@ -61,13 +61,13 @@ func DeleteUser(
 					{
 						Tags: []*eventstore.Tag{
 							{Key: "user_id", Value: userId},
-							{Key: "eventType", Value: events.EventTypeUserCreated},
+							{Key: "__eventType", Value: events.EventTypeUserCreated},
 						},
 					},
 					{
 						Tags: []*eventstore.Tag{
 							{Key: "user_id", Value: userId},
-							{Key: "eventType", Value: events.EventTypeUserDeleted},
+							{Key: "__eventType", Value: events.EventTypeUserDeleted},
 						},
 					},
 				},
@@ -110,13 +110,13 @@ func DeleteUser(
 						{
 							Tags: []*eventstore.Tag{
 								{Key: "user_id", Value: userId},
-								{Key: "eventType", Value: events.EventTypeUserCreated},
+								{Key: "__eventType", Value: events.EventTypeUserCreated},
 							},
 						},
 						{
 							Tags: []*eventstore.Tag{
 								{Key: "user_id", Value: userId},
-								{Key: "eventType", Value: events.EventTypeUserDeleted},
+								{Key: "__eventType", Value: events.EventTypeUserDeleted},
 							},
 						},
 					},

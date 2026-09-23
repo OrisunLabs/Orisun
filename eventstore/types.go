@@ -85,6 +85,7 @@ type ReadRequest struct {
 
 // ReadEvent is one committed event in a boundary.
 type ReadEvent struct {
+	WriteID     string    `json:"write_id,omitempty"`
 	EventID     string    `json:"event_id"`
 	EventType   string    `json:"event_type"`
 	Data        string    `json:"data"`
