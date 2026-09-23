@@ -36,6 +36,10 @@ The Go binding API defaults to `730`, matching FoundationDB 7.3.x. Keep the inst
 
 ## Boundary Provisioning
 
+For the current event-envelope storage migration, follow the
+[event-envelope upgrade guide](./upgrading-event-envelope). It requires stopping
+all Orisun nodes and covers resumable migrations and incompatible indexes.
+
 FoundationDB boundaries are defined through `Admin/CreateBoundary`. Use
 placement backend `foundationdb` and set the placement namespace to the
 configured `ORISUN_FDB_ROOT`. A successful command records a lifecycle event in

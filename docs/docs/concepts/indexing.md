@@ -61,8 +61,8 @@ request-local savepoints inside the shared transaction. This bounded split
 avoids a cross-product between incoming events and distinct criteria while
 retaining the transaction and fsync savings of group commit.
 
-FoundationDB needs a ready covering index for every criterion in every
-observation. A V2 request with several observations can therefore depend on
+FoundationDB needs a ready covering index for each criterion that does not
+select a native range through `__commitPosition` or `__writeId`. A V2 request with several observations can therefore depend on
 several indexes; create and wait for all of them before enabling that command
 path.
 
@@ -70,8 +70,9 @@ Create indexes for every criterion shape used by high-volume command paths. A
 simple `customer_id` criterion needs the simple index above; a criterion on
 `customer_id AND region` should have a composite index with both fields. On
 PostgreSQL and SQLite, unindexed criteria remain correct but can scan the
-boundary event table. FoundationDB rejects an unindexed criteria read or CCC
-observation with `FAILED_PRECONDITION`.
+boundary event table. FoundationDB rejects a criteria read or CCC observation with
+`FAILED_PRECONDITION` if it has neither a native position range nor a ready
+covering secondary index.
 
 The specialized path for independent single-tag contexts also bulk-inserts
 multi-event saves. For burst-oriented workloads, start performance testing with

@@ -164,6 +164,9 @@ application key named `eventType` is preserved and is no longer the discriminato
 
 ### Upgrading stored event fields
 
+Follow the [event-envelope upgrade guide](../operations/upgrading-event-envelope)
+for preparation, rollout, verification, failure recovery, and rollback steps.
+
 Content queries and index definitions now use `__eventType` instead of
 `eventType`. The API `event_type` field and SDK `eventType` property keep their
 existing names. There is no query-time alias for the old JSON key.
@@ -1498,6 +1501,6 @@ The EventStore protobuf source lives at [`proto/eventstore.proto`](https://githu
 | `INVALID_ARGUMENT` | The request is malformed, uses invalid JSON, or references invalid index fields. |
 | `UNAUTHENTICATED` | Missing or invalid credentials. |
 | `PERMISSION_DENIED` | Authenticated user does not have a required role. |
-| `FAILED_PRECONDITION` | The boundary is not active, or FoundationDB lacks a ready covering index for a queried criterion. |
+| `FAILED_PRECONDITION` | The boundary is not active, or a FoundationDB criterion has neither a native position range nor a ready covering secondary index. |
 | `ALREADY_EXISTS` | One or more observations changed during `SaveEventsV2`; re-query and retry if still valid. |
 | `INTERNAL` | Storage, publishing, or unexpected server failure. |
