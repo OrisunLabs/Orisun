@@ -322,7 +322,7 @@ func (s *SqliteSaveEvents) runFlush(
 	if len(live) > 1 && !s.gcDisableSetPaths {
 		if canUseUnconditionalFastPath(live) {
 			path = sqliteFlushUnconditional
-		} else if predicates, ok := independentCCCContexts(live, pool, boundary); ok {
+		} else if predicates, ok := independentCCCContexts(live); ok {
 			path = sqliteFlushIndependentCCC
 			independentPredicates = predicates
 		}
@@ -422,7 +422,7 @@ func (s *SqliteSaveEvents) flushTx(
 			// so the savepoint pair is redundant. On error the transaction
 			// rolls back whole (via the returned flushErr), which for a single
 			// request is exactly the savepoint rollback.
-			txID, gid, err = s.saveEventsOnConn(conn, pool, boundary, req.inserts, req.consistency, req.consistencyJSON)
+			txID, gid, err = s.saveEventsOnConn(conn, req.inserts, req.consistency, req.consistencyJSON)
 			if err != nil {
 				req.deliver(sqliteSaveResult{err: err})
 				return nil, err
@@ -508,8 +508,6 @@ func (s *SqliteSaveEvents) saveUnconditionalBatch(
 // values, and every emitted event belongs to its request's context.
 func independentCCCContexts(
 	requests []*sqliteSaveRequest,
-	pool *BoundaryPools,
-	boundary string,
 ) ([]string, bool) {
 	var criterionKey string
 	values := make(map[string]struct{}, len(requests))
@@ -527,12 +525,6 @@ func independentCCCContexts(
 		}
 		if criterionKey == "" {
 			criterionKey = tag.Key
-			valueType, _, _ := pool.indexes.fieldTypeInfo(boundary, criterionKey)
-			if normalized := normalizeIndexValueType(valueType); normalized == "numeric" || normalized == "boolean" {
-				// Distinct string values can compare equal after numeric or
-				// boolean coercion, so only text-like contexts are independent.
-				return nil, false
-			}
 		} else if tag.Key != criterionKey {
 			return nil, false
 		}
@@ -556,10 +548,8 @@ func independentCCCContexts(
 			}
 		}
 
-		predicate, err := buildCriteriaSQLForBoundary(
+		predicate, err := buildCriteriaSQL(
 			[]map[string]any{{tag.Key: tag.Value}},
-			pool.indexes,
-			boundary,
 		)
 		if err != nil {
 			return nil, false
@@ -637,7 +627,7 @@ func (s *SqliteSaveEvents) saveSavepointed(
 ) (transactionID string, globalID int64, err error) {
 	releaseFn := sqlitex.Save(conn)
 	defer releaseFn(&err)
-	return s.saveEventsOnConn(conn, pool, boundary, req.inserts, req.consistency, req.consistencyJSON)
+	return s.saveEventsOnConn(conn, req.inserts, req.consistency, req.consistencyJSON)
 }
 
 func failUndelivered(batch []*sqliteSaveRequest, err error) {

@@ -3,64 +3,12 @@ package sqlite
 import (
 	"fmt"
 	"strings"
-	"sync"
 
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
 	"github.com/goccy/go-json"
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
 )
-
-// sqliteFieldInfo records how an index references a JSON key. declaredField
-// distinguishes keys typed via an index field list (queries must emit the raw
-// json_extract shape to match the index expression) from keys that only appear
-// in partial-index conditions (queries must emit the CASE scalar-text shape to
-// match the condition predicate).
-type sqliteFieldInfo struct {
-	valueType     string
-	declaredField bool
-}
-
-type sqliteIndexRegistry struct {
-	mu               sync.RWMutex
-	fieldsByBoundary map[string]map[string]sqliteFieldInfo
-}
-
-func newSqliteIndexRegistry() *sqliteIndexRegistry {
-	return &sqliteIndexRegistry{
-		fieldsByBoundary: make(map[string]map[string]sqliteFieldInfo),
-	}
-}
-
-// fieldTypeInfo returns the key's value type, whether it is declared as an
-// index field, and whether the registry knows the key at all (field or
-// condition). Unknown keys default to text.
-func (r *sqliteIndexRegistry) fieldTypeInfo(boundary, key string) (valueType string, declaredField, known bool) {
-	if r == nil {
-		return "text", false, false
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if fields := r.fieldsByBoundary[boundary]; fields != nil {
-		if info, ok := fields[key]; ok {
-			return info.valueType, info.declaredField, true
-		}
-	}
-	return "text", false, false
-}
-
-func (r *sqliteIndexRegistry) replaceBoundaryFields(boundary string, fields map[string]sqliteFieldInfo) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(fields) == 0 {
-		delete(r.fieldsByBoundary, boundary)
-		return
-	}
-	r.fieldsByBoundary[boundary] = fields
-}
 
 func normalizeIndexValueType(valueType string) string {
 	switch strings.ToLower(strings.TrimSpace(valueType)) {
@@ -73,57 +21,6 @@ func normalizeIndexValueType(valueType string) string {
 	default:
 		return "text"
 	}
-}
-
-func loadBoundaryIndexMetadata(conn *sqlite.Conn, boundary string, registry *sqliteIndexRegistry) error {
-	fieldsByKey := make(map[string]sqliteFieldInfo)
-	err := sqlitex.Execute(conn,
-		"SELECT fields FROM orisun_boundary_index_metadata ORDER BY name",
-		&sqlitex.ExecOptions{
-			ResultFunc: func(stmt *sqlite.Stmt) error {
-				var fields []eventstore.BoundaryIndexField
-				if err := json.Unmarshal([]byte(stmt.ColumnText(0)), &fields); err != nil {
-					return fmt.Errorf("decode index metadata fields: %w", err)
-				}
-				for _, field := range fields {
-					if field.JsonKey == "" {
-						continue
-					}
-					fieldsByKey[field.JsonKey] = sqliteFieldInfo{
-						valueType:     normalizeIndexValueType(field.ValueType),
-						declaredField: true,
-					}
-				}
-				return nil
-			},
-		})
-	if err != nil {
-		return err
-	}
-	err = sqlitex.Execute(conn,
-		"SELECT conditions FROM orisun_boundary_index_metadata ORDER BY name",
-		&sqlitex.ExecOptions{
-			ResultFunc: func(stmt *sqlite.Stmt) error {
-				var conditions []eventstore.BoundaryIndexCondition
-				if err := json.Unmarshal([]byte(stmt.ColumnText(0)), &conditions); err != nil {
-					return fmt.Errorf("decode index metadata conditions: %w", err)
-				}
-				for _, condition := range conditions {
-					if condition.Key == "" {
-						continue
-					}
-					if _, ok := fieldsByKey[condition.Key]; !ok {
-						fieldsByKey[condition.Key] = sqliteFieldInfo{valueType: "text"}
-					}
-				}
-				return nil
-			},
-		})
-	if err != nil {
-		return err
-	}
-	registry.replaceBoundaryFields(boundary, fieldsByKey)
-	return nil
 }
 
 type sqliteStoredIndexDefinition struct {
@@ -140,9 +37,17 @@ type sqliteStoredIndexDefinition struct {
 // later startup once the suffix is present.
 func ensureBoundaryIndexesOrderByPosition(
 	conn *sqlite.Conn,
-	boundary string,
-	registry *sqliteIndexRegistry,
-) (err error) {
+) error {
+	return rebuildBoundaryIndexes(conn, false)
+}
+
+// migrateScalarTextIndexes upgrades pre-existing text expressions and removes
+// cross-index type dependencies from partial predicates in one migration.
+func migrateScalarTextIndexes(conn *sqlite.Conn) error {
+	return rebuildBoundaryIndexes(conn, true)
+}
+
+func rebuildBoundaryIndexes(conn *sqlite.Conn, all bool) (err error) {
 	definitions := make([]sqliteStoredIndexDefinition, 0)
 	err = sqlitex.Execute(conn,
 		`SELECT metadata.name, metadata.fields, metadata.conditions, metadata.combinator,
@@ -172,7 +77,7 @@ func ensureBoundaryIndexesOrderByPosition(
 
 	needsRebuild := definitions[:0]
 	for _, definition := range definitions {
-		if sqliteIndexOrdersByPosition(definition.ddl) {
+		if !all && sqliteIndexOrdersByPosition(definition.ddl) {
 			continue
 		}
 		needsRebuild = append(needsRebuild, definition)
@@ -181,19 +86,14 @@ func ensureBoundaryIndexesOrderByPosition(
 		return nil
 	}
 
-	endFn, err := sqlitex.ImmediateTransaction(conn)
-	if err != nil {
-		return err
-	}
+	endFn := sqlitex.Save(conn)
 	defer endFn(&err)
 	for _, definition := range needsRebuild {
-		ddl, _, buildErr := buildSQLiteBoundaryIndexDDLWithRegistry(
-			boundary,
+		ddl, _, buildErr := buildSQLiteBoundaryIndexDDL(
 			definition.name,
 			definition.fields,
 			definition.conditions,
 			definition.combinator,
-			registry,
 		)
 		if buildErr != nil {
 			return fmt.Errorf("rebuild index %q: %w", definition.name, buildErr)

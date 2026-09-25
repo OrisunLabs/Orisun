@@ -65,16 +65,6 @@ func jsonPathLiteral(key string) string {
 // Callers must execute the resulting SQL transiently — literal inlining gives the
 // statements unbounded cardinality, which would bloat the per-conn prepared-stmt cache.
 func buildCriteriaSQL(criteria []map[string]any) (string, error) {
-	return buildCriteriaSQLWithTypes(criteria, nil)
-}
-
-func buildCriteriaSQLForBoundary(criteria []map[string]any, registry *sqliteIndexRegistry, boundary string) (string, error) {
-	return buildCriteriaSQLWithTypes(criteria, func(key string) (string, bool, bool) {
-		return registry.fieldTypeInfo(boundary, key)
-	})
-}
-
-func buildCriteriaSQLWithTypes(criteria []map[string]any, fieldType func(key string) (valueType string, declaredField, known bool)) (string, error) {
 	if len(criteria) == 0 {
 		return "1", nil
 	}
@@ -87,14 +77,7 @@ func buildCriteriaSQLWithTypes(criteria []map[string]any, fieldType func(key str
 		sort.Strings(keys)
 		andParts := make([]string, 0, len(keys))
 		for _, k := range keys {
-			valueType := "text"
-			declaredField := false
-			if fieldType != nil {
-				var rawValueType string
-				rawValueType, declaredField, _ = fieldType(k)
-				valueType = normalizeIndexValueType(rawValueType)
-			}
-			predicate, err := renderCriterionPredicate(k, c[k], valueType, declaredField)
+			predicate, err := renderCriterionPredicate(k, c[k])
 			if err != nil {
 				return "", err
 			}
@@ -110,48 +93,14 @@ func buildCriteriaSQLWithTypes(criteria []map[string]any, fieldType func(key str
 	return strings.Join(orParts, " OR "), nil
 }
 
-// renderCriterionPredicate renders one `key = value` criterion with the value inlined
-// as a literal. The expression shapes must stay byte-identical to the ones emitted by
-// CreateBoundaryIndex (fields) and buildIndexConditionPredicate (conditions) — the
-// prover matches expression trees, so a shape drift silently disables index use.
-//
-// Shape tiers for text-typed keys:
-//   - declaredField: raw json_extract — matches the index field expression.
-//   - condition-only or unknown key: CASE scalar-text — matches condition predicates
-//     when present and preserves string-rendered criteria semantics otherwise.
-func renderCriterionPredicate(key string, value any, valueType string, declaredField bool) (string, error) {
-	base := fmt.Sprintf("json_extract(data, %s)", jsonPathLiteral(key))
-	switch valueType {
-	case "numeric":
-		if f, ok := criterionFiniteFloat(value); ok {
-			return "CAST(" + base + " AS REAL) = " + strconv.FormatFloat(f, 'g', -1, 64), nil
-		}
-		// Non-numeric value against a numeric field: keep the old CAST semantics
-		// (CAST('abc' AS REAL) = 0.0) rather than erroring on a no-match query.
-		lit, err := sqlValueLiteral(value)
-		if err != nil {
-			return "", fmt.Errorf("criteria key %q: %w", key, err)
-		}
-		return "CAST(" + base + " AS REAL) = CAST(" + lit + " AS REAL)", nil
-	case "boolean":
-		if b, ok := sqliteBooleanArg(value).(int64); ok {
-			return "CAST(" + base + " AS INTEGER) = " + strconv.FormatInt(b, 10), nil
-		}
-		lit, err := sqlValueLiteral(value)
-		if err != nil {
-			return "", fmt.Errorf("criteria key %q: %w", key, err)
-		}
-		return "CAST(" + base + " AS INTEGER) = " + lit, nil
-	default: // "text", "timestamptz"
-		lit, err := sqlValueLiteral(value)
-		if err != nil {
-			return "", fmt.Errorf("criteria key %q: %w", key, err)
-		}
-		if declaredField {
-			return base + " = " + lit, nil
-		}
-		return sqliteJSONScalarTextExpr(key) + " = " + lit, nil
+// renderCriterionPredicate owns CCC equality for reads and writes. Index metadata
+// must never change which events a content query observes.
+func renderCriterionPredicate(key string, value any) (string, error) {
+	lit, err := sqlValueLiteral(value)
+	if err != nil {
+		return "", fmt.Errorf("criteria key %q: %w", key, err)
 	}
+	return sqliteJSONScalarTextExpr(key) + " = " + lit, nil
 }
 
 // sqliteJSONScalarTextExpr mirrors PG's `data->>'key'` text rendering: booleans
@@ -418,15 +367,13 @@ func (s *SqliteSaveEvents) SavePrepared(
 // transaction (or savepoint). The caller owns transaction begin/commit/rollback.
 func (s *SqliteSaveEvents) saveEventsOnConn(
 	conn *sqlite.Conn,
-	pool *BoundaryPools,
-	boundary string,
 	eventsToInsert eventstore.PreparedEventBatch,
 	consistency []eventstore.ConsistencyCheck,
 	consistencyJSON string,
 ) (transactionID string, globalID int64, err error) {
 	for _, check := range consistency {
 		criteria := readCriteriaAsList(check.Criteria)
-		where, buildErr := buildCriteriaSQLForBoundary(criteria, pool.indexes, boundary)
+		where, buildErr := buildCriteriaSQL(criteria)
 		if buildErr != nil {
 			return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid consistency criteria: %v", buildErr)
 		}
@@ -569,7 +516,7 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 	if req.Query != nil && len(req.Query.Criteria) > 0 {
 		critList := criteriaAsList(req.Query)
 		if len(critList) > 0 {
-			where, buildErr := buildCriteriaSQLForBoundary(critList, pool.indexes, req.Boundary)
+			where, buildErr := buildCriteriaSQL(critList)
 			if buildErr != nil {
 				return nil, statuscode.Errorf(statuscode.InvalidArgument, "invalid criteria: %v", buildErr)
 			}
@@ -670,7 +617,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 		if len(anded) == 0 {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "criterion has no tags")
 		}
-		where, buildErr := buildCriteriaSQLForBoundary([]map[string]any{anded}, pool.indexes, query.Boundary)
+		where, buildErr := buildCriteriaSQL([]map[string]any{anded})
 		if buildErr != nil {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "invalid criteria: %v", buildErr)
 		}
@@ -1136,15 +1083,14 @@ func (a *SqliteAdminDB) SaveEventCount(ctx context.Context, count int, boundary 
 }
 
 // buildSQLiteBoundaryIndexDDL renders the physical SQLite index. Position
-// columns follow the user-declared JSON expressions so an equality lookup on
-// the full criterion shape can read its latest event directly from the index,
+// columns follow the user-declared JSON expressions so a TEXT equality lookup
+// on the full criterion shape can read its latest event directly from the index,
 // without sorting every historical match.
-func buildSQLiteBoundaryIndexDDLWithRegistry(
-	boundary, name string,
+func buildSQLiteBoundaryIndexDDL(
+	name string,
 	fields []eventstore.BoundaryIndexField,
 	conditions []eventstore.BoundaryIndexCondition,
 	combinator string,
-	registry *sqliteIndexRegistry,
 ) (string, []eventstore.BoundaryIndexField, error) {
 	if err := validateIdentifier(name); err != nil {
 		return "", nil, fmt.Errorf("invalid index name %s: %w", name, err)
@@ -1174,7 +1120,7 @@ func buildSQLiteBoundaryIndexDDLWithRegistry(
 		case "timestamptz":
 			exprs = append(exprs, base) // ISO8601 strings sort lexicographically
 		default:
-			exprs = append(exprs, base)
+			exprs = append(exprs, sqliteJSONScalarTextExpr(f.JsonKey))
 		}
 	}
 	exprs = append(exprs, "transaction_id DESC", "global_id DESC")
@@ -1195,7 +1141,7 @@ func buildSQLiteBoundaryIndexDDLWithRegistry(
 			if !validOps[c.Operator] {
 				return "", nil, fmt.Errorf("invalid operator %q", c.Operator)
 			}
-			predicate, err := buildIndexConditionPredicate(c, typeByKey, registry, boundary)
+			predicate, err := buildIndexConditionPredicate(c, typeByKey)
 			if err != nil {
 				return "", nil, err
 			}
@@ -1222,8 +1168,8 @@ func (a *SqliteAdminDB) CreateBoundaryIndex(
 	if !ok {
 		return fmt.Errorf("unknown boundary: %s", boundary)
 	}
-	ddl, normalizedFields, err := buildSQLiteBoundaryIndexDDLWithRegistry(
-		boundary, name, fields, conditions, combinator, pool.indexes,
+	ddl, normalizedFields, err := buildSQLiteBoundaryIndexDDL(
+		name, fields, conditions, combinator,
 	)
 	if err != nil {
 		return err
@@ -1244,6 +1190,10 @@ func (a *SqliteAdminDB) CreateBoundaryIndex(
 	}
 	defer endFn(&err)
 
+	if err = verifyBoundaryIndexDefinition(conn, name, ddl); err != nil {
+		return err
+	}
+
 	if err = sqlitex.Execute(conn, ddl, nil); err != nil {
 		return err
 	}
@@ -1260,18 +1210,11 @@ func (a *SqliteAdminDB) CreateBoundaryIndex(
 	err = sqlitex.Execute(conn,
 		`INSERT INTO orisun_boundary_index_metadata (name, fields, conditions, combinator, date_created, date_updated)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET
-		   fields = excluded.fields,
-		   conditions = excluded.conditions,
-		   combinator = excluded.combinator,
-		   date_updated = excluded.date_updated`,
+		 ON CONFLICT(name) DO NOTHING`,
 		&sqlitex.ExecOptions{
 			Args: []any{name, string(fieldsJSON), string(conditionsJSON), combinator, now, now},
 		})
 	if err != nil {
-		return err
-	}
-	if err = loadBoundaryIndexMetadata(conn, boundary, pool.indexes); err != nil {
 		return err
 	}
 	return nil
@@ -1306,9 +1249,6 @@ func (a *SqliteAdminDB) DropBoundaryIndex(ctx context.Context, boundary, name st
 		"DELETE FROM orisun_boundary_index_metadata WHERE name = ?",
 		&sqlitex.ExecOptions{Args: []any{name}})
 	if err != nil {
-		return err
-	}
-	if err = loadBoundaryIndexMetadata(conn, boundary, pool.indexes); err != nil {
 		return err
 	}
 	return nil
@@ -1410,26 +1350,13 @@ func sqliteBoundaryIndexFromRow(name, fieldsJSON, conditionsJSON, combinator str
 	return index, nil
 }
 
-// buildIndexConditionPredicate renders one partial-index condition with the comparison
-// typed to the field's declared value type. json_extract returns SQLite numbers for JSON
-// numbers, and in SQLite any number sorts before any text — so an untyped text literal
-// against a numeric field would make the predicate always-false and the index empty.
-// Field types come from this index's own field list first, then the boundary registry.
-//
-// Shape contract with renderCriterionPredicate: declared-field keys use the raw
-// json_extract shape; everything else uses the CASE scalar-text shape, which is what
-// queries emit for condition-only keys — and it keeps text conditions correct over
-// numeric/boolean JSON values instead of always-false.
+// buildIndexConditionPredicate uses only this definition's field types. Other
+// indexes cannot change a partial index's meaning or its physical predicate.
 func buildIndexConditionPredicate(
 	c eventstore.BoundaryIndexCondition,
 	typeByKey map[string]string,
-	registry *sqliteIndexRegistry,
-	boundary string,
 ) (string, error) {
-	valueType, declaredField := typeByKey[c.Key]
-	if !declaredField {
-		valueType, declaredField, _ = registry.fieldTypeInfo(boundary, c.Key)
-	}
+	valueType := typeByKey[c.Key]
 	base := fmt.Sprintf("json_extract(data, %s)", jsonPathLiteral(c.Key))
 	switch normalizeIndexValueType(valueType) {
 	case "numeric":
@@ -1449,9 +1376,6 @@ func buildIndexConditionPredicate(
 		lit, err := sqlValueLiteral(c.Value)
 		if err != nil {
 			return "", fmt.Errorf("condition on field %q: %w", c.Key, err)
-		}
-		if declaredField {
-			return fmt.Sprintf("%s %s %s", base, c.Operator, lit), nil
 		}
 		return fmt.Sprintf("%s %s %s", sqliteJSONScalarTextExpr(c.Key), c.Operator, lit), nil
 	}

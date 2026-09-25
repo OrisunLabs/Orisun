@@ -690,6 +690,9 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		return err
 	}
 
+	if len(boundary+"_"+name+"_idx") > 63 {
+		return statuscode.Errorf(statuscode.InvalidArgument, "physical index name exceeds PostgreSQL's 63-byte limit")
+	}
 	indexName := pq.QuoteIdentifier(boundary + "_" + name + "_idx")
 	physicalIndexName := boundary + "_" + name + "_idx"
 	tableName := pq.QuoteIdentifier(boundary + "_orisun_es_event")
@@ -704,28 +707,46 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 	if err != nil {
 		return fmt.Errorf("encode index conditions: %w", err)
 	}
-	upsertMetadata := fmt.Sprintf(
-		`INSERT INTO %s.%s (name, fields, conditions, combinator, state, date_created, date_updated)
-		 VALUES ($1, $2::jsonb, $3::jsonb, $4, $5, NOW(), NOW())
-		 ON CONFLICT (name) DO UPDATE SET
-		   fields = EXCLUDED.fields,
-		   conditions = EXCLUDED.conditions,
-		   combinator = EXCLUDED.combinator,
-		   state = EXCLUDED.state,
-		   date_updated = NOW()`,
-		schemaName,
-		metadataTable,
-	)
-	if _, err := db.db.ExecContext(
-		ctx,
-		upsertMetadata,
-		name,
-		string(fieldsJSON),
-		string(conditionsJSON),
-		combinator,
-		eventstore.BoundaryIndexStateBuilding,
-	); err != nil {
-		return fmt.Errorf("persist building index metadata: %w", err)
+	// Check logical ownership first, including types whose physical DDL may fail.
+	if _, err := db.checkBoundaryIndexMetadata(ctx, boundary, name, expressions, whereClause); err != nil {
+		return err
+	}
+	// Validate physical ownership before adopting an existing index into metadata.
+	if _, err := db.verifyBoundaryIndexDefinition(ctx, schema, boundary, name, expressions, whereClause); err != nil {
+		return err
+	}
+	reserved, err := db.reserveBoundaryIndex(ctx, schema, boundary, name, fieldsJSON, conditionsJSON, combinator, expressions, whereClause)
+	if err != nil {
+		return err
+	}
+	// Keep the original stored spelling of equivalent definitions, and use it
+	// as a compare-and-set guard against a concurrent drop and replacement.
+	fieldsJSON, err = json.Marshal(reserved.Fields)
+	if err != nil {
+		return err
+	}
+	conditionsJSON, err = json.Marshal(reserved.Conditions)
+	if err != nil {
+		return err
+	}
+	setState := func(state string) error {
+		result, err := db.db.ExecContext(ctx, fmt.Sprintf(
+			"UPDATE %s.%s SET state = $2, date_updated = NOW() WHERE name = $1 AND fields = $3::jsonb AND conditions = $4::jsonb AND combinator = $5",
+			schemaName, metadataTable), name, state, string(fieldsJSON), string(conditionsJSON), reserved.Combinator)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return statuscode.Errorf(statuscode.FailedPrecondition, "index %q changed during creation", name)
+		}
+		return nil
+	}
+	if err := setState(eventstore.BoundaryIndexStateBuilding); err != nil {
+		return err
 	}
 
 	if dropped, err := db.dropInvalidBoundaryIndex(ctx, schema, physicalIndexName); err != nil {
@@ -772,12 +793,15 @@ func (db *PostgresAdminDB) CreateBoundaryIndex(
 		}
 		return verificationErr
 	}
-	markReady := fmt.Sprintf(
-		"UPDATE %s.%s SET state = $2, date_updated = NOW() WHERE name = $1",
-		schemaName,
-		metadataTable,
-	)
-	if _, err := db.db.ExecContext(ctx, markReady, name, eventstore.BoundaryIndexStateReady); err != nil {
+	physicalExists, err := db.verifyBoundaryIndexDefinition(ctx, schema, boundary, name, expressions, whereClause)
+	if err != nil {
+		return err
+	}
+	if !physicalExists {
+		return fmt.Errorf("index %q disappeared before it could be marked ready", name)
+	}
+
+	if err := setState(eventstore.BoundaryIndexStateReady); err != nil {
 		return fmt.Errorf("mark index metadata ready: %w", err)
 	}
 	return nil

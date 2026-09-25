@@ -107,7 +107,7 @@ func TestWriteContextGroupCommitPaths(t *testing.T) {
 			var predicates []string
 			if path == sqliteFlushIndependentCCC {
 				var ok bool
-				predicates, ok = independentCCCContexts(requests, pool, "test")
+				predicates, ok = independentCCCContexts(requests)
 				require.True(t, ok)
 			}
 			conn, err := pool.Write.Take(t.Context())

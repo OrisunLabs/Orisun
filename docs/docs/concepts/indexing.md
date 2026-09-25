@@ -99,7 +99,13 @@ EOF
 
 ## Field value types
 
-`value_type` controls how Orisun casts the JSON key in the index expression. Queries that compare the same key use the matching cast.
+`value_type` controls the index expression, not CCC equality. PostgreSQL and
+SQLite criteria compare scalar values as text regardless of index definitions:
+JSON number `42` and string `"42"` match the criterion `"42"`, while string
+`"042"` does not. Creating or dropping an index must not change those matches.
+Use `TEXT` indexes for these equality queries, including keys whose JSON values
+are numbers or booleans. Typed index expressions are not matching search keys
+for the scalar-text CCC predicates.
 
 | Value | Backend cast |
 | --- | --- |
@@ -161,8 +167,9 @@ index is ready.
 The inventory contains indexes managed through Orisun's index API. It does not
 attempt to parse arbitrary database-native indexes. After upgrading an existing
 PostgreSQL installation, recreate an existing logical definition with
-`CreateIndex` to adopt it into the inventory; the physical `IF NOT EXISTS`
-creation remains idempotent.
+`CreateIndex` to adopt it into the inventory. Adoption succeeds only when the
+physical index matches the requested definition. A conflicting physical index
+is rejected without overwriting its metadata.
 
 ## Backend Behavior
 
@@ -172,18 +179,29 @@ an index as `READY`. If a concurrent build fails or a retry finds an invalid
 physical index, Orisun drops that invalid index and leaves the logical
 definition `BUILDING` so the operation can be retried cleanly. SQLite uses JSON
 expression indexes and automatically appends descending event-position columns
-to API-managed indexes. An equality lookup on the full declared field shape can
+to API-managed indexes. An equality lookup on the full declared `TEXT` field shape can
 therefore find its latest matching event without sorting the context's complete
 history.
 
 On the first SQLite startup after upgrading from an older physical index shape,
 Orisun atomically rebuilds API-managed indexes from their stored definitions.
 Large boundary files can make that first startup take longer and temporarily
-require space for rebuilding; later startups detect the position-ordered shape
-and skip this work.
+require space for rebuilding. The scalar-text index migration also rebuilds
+existing managed definitions, preserving their declared field types and using
+scalar-text expressions for `TEXT` fields. Partial conditions depend only on
+their own definition, never on another index. Subsequent startups skip the
+completed migration.
 
 ## Naming and safety
 
 Index names are boundary-local logical names. Orisun validates names before creating backend objects.
+
+On PostgreSQL and SQLite, `CreateIndex` is idempotent for an existing matching
+definition. Reusing its name with different fields, field types, conditions, or
+condition combinator returns `ALREADY_EXISTS`; it does not replace the index or
+rewrite its metadata. Use `DropIndex` before creating a replacement definition.
+PostgreSQL also rejects names whose full physical form
+`<boundary>_<name>_idx` exceeds 63 bytes, preventing identifier truncation from
+aliasing another index.
 
 Use migrations or a controlled startup task for production index creation. Creating indexes during high-traffic command paths can add avoidable latency.

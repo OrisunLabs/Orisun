@@ -108,14 +108,10 @@ func TestEnsureBoundaryIndexesOrderByPositionUpgradesLegacyIndex(t *testing.T) {
 		t.Fatalf("insert legacy metadata: %v", err)
 	}
 
-	registry := newSqliteIndexRegistry()
-	if err := loadBoundaryIndexMetadata(conn, "test", registry); err != nil {
-		t.Fatalf("load metadata: %v", err)
-	}
-	if err := ensureBoundaryIndexesOrderByPosition(conn, "test", registry); err != nil {
+	if err := ensureBoundaryIndexesOrderByPosition(conn); err != nil {
 		t.Fatalf("upgrade legacy index: %v", err)
 	}
-	if err := ensureBoundaryIndexesOrderByPosition(conn, "test", registry); err != nil {
+	if err := ensureBoundaryIndexesOrderByPosition(conn); err != nil {
 		t.Fatalf("repeat index upgrade: %v", err)
 	}
 

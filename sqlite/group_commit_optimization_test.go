@@ -160,8 +160,6 @@ func TestGroupCommitIndependentCCCSetPath(t *testing.T) {
 }
 
 func TestIndependentCCCSelectorIsConservative(t *testing.T) {
-	_, bp, cleanup := newGCTestSaver(t)
-	defer cleanup()
 
 	request := func(key, queryValue, eventValue string) *sqliteSaveRequest {
 		return &sqliteSaveRequest{
@@ -176,31 +174,31 @@ func TestIndependentCCCSelectorIsConservative(t *testing.T) {
 	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
 		request("stream_id", "a", "a"),
 		request("stream_id", "b", "b"),
-	}, bp, gcBoundary); !ok {
+	}); !ok {
 		t.Fatal("distinct matching text contexts should qualify")
 	}
 	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
 		request("stream_id", "same", "same"),
 		request("stream_id", "same", "same"),
-	}, bp, gcBoundary); ok {
+	}); ok {
 		t.Fatal("duplicate contexts can invalidate one another")
 	}
 	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
 		request("stream_id", "a", "b"),
 		request("stream_id", "b", "b"),
-	}, bp, gcBoundary); ok {
+	}); ok {
 		t.Fatal("an event outside its request context can affect another request")
 	}
 	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
 		request("stream_id", "a", "a"),
 		request("account_id", "b", "b"),
-	}, bp, gcBoundary); ok {
+	}); ok {
 		t.Fatal("different context keys must use the isolated path")
 	}
 
 	multiple := request("stream_id", "a", "a")
 	multiple.consistency = append(multiple.consistency, multiple.consistency[0])
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{multiple}, bp, gcBoundary); ok {
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{multiple}); ok {
 		t.Fatal("multiple observations must use the isolated path")
 	}
 	complex := request("stream_id", "a", "a")
@@ -208,18 +206,15 @@ func TestIndependentCCCSelectorIsConservative(t *testing.T) {
 		complex.consistency[0].Criteria[0].Tags,
 		eventstore.ReadTag{Key: "kind", Value: "credit"},
 	)
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{complex}, bp, gcBoundary); ok {
+	if _, ok := independentCCCContexts([]*sqliteSaveRequest{complex}); ok {
 		t.Fatal("multi-tag criteria must use the isolated path")
 	}
 
-	bp.indexes.replaceBoundaryFields(gcBoundary, map[string]sqliteFieldInfo{
-		"stream_id": {valueType: "numeric", declaredField: true},
-	})
 	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
 		request("stream_id", "42", "42"),
 		request("stream_id", "42.0", "42.0"),
-	}, bp, gcBoundary); ok {
-		t.Fatal("distinct strings can alias under numeric equality")
+	}); !ok {
+		t.Fatal("distinct string contexts remain independent")
 	}
 }
 

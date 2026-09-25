@@ -76,7 +76,7 @@ func readSeqNextID(t *testing.T, bp *BoundaryPools) int64 {
 
 func countEventsMatching(t *testing.T, bp *BoundaryPools, criteria map[string]any) int {
 	t.Helper()
-	where, err := buildCriteriaSQLForBoundary([]map[string]any{criteria}, bp.indexes, gcBoundary)
+	where, err := buildCriteriaSQL([]map[string]any{criteria})
 	if err != nil {
 		t.Fatalf("build criteria SQL: %v", err)
 	}
@@ -155,7 +155,7 @@ func saveBypassingQueue(
 		}
 	}()
 
-	return saver.saveEventsOnConn(conn, pool, boundary, inserts, consistency, string(data))
+	return saver.saveEventsOnConn(conn, inserts, consistency, string(data))
 }
 
 // blockWorkerThenQueue occupies the worker with one blocking save, runs
