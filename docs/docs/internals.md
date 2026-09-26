@@ -208,9 +208,22 @@ and batches of one, uses the same queue-ordered check and insert implementation
 inside a savepoint:
 
 - an accepted request remains visible to later CCC checks in queue order;
-- a CCC or validation failure rolls back only that request, including its
-  sequence update; and
-- a failure to begin or commit the outer transaction fails the whole flush.
+- a CCC or validation failure rolls back only that request and consumes no
+  positions; and
+- a failure to begin, update the sequence, or commit the outer transaction
+  fails the whole flush.
+
+Each CCC observation is an OR of AND criteria. Redundant criteria are removed
+(`A OR (A AND B)` is equivalent to `A`). Each remaining criterion uses its own
+literal, ordered `LIMIT 1` lookup, allowing a matching partial or expression
+index to find the latest event without sorting the combined matching history.
+The maximum full `(transaction_id, global_id)` position across those lookups is
+compared with the observation's expected position.
+
+The transaction reads the sequence once and advances its local cursor only
+after a request's savepoint succeeds. It persists the final sequence once,
+atomically with all accepted writes. Each event's stored envelope is constructed
+once, after its positions are assigned, preserving application JSON numbers.
 
 The event log and metadata use separate databases for each boundary. SQLite is
 a single-node backend, and startup rejects configurations that enable NATS

@@ -64,6 +64,11 @@ SQLite uses queue-ordered checks with request-local savepoints for every save
 inside the shared group-commit transaction. Each request inserts its events in
 chunks while preserving atomic rollback of its events, write context, and
 positions. This retains the transaction and fsync savings of group commit.
+CCC checks remove redundant OR criteria, then find the latest match for each
+remaining AND criterion separately and compare the maximum full position.
+This lets each criterion use its own matching index without sorting all events
+matching the combined OR query. Index each remaining criterion shape; an
+unindexed branch can still scan history even when another branch is indexed.
 
 FoundationDB needs a ready covering index for each criterion that does not
 select a native range through `__commitPosition` or `__writeId`. A V2 request with several observations can therefore depend on

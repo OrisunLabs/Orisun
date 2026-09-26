@@ -275,12 +275,6 @@ func (s *SqliteSaveEvents) runFlush(
 			req.deliver(sqliteSaveResult{err: statuscode.FromContextError(ctxErr)})
 			continue
 		}
-		stored, err := prepareStoredEvents(req.inserts)
-		if err != nil {
-			req.deliver(sqliteSaveResult{err: statuscode.Errorf(statuscode.Internal, "invalid prepared event data: %v", err)})
-			continue
-		}
-		req.inserts = stored
 		live = append(live, req)
 	}
 	if len(live) == 0 {
@@ -317,7 +311,7 @@ func (s *SqliteSaveEvents) runFlush(
 	start := time.Now()
 	accepted, flushErr := s.flushTx(conn, live)
 	if flushErr != nil {
-		// Begin or commit failed: nothing persisted; every provisionally
+		// The transaction failed: nothing persisted; every provisionally
 		// accepted request reports the error. (endFn inside flushTx already
 		// rolled back, so the connection returns to the pool clean.)
 		failUndelivered(live, statuscode.Errorf(statuscode.Internal, "group commit flush: %v", flushErr))
@@ -343,7 +337,8 @@ type acceptedSave struct {
 
 // flushTx runs one IMMEDIATE transaction over the live requests, using one
 // savepoint per request in queue order. A request-local failure rolls back
-// its events, write context, and sequence update. BEGIN or COMMIT failures
+// its events and write context. The sequence advances once per flush, only for
+// accepted requests. BEGIN, sequence-update, or COMMIT failures
 // fail the whole flush.
 //
 // endFn is deferred, so it also converts a mid-flush panic into a rollback
@@ -358,18 +353,33 @@ func (s *SqliteSaveEvents) flushTx(
 	}
 	defer endFn(&flushErr)
 
+	var nextID int64
+	if err := sqlitex.Execute(conn, "SELECT next_id FROM orisun_es_seq WHERE id = 1", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error { nextID = stmt.ColumnInt64(0); return nil },
+	}); err != nil {
+		return nil, err
+	}
+	if nextID < 1 {
+		return nil, fmt.Errorf("invalid event sequence: %d", nextID)
+	}
 	accepted = make([]acceptedSave, 0, len(live))
 	for _, req := range live {
 		if ctxErr := req.ctx.Err(); ctxErr != nil {
 			req.deliver(sqliteSaveResult{err: statuscode.FromContextError(ctxErr)})
 			continue
 		}
-		txID, gid, err := s.saveSavepointed(conn, req)
+		txID, gid, err := s.saveSavepointed(conn, req, nextID)
 		if err != nil {
 			req.deliver(sqliteSaveResult{err: err})
 			continue
 		}
+		nextID = gid + 1
 		accepted = append(accepted, acceptedSave{req: req, transactionID: txID, globalID: gid})
+	}
+	if len(accepted) > 0 {
+		if err := sqlitex.Execute(conn, "UPDATE orisun_es_seq SET next_id = ? WHERE id = 1", &sqlitex.ExecOptions{Args: []any{nextID}}); err != nil {
+			return nil, err
+		}
 	}
 	return accepted, nil
 }
@@ -379,10 +389,11 @@ func (s *SqliteSaveEvents) flushTx(
 func (s *SqliteSaveEvents) saveSavepointed(
 	conn *sqlite.Conn,
 	req *sqliteSaveRequest,
+	firstID int64,
 ) (transactionID string, globalID int64, err error) {
 	releaseFn := sqlitex.Save(conn)
 	defer releaseFn(&err)
-	return s.saveEventsOnConn(conn, req.inserts, req.consistency, req.consistencyJSON)
+	return s.saveEventsOnConn(conn, req.inserts, req.consistency, req.consistencyJSON, firstID)
 }
 
 func failUndelivered(batch []*sqliteSaveRequest, err error) {

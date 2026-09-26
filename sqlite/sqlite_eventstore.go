@@ -358,32 +358,19 @@ func (s *SqliteSaveEvents) SavePrepared(
 	return s.enqueue(ctx, boundary, events, consistency)
 }
 
-// saveEventsOnConn runs the CCC check, ID allocation, and insert on an open
+// saveEventsOnConn runs the CCC check and insert at the flush-owned position on an open
 // transaction (or savepoint). The caller owns transaction begin/commit/rollback.
 func (s *SqliteSaveEvents) saveEventsOnConn(
 	conn *sqlite.Conn,
 	eventsToInsert eventstore.PreparedEventBatch,
 	consistency []eventstore.ConsistencyCheck,
 	consistencyJSON string,
+	firstID int64,
 ) (transactionID string, globalID int64, err error) {
 	for _, check := range consistency {
-		criteria := readCriteriaAsList(check.Criteria)
-		where, buildErr := buildCriteriaSQL(criteria)
-		if buildErr != nil {
-			return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid consistency criteria: %v", buildErr)
-		}
-		checkSQL := "SELECT transaction_id, global_id FROM orisun_es_event WHERE " + where +
-			" ORDER BY transaction_id DESC, global_id DESC LIMIT 1"
-
-		latestTx, latestGid := int64(-1), int64(-1)
-		if err = sqlitex.ExecuteTransient(conn, checkSQL, &sqlitex.ExecOptions{
-			ResultFunc: func(stmt *sqlite.Stmt) error {
-				latestTx = stmt.ColumnInt64(0)
-				latestGid = stmt.ColumnInt64(1)
-				return nil
-			},
-		}); err != nil {
-			return "", 0, statuscode.Errorf(statuscode.Internal, "ccc check: %v", err)
+		latestTx, latestGid, checkErr := latestCriteriaPosition(conn, check.Criteria)
+		if checkErr != nil {
+			return "", 0, checkErr
 		}
 		if latestTx != check.Position.CommitPosition || latestGid != check.Position.PreparePosition {
 			return "", 0, statuscode.Errorf(statuscode.AlreadyExists,
@@ -392,10 +379,11 @@ func (s *SqliteSaveEvents) saveEventsOnConn(
 		}
 	}
 
-	firstID, lastID, err := allocateGlobalIDs(conn, len(eventsToInsert))
-	if err != nil {
-		return "", 0, statuscode.Errorf(statuscode.Internal, "allocate ids: %v", err)
+	// Leave room for the next sequence value without overflowing int64.
+	if len(eventsToInsert) == 0 || int64(len(eventsToInsert)) > math.MaxInt64-firstID {
+		return "", 0, statuscode.Errorf(statuscode.Internal, "event position range exhausted or empty batch")
 	}
+	lastID := firstID + int64(len(eventsToInsert)) - 1
 
 	if err = insertWriteContext(conn, lastID, consistencyJSON); err != nil {
 		return "", 0, err
@@ -405,21 +393,6 @@ func (s *SqliteSaveEvents) saveEventsOnConn(
 	}
 
 	return strconv.FormatInt(lastID, 10), lastID, nil
-}
-
-func allocateGlobalIDs(conn *sqlite.Conn, count int) (firstID, lastID int64, err error) {
-	n := int64(count)
-	err = sqlitex.Execute(conn,
-		"UPDATE orisun_es_seq SET next_id = next_id + ? WHERE id = 1 RETURNING next_id - ?, next_id - 1",
-		&sqlitex.ExecOptions{
-			Args: []any{n, n},
-			ResultFunc: func(stmt *sqlite.Stmt) error {
-				firstID = stmt.ColumnInt64(0)
-				lastID = stmt.ColumnInt64(1)
-				return nil
-			},
-		})
-	return firstID, lastID, err
 }
 
 // insertEventBatch inserts events in chunks of sqliteMaxEventsPerInsert to stay under

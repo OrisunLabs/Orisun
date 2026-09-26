@@ -234,13 +234,13 @@ func benchmarkSqliteGroupCommitCCC(b *testing.B, general bool) {
 						pos := positions[w]
 						for i := 0; i < perWorker; i++ {
 							id, _ := uuid.NewV7()
-							data := fmt.Sprintf(`{"stream_id":"%s","__eventType":"OrderPlaced","sequence":%d}`, streamIds[w], 5+i)
+							data := fmt.Sprintf(`{"stream_id":"%s","sequence":%d}`, streamIds[w], 5+i)
 							query := &orisun.Query{Criteria: []*orisun.Criterion{{
 								Tags: []*orisun.Tag{{Key: "stream_id", Value: streamIds[w]}},
 							}}}
 							if general {
 								// A second OR criterion keeps a single observed position while
-								// forcing the general queue-ordered CCC path.
+								// exercising redundant AND/OR criteria in the CCC path.
 								query.Criteria = append(query.Criteria, &orisun.Criterion{Tags: []*orisun.Tag{
 									{Key: "stream_id", Value: streamIds[w]},
 									{Key: "benchmark_shape", Value: "general"},
@@ -777,7 +777,7 @@ func prepopulateStreams(
 			eventID, err := uuid.NewV7()
 			require.NoError(b, err)
 
-			data := fmt.Sprintf(`{"stream_id":"%s","__eventType":"OrderPlaced","sequence":%d}`, streamID, e)
+			data := fmt.Sprintf(`{"stream_id":"%s","sequence":%d}`, streamID, e)
 			meta := fmt.Sprintf(`{"timestamp":"%s"}`, time.Now().Format(time.RFC3339))
 
 			tranID, gid, err := saver.Save(ctx, []orisun.EventWithMapTags{{
@@ -820,7 +820,7 @@ func BenchmarkSqlite_ConsistencyCheck_NoIndex(b *testing.B) {
 		eventID, err := uuid.NewV7()
 		require.NoError(b, err)
 
-		data := fmt.Sprintf(`{"stream_id":"%s","__eventType":"OrderPlaced","sequence":%d}`, streamID, benchEventsPerStream+i)
+		data := fmt.Sprintf(`{"stream_id":"%s","sequence":%d}`, streamID, benchEventsPerStream+i)
 		meta := fmt.Sprintf(`{"timestamp":"%s"}`, time.Now().Format(time.RFC3339))
 
 		query := &orisun.Query{
@@ -864,7 +864,7 @@ func BenchmarkSqlite_ConsistencyCheck_WithIndex(b *testing.B) {
 		eventID, err := uuid.NewV7()
 		require.NoError(b, err)
 
-		data := fmt.Sprintf(`{"stream_id":"%s","__eventType":"OrderPlaced","sequence":%d}`, streamID, benchEventsPerStream+i)
+		data := fmt.Sprintf(`{"stream_id":"%s","sequence":%d}`, streamID, benchEventsPerStream+i)
 		meta := fmt.Sprintf(`{"timestamp":"%s"}`, time.Now().Format(time.RFC3339))
 
 		query := &orisun.Query{
