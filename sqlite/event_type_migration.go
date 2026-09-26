@@ -89,12 +89,8 @@ func migrateReservedEventType(conn *sqlite.Conn) error {
 			return err
 		}
 	}
-	registry := newSqliteIndexRegistry()
-	if err := loadBoundaryIndexMetadata(conn, "migration", registry); err != nil {
-		return err
-	}
 	for _, def := range indexes {
-		ddl, _, err := buildSQLiteBoundaryIndexDDLWithRegistry("migration", def.name, def.fields, def.conditions, def.combinator, registry)
+		ddl, _, err := buildSQLiteBoundaryIndexDDL(def.name, def.fields, def.conditions, def.combinator)
 		if err != nil {
 			return err
 		}

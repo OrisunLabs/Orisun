@@ -9,6 +9,17 @@ import (
 
 // boundaryIndexExpressions is shared by online creation and transactional migrations.
 func boundaryIndexExpressions(fields []eventstore.BoundaryIndexField, conditions []eventstore.BoundaryIndexCondition, combinator string) (string, string, error) {
+	keys, predicate, err := boundaryIndexKeyExpressions(fields, conditions, combinator)
+	if err != nil {
+		return "", "", err
+	}
+	// CCC and ordered reads need the latest full position within the indexed
+	// context. Keep filtering and ordering in the same B-tree access path.
+	return keys + ", transaction_id DESC, global_id DESC", predicate, nil
+}
+
+// The key-only definition is also used to verify indexes during their migration.
+func boundaryIndexKeyExpressions(fields []eventstore.BoundaryIndexField, conditions []eventstore.BoundaryIndexCondition, combinator string) (string, string, error) {
 	if len(fields) == 0 {
 		return "", "", fmt.Errorf("at least one field is required")
 	}

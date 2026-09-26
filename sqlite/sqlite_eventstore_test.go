@@ -888,12 +888,12 @@ func TestCreateDropBoundaryIndex_MetadataAndTypedCriteria(t *testing.T) {
 		t.Fatalf("unexpected index definition: %#v", index)
 	}
 
-	sql, err := buildCriteriaSQLForBoundary([]map[string]any{{"amount": "45"}}, pool.indexes, "test")
+	sql, err := buildCriteriaSQL([]map[string]any{{"amount": "45"}})
 	if err != nil {
 		t.Fatalf("build criteria: %v", err)
 	}
-	if !strings.Contains(sql, `CAST(json_extract(data, '$."amount"') AS REAL) = 45`) {
-		t.Fatalf("expected inlined numeric comparison in criteria SQL, got %q", sql)
+	if !strings.Contains(sql, sqliteJSONScalarTextExpr("amount")+" = '45'") {
+		t.Fatalf("expected scalar-text CCC comparison, got %q", sql)
 	}
 
 	_, _, err = saver.Save(ctx, []eventstore.EventWithMapTags{
@@ -933,7 +933,7 @@ func TestCreateDropBoundaryIndex_MetadataAndTypedCriteria(t *testing.T) {
 		t.Fatalf("get dropped index error = %v, want NotFound", err)
 	}
 
-	sql, err = buildCriteriaSQLForBoundary([]map[string]any{{"amount": "45"}}, pool.indexes, "test")
+	sql, err = buildCriteriaSQL([]map[string]any{{"amount": "45"}})
 	if err != nil {
 		t.Fatalf("build criteria: %v", err)
 	}
@@ -971,9 +971,9 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 				return nil
 			}})
 		if err == nil {
-			where, buildErr := buildCriteriaSQLForBoundary([]map[string]any{
+			where, buildErr := buildCriteriaSQL([]map[string]any{
 				{"category": "orders", "priority": "high"},
-			}, pools["test"].indexes, "test")
+			})
 			if buildErr != nil {
 				err = buildErr
 			} else {
@@ -1113,7 +1113,7 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 
 	t.Run("planner uses conditioned partial index for inlined criteria", func(t *testing.T) {
 		if err := admin.CreateBoundaryIndex(ctx, "test", "placed_amount2", []eventstore.BoundaryIndexField{
-			{JsonKey: "amount", ValueType: "numeric"},
+			{JsonKey: "amount", ValueType: "text"},
 		}, []eventstore.BoundaryIndexCondition{
 			{Key: "__eventType", Operator: "=", Value: "OrderPlaced"},
 		}, ""); err != nil {
@@ -1126,9 +1126,9 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 		}()
 
 		pool := pools["test"]
-		where, err := buildCriteriaSQLForBoundary([]map[string]any{
+		where, err := buildCriteriaSQL([]map[string]any{
 			{"__eventType": "OrderPlaced", "amount": "150"},
-		}, pool.indexes, "test")
+		})
 		if err != nil {
 			t.Fatalf("build criteria: %v", err)
 		}
@@ -1206,14 +1206,14 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 			t.Fatalf("expected 2 matching events (numeric and string status), got %d", len(resp))
 		}
 
-		// Condition key is registry-known after creation, so the query term exactly
+		// The query and condition use the same scalar-text expression, so the query term exactly
 		// matches the partial-index predicate. Force that index below: SQLite will
 		// reject the statement with "no query solution" if the predicate cannot use
 		// it. This tests structural eligibility without depending on cost estimates
 		// for this deliberately tiny fixture.
-		where, err := buildCriteriaSQLForBoundary([]map[string]any{
+		where, err := buildCriteriaSQL([]map[string]any{
 			{"status": "404", "amount": "5"},
-		}, pools["test"].indexes, "test")
+		})
 		if err != nil {
 			t.Fatalf("build criteria: %v", err)
 		}
@@ -1384,37 +1384,6 @@ func TestBuildCriteriaSQL(t *testing.T) {
 		}
 	})
 
-	t.Run("declared text field keeps direct index expression", func(t *testing.T) {
-		registry := newSqliteIndexRegistry()
-		registry.replaceBoundaryFields("test", map[string]sqliteFieldInfo{
-			"k": {valueType: "text", declaredField: true},
-		})
-		sql, err := buildCriteriaSQLForBoundary([]map[string]any{{"k": "v"}}, registry, "test")
-		if err != nil {
-			t.Fatalf("build: %v", err)
-		}
-		want := `(json_extract(data, '$."k"') = 'v')`
-		if sql != want {
-			t.Fatalf("got %q, want %q", sql, want)
-		}
-	})
-
-	t.Run("condition-only key keeps exact CASE shape", func(t *testing.T) {
-		// No numeric OR branch: the query term must exactly match the partial-index
-		// condition predicate or the implication proof fails and the index goes unused.
-		registry := newSqliteIndexRegistry()
-		registry.replaceBoundaryFields("test", map[string]sqliteFieldInfo{
-			"k": {valueType: "text", declaredField: false},
-		})
-		sql, err := buildCriteriaSQLForBoundary([]map[string]any{{"k": "1"}}, registry, "test")
-		if err != nil {
-			t.Fatalf("build: %v", err)
-		}
-		want := "(" + caseExpr("k") + " = '1')"
-		if sql != want {
-			t.Fatalf("got %q, want %q", sql, want)
-		}
-	})
 }
 
 func TestJSONPathLiteralEscapes(t *testing.T) {

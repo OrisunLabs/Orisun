@@ -20,7 +20,7 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 )
 
-func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
+func TestPostgresGroupCommit_Unconditional(t *testing.T) {
 	container, err := setupTestContainer(t)
 	require.NoError(t, err)
 	defer func() {
@@ -51,7 +51,7 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 	require.NoError(t, err)
 	defer saver.close()
 
-	type fastResult struct {
+	type saveResult struct {
 		eventID       string
 		transactionID int64
 		globalID      int64
@@ -59,10 +59,10 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 	}
 	events := make([]orisun.EventWithMapTags, requestCount)
 	for i := range events {
-		events[i] = postgresGroupCommitEvent(t, fmt.Sprintf("Fast%02d", i), "fast-context")
+		events[i] = postgresGroupCommitEvent(t, fmt.Sprintf("Unconditional%02d", i), "unconditional-context")
 	}
 	start := make(chan struct{})
-	results := make(chan fastResult, requestCount)
+	results := make(chan saveResult, requestCount)
 	var wg sync.WaitGroup
 	for i := range events {
 		event := events[i]
@@ -81,7 +81,7 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 			if saveErr == nil && parseErr != nil {
 				saveErr = parseErr
 			}
-			results <- fastResult{
+			results <- saveResult{
 				eventID:       event.EventId,
 				transactionID: parsedTransactionID,
 				globalID:      globalID,
@@ -93,20 +93,19 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 	wg.Wait()
 	close(results)
 
-	returned := make(map[string]fastResult, requestCount)
+	returned := make(map[string]saveResult, requestCount)
 	for result := range results {
 		require.NoError(t, result.err)
 		require.Equal(t, result.globalID+1, result.transactionID)
 		returned[result.eventID] = result
 	}
 	require.Len(t, returned, requestCount)
-	require.Equal(t, int64(1), saver.gc.fastFlushes.Load())
 
 	rows, err := db.QueryContext(
 		t.Context(),
 		`SELECT data->>'__eventId', transaction_id, global_id, pg_xact_id
 		 FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'aggregate' = 'fast-context'
+		 WHERE data->>'aggregate' = 'unconditional-context'
 		 ORDER BY global_id`,
 	)
 	require.NoError(t, err)
@@ -138,10 +137,10 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 	require.Equal(t, requestCount, persisted)
 	require.NoError(t, rows.Close())
 
-	// A request that PostgreSQL would reject locally must force the isolated
-	// path so it cannot poison an otherwise valid request in the same flush.
+	// A malformed request must be rejected before the SQL batch so it cannot
+	// poison an otherwise valid request in the same flush.
 	saver.close()
-	fallbackSaver, err := NewPostgresSaveEventsWithConfig(
+	validationSaver, err := NewPostgresSaveEventsWithConfig(
 		t.Context(),
 		db,
 		logger,
@@ -153,20 +152,20 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	defer fallbackSaver.close()
+	defer validationSaver.close()
 
-	invalid := postgresGroupCommitEvent(t, "InvalidUUID", "fallback-context")
+	invalid := postgresGroupCommitEvent(t, "InvalidUUID", "validation-context")
 	invalid.EventId = "not-a-uuid"
-	valid := postgresGroupCommitEvent(t, "ValidUUID", "fallback-context")
-	fallbackStart := make(chan struct{})
-	fallbackResults := make(chan fastResult, 2)
+	valid := postgresGroupCommitEvent(t, "ValidUUID", "validation-context")
+	validationStart := make(chan struct{})
+	validationResults := make(chan saveResult, 2)
 	for _, event := range []orisun.EventWithMapTags{invalid, valid} {
 		event := event
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			<-fallbackStart
-			transactionID, globalID, saveErr := fallbackSaver.Save(
+			<-validationStart
+			transactionID, globalID, saveErr := validationSaver.Save(
 				context.Background(),
 				[]orisun.EventWithMapTags{event},
 				"test_boundary",
@@ -174,7 +173,7 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 				nil,
 			)
 			parsedTransactionID, _ := strconv.ParseInt(transactionID, 10, 64)
-			fallbackResults <- fastResult{
+			validationResults <- saveResult{
 				eventID:       event.EventId,
 				transactionID: parsedTransactionID,
 				globalID:      globalID,
@@ -182,11 +181,11 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 			}
 		}()
 	}
-	close(fallbackStart)
+	close(validationStart)
 	wg.Wait()
-	close(fallbackResults)
+	close(validationResults)
 
-	for result := range fallbackResults {
+	for result := range validationResults {
 		if result.eventID == invalid.EventId {
 			require.Equal(t, statuscode.Internal, statuscode.CodeOf(result.err))
 			continue
@@ -194,18 +193,17 @@ func TestPostgresGroupCommit_UnconditionalFastPath(t *testing.T) {
 		require.NoError(t, result.err)
 		require.Equal(t, result.globalID+1, result.transactionID)
 	}
-	require.Zero(t, fallbackSaver.gc.fastFlushes.Load())
 
-	var fallbackPersisted int
+	var validationPersisted int
 	require.NoError(t, db.QueryRowContext(
 		t.Context(),
 		`SELECT COUNT(*) FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'aggregate' = 'fallback-context'`,
-	).Scan(&fallbackPersisted))
-	require.Equal(t, 1, fallbackPersisted)
+		 WHERE data->>'aggregate' = 'validation-context'`,
+	).Scan(&validationPersisted))
+	require.Equal(t, 1, validationPersisted)
 }
 
-func TestPostgresGroupCommit_UnconditionalFastPathMultipleEventsPerRequest(t *testing.T) {
+func TestPostgresGroupCommit_UnconditionalMultipleEventsPerRequest(t *testing.T) {
 	container, err := setupTestContainer(t)
 	require.NoError(t, err)
 	defer func() {
@@ -250,7 +248,6 @@ func TestPostgresGroupCommit_UnconditionalFastPathMultipleEventsPerRequest(t *te
 	outcomes, err := saver.executeBatch(t.Context(), "test_boundary", requests)
 	require.NoError(t, err)
 	require.Len(t, outcomes, len(requests))
-	require.Equal(t, int64(1), saver.gc.fastFlushes.Load())
 
 	rows, err := db.QueryContext(
 		t.Context(),
@@ -427,7 +424,6 @@ func TestPostgresGroupCommit_InBatchWriteInvalidatesLaterCCCCheck(t *testing.T) 
 	require.Equal(t, 2, succeeded)
 	require.Equal(t, 1, conflicted)
 	require.Equal(t, int64(1), multiFlushes.Load(), "all three requests must share one transaction")
-	require.Equal(t, int64(1), saver.gc.canonicalFlushes.Load())
 
 	var matchingEvents int
 	err = db.QueryRowContext(
@@ -652,7 +648,6 @@ func TestPostgresGroupCommit_CheckedBatchMatchesSequentialSemantics(t *testing.T
 	batched, err := saver.executeBatch(t.Context(), "test_boundary", requests)
 	require.NoError(t, err)
 	require.Len(t, batched, len(requests))
-	require.Equal(t, int64(1), saver.gc.canonicalFlushes.Load(), "multi-observation batch must use the set-based criterion-state path")
 
 	sequential := make([]postgresBatchOutcome, 0, len(requests))
 	for _, req := range requests {
@@ -996,39 +991,7 @@ func TestPostgresGroupCommit_ShutdownRejectsNewSaves(t *testing.T) {
 	require.Equal(t, statuscode.Unavailable, statuscode.CodeOf(err))
 }
 
-func TestCanUseUnconditionalFastPathRejectsUnsafeShapes(t *testing.T) {
-	valid := orisun.PreparedEventBatch{{
-		EventId:      uuid.Must(uuid.NewV7()).String(),
-		EventType:    "Valid",
-		DataJSON:     `{"__eventType":"Valid"}`,
-		MetadataJSON: `{}`,
-	}}
-	require.True(t, canUseUnconditionalFastPath([]*postgresSaveRequest{{events: valid}}))
-	require.False(t, canUseUnconditionalFastPath([]*postgresSaveRequest{{
-		events: valid,
-		consistency: []orisun.ConsistencyCheck{{
-			Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{{Key: "id", Value: "1"}}}},
-			Position: orisun.NotExistsPosition(),
-		}},
-	}}))
-
-	multipleEvents := append(orisun.PreparedEventBatch(nil), valid...)
-	multipleEvents = append(multipleEvents, valid[0])
-	multipleEvents[1].EventId = uuid.Must(uuid.NewV7()).String()
-	require.True(t, canUseUnconditionalFastPath([]*postgresSaveRequest{{events: multipleEvents}}))
-
-	invalidSecondEvent := append(orisun.PreparedEventBatch(nil), multipleEvents...)
-	invalidSecondEvent[1].EventId = "not-a-uuid"
-	require.False(t, canUseUnconditionalFastPath([]*postgresSaveRequest{{events: invalidSecondEvent}}))
-
-	invalidUUID := append(orisun.PreparedEventBatch(nil), valid...)
-	invalidUUID[0].EventId = "not-a-uuid"
-	require.False(t, canUseUnconditionalFastPath([]*postgresSaveRequest{{events: invalidUUID}}))
-
-	require.False(t, canUseUnconditionalFastPath([]*postgresSaveRequest{{}}))
-}
-
-func TestPostgresGroupCommit_IndependentCCCFastPathV2(t *testing.T) {
+func TestPostgresGroupCommit_IndependentCCC(t *testing.T) {
 	container, err := setupTestContainer(t)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, container.container.Terminate(context.Background())) }()
@@ -1090,9 +1053,6 @@ func TestPostgresGroupCommit_IndependentCCCFastPathV2(t *testing.T) {
 	require.NoError(t, outcomes[1].err)
 	require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(outcomes[2].err))
 	require.NoError(t, outcomes[3].err)
-	require.Equal(t, int64(1), saver.gc.independentFlushes.Load())
-	require.Zero(t, saver.gc.canonicalFlushes.Load())
-	require.Zero(t, saver.gc.fastFlushes.Load())
 
 	var persisted, transactions int
 	require.NoError(t, db.QueryRowContext(
@@ -1103,73 +1063,6 @@ func TestPostgresGroupCommit_IndependentCCCFastPathV2(t *testing.T) {
 	).Scan(&persisted, &transactions))
 	require.Equal(t, 3, persisted, "the stale request must not persist")
 	require.Equal(t, 1, transactions, "accepted requests must share one database transaction")
-}
-
-func TestPostgresGroupCommitFastPathSelectorsSupportSaveEventsV2Shapes(t *testing.T) {
-	prepared := func(contextValue string) orisun.PreparedEventBatch {
-		batch, err := orisun.PrepareEventsForSave([]orisun.EventWithMapTags{
-			postgresIndependentCCCEvent(t, "Selector", contextValue),
-		})
-		require.NoError(t, err)
-		return batch
-	}
-	check := func(position orisun.Position, values ...string) orisun.ConsistencyCheck {
-		criteria := make([]orisun.ReadCriterion, len(values))
-		for index, value := range values {
-			criteria[index] = orisun.ReadCriterion{Tags: []orisun.ReadTag{{Key: "stream_id", Value: value}}}
-		}
-		return orisun.ConsistencyCheck{Criteria: criteria, Position: position}
-	}
-
-	independent := []*postgresSaveRequest{
-		{events: prepared("a"), consistency: []orisun.ConsistencyCheck{check(orisun.NotExistsPosition(), "a")}},
-		{events: prepared("b"), consistency: []orisun.ConsistencyCheck{check(orisun.NotExistsPosition(), "b")}},
-	}
-	key, ok := independentCCCKey(independent)
-	require.True(t, ok)
-	require.Equal(t, "stream_id", key)
-	require.True(t, canUseCanonicalFastPath(independent))
-
-	duplicateContext := []*postgresSaveRequest{independent[0], {
-		events: prepared("a"), consistency: []orisun.ConsistencyCheck{check(orisun.NotExistsPosition(), "a")},
-	}}
-	_, ok = independentCCCKey(duplicateContext)
-	require.False(t, ok)
-
-	multipleObservations := []*postgresSaveRequest{{
-		events: prepared("a"),
-		consistency: []orisun.ConsistencyCheck{
-			check(orisun.NotExistsPosition(), "a"),
-			check(orisun.NotExistsPosition(), "guard"),
-		},
-	}}
-	_, ok = independentCCCKey(multipleObservations)
-	require.False(t, ok)
-	require.True(t, canUseCanonicalFastPath(multipleObservations))
-
-	orQuery := []*postgresSaveRequest{{
-		events:      prepared("a"),
-		consistency: []orisun.ConsistencyCheck{check(orisun.NotExistsPosition(), "a", "b")},
-	}}
-	_, ok = independentCCCKey(orQuery)
-	require.False(t, ok)
-	require.True(t, canUseCanonicalFastPath(orQuery))
-
-	eventOutsideContext := []*postgresSaveRequest{{
-		events: prepared("different"), consistency: []orisun.ConsistencyCheck{check(orisun.NotExistsPosition(), "a")},
-	}}
-	_, ok = independentCCCKey(eventOutsideContext)
-	require.False(t, ok)
-
-	require.True(t, canUseCanonicalFastPath([]*postgresSaveRequest{{events: prepared("queryless")}, multipleObservations[0]}))
-	require.False(t, canUseCanonicalFastPath([]*postgresSaveRequest{{
-		events: prepared("a"), consistency: []orisun.ConsistencyCheck{{Position: orisun.NotExistsPosition()}},
-	}}))
-	require.False(t, canUseCanonicalFastPath([]*postgresSaveRequest{{
-		events: prepared("a"), consistency: []orisun.ConsistencyCheck{{
-			Criteria: []orisun.ReadCriterion{{}}, Position: orisun.NotExistsPosition(),
-		}},
-	}}))
 }
 
 func postgresGroupCommitEvent(t *testing.T, eventType, aggregate string) orisun.EventWithMapTags {
@@ -1193,5 +1086,243 @@ func postgresIndependentCCCEvent(t *testing.T, eventType, contextValue string) o
 		EventType: eventType,
 		Data:      `{"stream_id":"` + contextValue + `"}`,
 		Metadata:  `{}`,
+	}
+}
+
+// Typed, quoted selectors must retain AND/OR semantics and select the newest
+// full position, even when unrelated event types share the same business key.
+func TestPostgresGroupCommit_TypedSnapshotHistory(t *testing.T) {
+	container, err := setupTestContainer(t)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, container.container.Terminate(context.Background())) })
+	db, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	logger, err := logging.ZapLogger("error")
+	require.NoError(t, err)
+	saver := NewPostgresSaveEvents(t.Context(), db, logger, map[string]config.BoundaryToPostgresSchemaMapping{
+		"test_boundary": {Boundary: "test_boundary", Schema: "public"},
+	})
+	t.Cleanup(saver.close)
+	_, err = db.Exec(`CREATE INDEX typed_snapshot_guard ON public.test_boundary_orisun_es_event ((data->>'aggregate'), transaction_id DESC, global_id DESC) WHERE data->>'__eventType' = 'Guard'`)
+	require.NoError(t, err)
+	const key = "customer's context"
+	tx, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{
+		postgresGroupCommitEvent(t, "Guard", key),
+		postgresGroupCommitEvent(t, "Guard", key),
+	}, "test_boundary", nil, nil)
+	require.NoError(t, err)
+	commit, err := strconv.ParseInt(tx, 10, 64)
+	require.NoError(t, err)
+	_, _, err = saver.Save(t.Context(), []orisun.EventWithMapTags{
+		postgresGroupCommitEvent(t, "Unrelated", key),
+	}, "test_boundary", nil, nil)
+	require.NoError(t, err)
+	criterion := func(kind, value string) orisun.ReadCriterion {
+		return orisun.ReadCriterion{Tags: []orisun.ReadTag{{Key: "__eventType", Value: kind}, {Key: "aggregate", Value: value}}}
+	}
+	check := func(position orisun.Position) orisun.ConsistencyCheck {
+		return orisun.ConsistencyCheck{
+			Criteria: []orisun.ReadCriterion{
+				criterion("Guard", key),
+				criterion("Guard", "absent"),
+				{Tags: []orisun.ReadTag{{Key: "__eventType", Value: "Guard"}}},
+			},
+			Position: position,
+		}
+	}
+	request := func(kind, value string, position orisun.Position) *postgresSaveRequest {
+		prepared, prepareErr := orisun.PrepareEventsForSave([]orisun.EventWithMapTags{postgresGroupCommitEvent(t, kind, value)})
+		require.NoError(t, prepareErr)
+		return &postgresSaveRequest{ctx: t.Context(), events: prepared, consistency: []orisun.ConsistencyCheck{check(position)}}
+	}
+	current := orisun.Position{CommitPosition: commit, PreparePosition: gid}
+	outcomes, err := saver.executeBatch(t.Context(), "test_boundary", []*postgresSaveRequest{
+		request("WrongPrepare", "other", orisun.Position{CommitPosition: commit, PreparePosition: gid - 1}),
+		request("Unrelated", "other", current),
+		request("Guard", key, current),
+		request("Invalidated", "other", current),
+	})
+	require.NoError(t, err)
+	require.Len(t, outcomes, 4)
+	require.Error(t, outcomes[0].err)
+	require.NoError(t, outcomes[1].err)
+	require.NoError(t, outcomes[2].err)
+	require.Error(t, outcomes[3].err)
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM public.test_boundary_orisun_es_event`).Scan(&count))
+	require.Equal(t, 5, count, "only the two valid writes follow the three historical facts")
+}
+
+// Rejecting a malformed request must discard its entire event batch before
+// any position allocation or criterion-state update affects valid neighbors.
+func TestPostgresGroupCommit_InvalidRequestsDoNotAffectNeighbors(t *testing.T) {
+	container, err := setupTestContainer(t)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, container.container.Terminate(context.Background())) })
+	db, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	logger, err := logging.ZapLogger("error")
+	require.NoError(t, err)
+	saver := NewPostgresSaveEvents(t.Context(), db, logger, map[string]config.BoundaryToPostgresSchemaMapping{
+		"test_boundary": {Boundary: "test_boundary", Schema: "public"},
+	})
+	t.Cleanup(saver.close)
+
+	cases := []struct {
+		name       string
+		invalidate func(*postgresSaveRequest)
+	}{
+		{"empty_events", func(r *postgresSaveRequest) { r.events = nil }},
+		{"invalid_uuid", func(r *postgresSaveRequest) { r.events[1].EventId = "invalid" }},
+		{"empty_type", func(r *postgresSaveRequest) { r.events[1].EventType = "" }},
+		{"invalid_data", func(r *postgresSaveRequest) { r.events[1].DataJSON = `[]` }},
+		{"invalid_metadata", func(r *postgresSaveRequest) { r.events[1].MetadataJSON = `{` }},
+		{"empty_query", func(r *postgresSaveRequest) { r.consistency = []orisun.ConsistencyCheck{{}} }},
+		{"empty_criterion", func(r *postgresSaveRequest) {
+			r.consistency = []orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{}}}}
+		}},
+	}
+	var lastGlobalID int64 = -1
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := func(kind string, count int) *postgresSaveRequest {
+				events := make([]orisun.EventWithMapTags, count)
+				for i := range events {
+					events[i] = postgresGroupCommitEvent(t, kind, tc.name)
+				}
+				prepared, err := orisun.PrepareEventsForSave(events)
+				require.NoError(t, err)
+				return &postgresSaveRequest{ctx: t.Context(), events: prepared}
+			}
+			before := request("Before", 1)
+			invalid := request("Checked", 2)
+			tc.invalidate(invalid)
+			after := request("Checked", 1)
+			after.consistency = []orisun.ConsistencyCheck{{
+				Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{{Key: "aggregate", Value: tc.name}, {Key: "__eventType", Value: "Checked"}}}},
+				Position: orisun.NotExistsPosition(),
+			}}
+			stale := request("MustNotPersist", 1)
+			stale.consistency = after.consistency
+			outcomes, err := saver.executeBatch(t.Context(), "test_boundary", []*postgresSaveRequest{before, invalid, after, stale})
+			require.NoError(t, err)
+			require.Len(t, outcomes, 4)
+			byRequest := make(map[*postgresSaveRequest]postgresBatchOutcome)
+			for _, outcome := range outcomes {
+				byRequest[outcome.req] = outcome
+			}
+			require.NoError(t, byRequest[before].err)
+			require.Equal(t, statuscode.Internal, statuscode.CodeOf(byRequest[invalid].err))
+			require.NoError(t, byRequest[after].err)
+			require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(byRequest[stale].err))
+			require.Equal(t, lastGlobalID+1, byRequest[before].globalID)
+			require.Equal(t, lastGlobalID+2, byRequest[after].globalID)
+			lastGlobalID = byRequest[after].globalID
+			var count int
+			require.NoError(t, db.QueryRow(`SELECT count(*) FROM public.test_boundary_orisun_es_event WHERE data->>'aggregate' = $1`, tc.name).Scan(&count))
+			require.Equal(t, 2, count)
+		})
+	}
+	var writes int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM public.test_boundary_orisun_es_write`).Scan(&writes))
+	require.Equal(t, len(cases)*2, writes)
+}
+
+func TestPostgresGroupCommit_UpgradeRetiresAlternateFunctions(t *testing.T) {
+	container, err := setupTestContainer(t)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, container.container.Terminate(context.Background())) })
+	db, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	retired := []string{
+		"insert_events_v2(text,text,jsonb,jsonb)",
+		"insert_unconditional_event_requests_v1(text,text,jsonb)",
+		"insert_independent_event_requests_v2(text,text,text,jsonb)",
+		"insert_canonical_event_requests_v2(text,text,jsonb)",
+	}
+	for _, signature := range retired {
+		_, err := db.Exec("CREATE FUNCTION public." + signature + " RETURNS void LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$")
+		require.NoError(t, err)
+	}
+	for range 2 {
+		require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, t.Context()))
+		for _, signature := range retired {
+			var absent bool
+			require.NoError(t, db.QueryRow("SELECT to_regprocedure($1) IS NULL", "public."+signature).Scan(&absent))
+			require.True(t, absent, signature)
+		}
+		var available bool
+		require.NoError(t, db.QueryRow("SELECT to_regprocedure('public.insert_event_requests_v2(text,text,jsonb)') IS NOT NULL").Scan(&available))
+		require.True(t, available)
+	}
+}
+
+// In-batch matching must use the same JSONB text equality as persisted reads,
+// including missing/null values and projections onto overlapping key shapes.
+func TestPostgresGroupCommit_CriterionProjectionMatchesPersistedReads(t *testing.T) {
+	container, err := setupTestContainer(t)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, container.container.Terminate(context.Background())) })
+	db, err := setupTestDatabase(t, container)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, RunDbScripts(db, "reference_boundary", "public", false, t.Context()))
+	logger, err := logging.ZapLogger("error")
+	require.NoError(t, err)
+	saver := NewPostgresSaveEvents(t.Context(), db, logger, map[string]config.BoundaryToPostgresSchemaMapping{
+		"test_boundary":      {Boundary: "test_boundary", Schema: "public"},
+		"reference_boundary": {Boundary: "reference_boundary", Schema: "public"},
+	})
+	t.Cleanup(saver.close)
+	prepare := func(events ...orisun.EventWithMapTags) orisun.PreparedEventBatch {
+		batch, err := orisun.PrepareEventsForSave(events)
+		require.NoError(t, err)
+		return batch
+	}
+	firstID := uuid.NewString()
+	requests := []*postgresSaveRequest{{ctx: t.Context(), events: prepare(
+		orisun.EventWithMapTags{EventId: firstID, EventType: "Fact", Data: map[string]any{
+			"number": 42, "boolean": true, "null": nil, "empty": "", "object": map[string]any{"x": 1},
+			"array": []any{1, true}, "quoted'key": "customer's context",
+		}},
+		orisun.EventWithMapTags{EventId: uuid.NewString(), EventType: "Other", Data: map[string]any{"number": 0}},
+	)}}
+	for _, tc := range []struct {
+		tags     []orisun.ReadTag
+		position orisun.Position
+	}{
+		{[]orisun.ReadTag{{Key: "number", Value: "42"}}, orisun.Position{CommitPosition: 2, PreparePosition: 0}},
+		{[]orisun.ReadTag{{Key: "boolean", Value: "true"}, {Key: "number", Value: "42"}}, orisun.Position{CommitPosition: 2, PreparePosition: 0}},
+		{[]orisun.ReadTag{{Key: "object", Value: `{"x": 1}`}}, orisun.Position{CommitPosition: 2, PreparePosition: 0}},
+		{[]orisun.ReadTag{{Key: "array", Value: `[1, true]`}}, orisun.Position{CommitPosition: 2, PreparePosition: 0}},
+		{[]orisun.ReadTag{{Key: "quoted'key", Value: "customer's context"}, {Key: "empty", Value: ""}}, orisun.Position{CommitPosition: 2, PreparePosition: 0}},
+		{[]orisun.ReadTag{{Key: "null", Value: "null"}}, orisun.NotExistsPosition()},
+		{[]orisun.ReadTag{{Key: "missing", Value: ""}}, orisun.NotExistsPosition()},
+		{[]orisun.ReadTag{{Key: "__eventId", Value: firstID}, {Key: "__writeId", Value: "2:1"}}, orisun.Position{CommitPosition: 2, PreparePosition: 0}},
+		{[]orisun.ReadTag{{Key: "number", Value: "42"}}, orisun.NotExistsPosition()},
+	} {
+		requests = append(requests, &postgresSaveRequest{
+			ctx:         t.Context(),
+			events:      prepare(orisun.EventWithMapTags{EventId: uuid.NewString(), EventType: "Decision", Data: map[string]any{}}),
+			consistency: []orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{Tags: tc.tags}}, Position: tc.position}},
+		})
+	}
+	batched, err := saver.executeBatch(t.Context(), "test_boundary", requests)
+	require.NoError(t, err)
+	require.Len(t, batched, len(requests))
+	for i, request := range requests {
+		sequential, err := saver.executeBatch(t.Context(), "reference_boundary", []*postgresSaveRequest{request})
+		require.NoError(t, err)
+		require.Equal(t, statuscode.CodeOf(sequential[0].err), statuscode.CodeOf(batched[i].err), "request %d", i)
+		if i == len(requests)-1 {
+			require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(batched[i].err))
+		} else {
+			require.NoError(t, batched[i].err, "request %d", i)
+			require.Equal(t, sequential[0].transactionID, batched[i].transactionID)
+			require.Equal(t, sequential[0].globalID, batched[i].globalID)
+		}
 	}
 }

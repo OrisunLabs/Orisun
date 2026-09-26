@@ -76,7 +76,7 @@ func readSeqNextID(t *testing.T, bp *BoundaryPools) int64 {
 
 func countEventsMatching(t *testing.T, bp *BoundaryPools, criteria map[string]any) int {
 	t.Helper()
-	where, err := buildCriteriaSQLForBoundary([]map[string]any{criteria}, bp.indexes, gcBoundary)
+	where, err := buildCriteriaSQL([]map[string]any{criteria})
 	if err != nil {
 		t.Fatalf("build criteria SQL: %v", err)
 	}
@@ -104,58 +104,6 @@ type saveOutcome struct {
 	tx  string
 	gid int64
 	err error
-}
-
-// saveBypassingQueue is the pre-group-commit write path
-// for comparison only: one IMMEDIATE transaction per call under the caller's
-// context, no queue, no savepoint. Production code never calls this — it
-// exists so tests and benchmarks can measure the batched path against the
-// old direct behavior.
-func saveBypassingQueue(
-	saver *SqliteSaveEvents,
-	ctx context.Context,
-	events []eventstore.EventWithMapTags,
-	boundary string,
-	expectedPosition *eventstore.Position,
-	query *eventstore.Query,
-) (transactionID string, globalID int64, err error) {
-	pool, ok := saver.pools[boundary]
-	if !ok {
-		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", boundary)
-	}
-	prepared, err := eventstore.PrepareEventsForSave(events)
-	if err != nil {
-		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid event data: %v", err)
-	}
-	inserts := prepared
-
-	consistency, consistencyErr := eventstore.LegacyConsistencyChecks(expectedPosition, query)
-	if consistencyErr != nil {
-		return "", 0, consistencyErr
-	}
-	data, err := eventstore.MarshalConsistency(consistency)
-	if err != nil {
-		return "", 0, err
-	}
-
-	conn, takeErr := pool.Write.Take(ctx)
-	if takeErr != nil {
-		return "", 0, statuscode.Errorf(statuscode.Internal, "take write conn: %v", takeErr)
-	}
-	defer pool.Write.Put(conn)
-
-	endFn, beginErr := sqlitex.ImmediateTransaction(conn)
-	if beginErr != nil {
-		return "", 0, statuscode.Errorf(statuscode.Internal, "begin tx: %v", beginErr)
-	}
-	defer func() {
-		endFn(&err)
-		if err == nil && saver.notifier != nil {
-			saver.notifier.Notify(boundary)
-		}
-	}()
-
-	return saver.saveEventsOnConn(conn, pool, boundary, inserts, consistency, string(data))
 }
 
 // blockWorkerThenQueue occupies the worker with one blocking save, runs
@@ -601,7 +549,7 @@ func TestGroupCommit_PanicDuringFlushReturnsInternalAndWorkerSurvives(t *testing
 		}
 	}
 
-	// Worker must keep serving: a follow-up save (direct path, no hook) works.
+	// Worker must keep serving: a follow-up save (no hook) works.
 	saver.gcTestFlushHook = nil
 	if _, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "After", map[string]any{"who": "after"}, map[string]any{}),
@@ -711,7 +659,7 @@ func TestGroupCommit_ClosedPoolFailsCleanlyWithoutHangingTheWorker(t *testing.T)
 	saver.close()
 }
 
-func TestGroupCommit_ResultsMatchDirectModeForTheSameSequence(t *testing.T) {
+func TestGroupCommit_SequentialResultsAndPositions(t *testing.T) {
 	type saveFn func(ctx context.Context, events []eventstore.EventWithMapTags, boundary string, pos *eventstore.Position, query *eventstore.Query) (string, int64, error)
 
 	runSequence := func(save saveFn) []saveOutcome {
@@ -742,25 +690,21 @@ func TestGroupCommit_ResultsMatchDirectModeForTheSameSequence(t *testing.T) {
 		return out
 	}
 
-	batchedSaver, _, cleanupBatched := newGCTestSaver(t)
-	defer cleanupBatched()
-	directSaver, _, cleanupDirect := newGCTestSaver(t)
-	defer cleanupDirect()
-
-	batched := runSequence(batchedSaver.Save)
-	direct := runSequence(func(ctx context.Context, events []eventstore.EventWithMapTags, boundary string, pos *eventstore.Position, query *eventstore.Query) (string, int64, error) {
-		return saveBypassingQueue(directSaver, ctx, events, boundary, pos, query)
-	})
-
-	for i := range direct {
-		if statuscode.CodeOf(batched[i].err) != statuscode.CodeOf(direct[i].err) {
-			t.Errorf("step %d: batched err %v, direct err %v", i, batched[i].err, direct[i].err)
+	saver, _, cleanup := newGCTestSaver(t)
+	defer cleanup()
+	outcomes := runSequence(saver.Save)
+	for i, expected := range []saveOutcome{{tx: "1", gid: 1}, {tx: "2", gid: 2}, {}, {tx: "4", gid: 4}} {
+		if i == 2 {
+			if statuscode.CodeOf(outcomes[i].err) != statuscode.AlreadyExists {
+				t.Fatalf("stale CCC save: %v", outcomes[i].err)
+			}
+			continue
 		}
-		if batched[i].tx != direct[i].tx || batched[i].gid != direct[i].gid {
-			t.Errorf("step %d: batched (%s,%d), direct (%s,%d)",
-				i, batched[i].tx, batched[i].gid, direct[i].tx, direct[i].gid)
+		if outcomes[i].err != nil || outcomes[i].tx != expected.tx || outcomes[i].gid != expected.gid {
+			t.Errorf("step %d: got %+v, want %+v", i, outcomes[i], expected)
 		}
 	}
+
 }
 
 func TestGroupCommit_ConcurrentBurstAllCommitGapFree(t *testing.T) {

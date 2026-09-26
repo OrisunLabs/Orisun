@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS orisun_es_write (
     consistency TEXT NOT NULL CHECK (json_valid(consistency) AND json_type(consistency) = 'array')
 );
 ALTER TABLE orisun_es_event ADD COLUMN write_id INTEGER REFERENCES orisun_es_write(write_id);
-`}, {run: migrateReservedEventType}, {run: migrateEventID}, {run: migrateEventEnvelope}}
+`}, {run: migrateReservedEventType}, {run: migrateEventID}, {run: migrateEventEnvelope}, {run: migrateScalarTextIndexes}}
 
 var metadataMigrations = []migrationStep{{sql: metadataDDL}}
 

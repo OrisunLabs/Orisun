@@ -29,7 +29,7 @@ func TestCanonicalBatchMatchesCompleteEnvelope(t *testing.T) {
 			require.NoError(t, err)
 			payload, err := json.Marshal([]postgresBatchPayload{{Events: events, Consistency: json.RawMessage(`[]`)}, {Events: events, Consistency: checks}})
 			require.NoError(t, err)
-			rows, err := db.Query(fmt.Sprintf(insertCanonicalEventRequestsWithConsistency, "public"), boundary, "public", payload)
+			rows, err := db.Query(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", payload)
 			require.NoError(t, err)
 			defer rows.Close()
 			count := 0
@@ -51,7 +51,7 @@ func TestCanonicalBatchMatchesCompleteEnvelope(t *testing.T) {
 	}
 }
 
-func TestEnvelopeWritePathsResolveTheirOwnSchema(t *testing.T) {
+func TestEnvelopeWritesResolveTheirOwnSchema(t *testing.T) {
 	container, err := setupTestContainer(t)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = container.container.Terminate(context.Background()) })
@@ -61,7 +61,7 @@ func TestEnvelopeWritePathsResolveTheirOwnSchema(t *testing.T) {
 	// A caller's default public path must not accidentally supply the helper.
 	_, err = db.Exec("DROP FUNCTION public.orisun_event_document(jsonb,jsonb,bigint,bigint,bigint,timestamptz)")
 	require.NoError(t, err)
-	for i, query := range []string{insertEventRequestsWithConsistency, insertUnconditionalEventRequests, insertIndependentEventRequestsWithConsistency, insertCanonicalEventRequestsWithConsistency} {
+	for i := range 2 {
 		boundary := fmt.Sprintf("scoped_%d", i)
 		require.NoError(t, RunDbScripts(db, boundary, "envelope_tenant", false, t.Context()))
 		events, err := json.Marshal(orisun.PreparedEventBatch{{EventId: uuid.NewString(), EventType: "Created", DataJSON: `{"context":"one"}`, MetadataJSON: `{}`}})
@@ -73,12 +73,7 @@ func TestEnvelopeWritePathsResolveTheirOwnSchema(t *testing.T) {
 		}
 		payload, err := json.Marshal([]postgresBatchPayload{{Events: events, Consistency: consistency}})
 		require.NoError(t, err)
-		args := []any{boundary, "envelope_tenant"}
-		if i == 2 {
-			args = append(args, "context")
-		}
-		args = append(args, payload)
-		rows, err := db.Query(fmt.Sprintf(query, "envelope_tenant"), args...)
+		rows, err := db.Query(fmt.Sprintf(insertEventRequestsWithConsistency, "envelope_tenant"), boundary, "envelope_tenant", payload)
 		require.NoError(t, err)
 		require.True(t, rows.Next())
 		var index int

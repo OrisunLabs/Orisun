@@ -1284,6 +1284,11 @@ support from the version string.
 
 ## CreateIndex
 
+On PostgreSQL and SQLite, repeating the same definition is idempotent. An
+existing logical name or physical index with a different definition returns
+`ALREADY_EXISTS`. To change a definition, call `DropIndex` first; a conflicting
+`CreateIndex` never overwrites the existing definition.
+
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
 

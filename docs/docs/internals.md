@@ -165,43 +165,65 @@ cancelled, and executes the remaining requests through one database call and
 one outer transaction. The flush uses its own timeout context so cancellation
 of one caller cannot interrupt unrelated requests in the same batch.
 
-Every PostgreSQL path takes the same transaction-scoped advisory lock keyed by
-the schema and boundary. It is held from the CCC state read and position draw
-through commit. This is the cross-process serialization point: group commit
-reduces transaction and round-trip overhead within one process without
-weakening ordering between processes.
+Every flush uses `insert_event_requests_v2`, including batches of one,
+unconditional writes, and all CCC query shapes. The function takes a
+transaction-scoped advisory lock keyed by schema and boundary, held from the
+CCC state read and position draw through commit. This orders writers across
+processes.
 
-The batcher selects the narrowest path that preserves queue-order semantics:
+The batcher validates request envelopes and consistency-query structure before
+building the SQL batch. Malformed requests receive individual errors and never
+participate in criterion state or position allocation.
 
-| Path | Eligible requests | Execution strategy |
-| --- | --- | --- |
-| Unconditional | Requests with no observations | Assign positions and insert all events set-wise |
-| Independent CCC | One single-tag observation per request, using the same key with unique values, where every emitted event remains inside its request's context | Check all contexts from the locked snapshot and bulk-insert accepted requests |
-| Criterion state | Canonical requests with arbitrary non-empty observations | Deduplicate criteria, resolve their initial positions set-wise, then evaluate requests in queue order while advancing in-memory criterion state |
-| Isolated | Noncanonical or malformed backend-level requests | Validate and append each request inside a request-local PL/pgSQL subtransaction |
+The SQL function deduplicates criteria and groups them once by key shape. It
+resolves each criterion's latest persisted position with literal predicates and
+`ORDER BY ... LIMIT 1`, then evaluates requests in queue order. Accepted requests
+project their final event documents onto each distinct criterion key shape and
+look up the matching criterion ID directly. This avoids rebuilding a SQL join
+against every criterion for each accepted request. Events advance criterion
+state in order, so later requests observe earlier accepted writes, including
+queries on store-owned envelope fields. A CCC conflict rejects only that request.
+Accepted events and their write contexts are bulk-inserted together.
 
-Later requests in a flush observe earlier accepted writes in that flush.
-A CCC conflict or request-local validation failure rejects only that request;
-it does not poison later requests. A failure of the outer transaction fails all
-requests that did not already have an isolated result.
+An error that aborts the PostgreSQL statement or transaction rolls back all
+writes in that SQL batch. Examples include a database constraint violation, a
+failed numeric cast in an index expression, statement cancellation due to a
+timeout, a deadlock, or an unexpected exception from a database function. These
+errors differ from a CCC conflict, which rejects only the affected request with
+`ALREADY_EXISTS`, and invalid requests caught by Go validation, which are excluded
+before the SQL batch executes.
 
-The single-request checked primitive is `insert_events_v2`. Group flushes use
-specialized functions for the three canonical shapes and
-`insert_event_requests_v2` as the isolated fallback. The Go selector is
-conservative: any shape it cannot prove safe stays on that fallback.
+A client-side error does not always prove rollback. If the connection drops
+while PostgreSQL commits, the client may not know whether the batch committed.
+
+Group-commit settings control batching and waiting time; they do not select a
+different persistence implementation.
 
 ### SQLite group commit
 
 SQLite uses the same queue-per-boundary shape, but executes directly on the
 boundary's single write connection. One opportunistically drained flush owns a
-`BEGIN IMMEDIATE` transaction. It bulk-inserts unconditional flushes and
-independent single-tag contexts. Other CCC shapes run each request inside a
-savepoint:
+`BEGIN IMMEDIATE` transaction. Every request, including unconditional writes
+and batches of one, uses the same queue-ordered check and insert implementation
+inside a savepoint:
 
 - an accepted request remains visible to later CCC checks in queue order;
-- a CCC or validation failure rolls back only that request, including its
-  sequence update; and
-- a failure to begin or commit the outer transaction fails the whole flush.
+- a CCC or validation failure rolls back only that request and consumes no
+  positions; and
+- a failure to begin, update the sequence, or commit the outer transaction
+  fails the whole flush.
+
+Each CCC observation is an OR of AND criteria. Redundant criteria are removed
+(`A OR (A AND B)` is equivalent to `A`). Each remaining criterion uses its own
+literal, ordered `LIMIT 1` lookup, allowing a matching partial or expression
+index to find the latest event without sorting the combined matching history.
+The maximum full `(transaction_id, global_id)` position across those lookups is
+compared with the observation's expected position.
+
+The transaction reads the sequence once and advances its local cursor only
+after a request's savepoint succeeds. It persists the final sequence once,
+atomically with all accepted writes. Each event's stored envelope is constructed
+once, after its positions are assigned, preserving application JSON numbers.
 
 The event log and metadata use separate databases for each boundary. SQLite is
 a single-node backend, and startup rejects configurations that enable NATS

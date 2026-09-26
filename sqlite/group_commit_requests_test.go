@@ -26,7 +26,7 @@ func gcReadCriterion(tags ...eventstore.ReadTag) eventstore.ReadCriterion {
 	return eventstore.ReadCriterion{Tags: tags}
 }
 
-func TestGroupCommitUnconditionalSetPathPreservesRequestPositions(t *testing.T) {
+func TestGroupCommitUnconditionalPreservesRequestPositions(t *testing.T) {
 	saver, bp, cleanup := newGCTestSaver(t)
 	defer cleanup()
 
@@ -54,21 +54,18 @@ func TestGroupCommitUnconditionalSetPathPreservesRequestPositions(t *testing.T) 
 
 	first, second := <-requests[0].result, <-requests[1].result
 	if first.err != nil || second.err != nil {
-		t.Fatalf("set batch failed: first=%v second=%v", first.err, second.err)
+		t.Fatalf("batch failed: first=%v second=%v", first.err, second.err)
 	}
 	if first.transactionID != "2" || first.globalID != 2 || second.transactionID != "5" || second.globalID != 5 {
 		t.Fatalf("unexpected request positions: first=(%s,%d) second=(%s,%d)",
 			first.transactionID, first.globalID, second.transactionID, second.globalID)
-	}
-	if got := saver.gcUnconditionalFlushes.Load(); got != 1 {
-		t.Fatalf("unconditional flushes = %d, want 1", got)
 	}
 	if next := readSeqNextID(t, bp); next != 6 {
 		t.Fatalf("next_id = %d, want 6", next)
 	}
 }
 
-func TestGroupCommitSetPathsFallBackForInvalidPreparedData(t *testing.T) {
+func TestGroupCommitRejectsInvalidPreparedData(t *testing.T) {
 	saver, bp, cleanup := newGCTestSaver(t)
 	defer cleanup()
 
@@ -96,14 +93,11 @@ func TestGroupCommitSetPathsFallBackForInvalidPreparedData(t *testing.T) {
 		t.Fatalf("invalid request: expected Internal, got %v", invalid.err)
 	}
 	if valid.err != nil {
-		t.Fatalf("valid request did not survive isolated fallback: %v", valid.err)
-	}
-	if saver.gcUnconditionalFlushes.Load() != 0 || saver.gcIndependentFlushes.Load() != 0 {
-		t.Fatal("invalid prepared data must retain request-local isolation")
+		t.Fatalf("valid request did not survive request validation: %v", valid.err)
 	}
 }
 
-func TestGroupCommitIndependentCCCSetPath(t *testing.T) {
+func TestGroupCommitIndependentCCC(t *testing.T) {
 	saver, bp, cleanup := newGCTestSaver(t)
 	defer cleanup()
 
@@ -135,7 +129,7 @@ func TestGroupCommitIndependentCCCSetPath(t *testing.T) {
 		request("stale", eventstore.NotExistsPosition(), 1),
 	}
 	// Make the last distinct context stale without causing overlap among the
-	// requests selected for the independent path.
+	// other requests in the batch.
 	if _, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "StaleSeed", map[string]any{"stream_id": "stale"}, map[string]any{}),
 	}, gcBoundary, nil, nil); err != nil {
@@ -151,75 +145,8 @@ func TestGroupCommitIndependentCCCSetPath(t *testing.T) {
 	if statuscode.CodeOf(third.err) != statuscode.AlreadyExists {
 		t.Fatalf("stale independent context: %v", third.err)
 	}
-	if got := saver.gcIndependentFlushes.Load(); got != 1 {
-		t.Fatalf("independent flushes = %d, want 1", got)
-	}
 	if count := countEventsMatching(t, bp, map[string]any{"stream_id": "stale"}); count != 1 {
 		t.Fatalf("stale request wrote an event, count=%d", count)
-	}
-}
-
-func TestIndependentCCCSelectorIsConservative(t *testing.T) {
-	_, bp, cleanup := newGCTestSaver(t)
-	defer cleanup()
-
-	request := func(key, queryValue, eventValue string) *sqliteSaveRequest {
-		return &sqliteSaveRequest{
-			inserts: preparedGCEvents(t,
-				mustEvent(t, "Event", map[string]any{key: eventValue}, map[string]any{}),
-			),
-			consistency: gcConsistency(eventstore.NotExistsPosition(), gcReadCriterion(
-				eventstore.ReadTag{Key: key, Value: queryValue},
-			)),
-		}
-	}
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
-		request("stream_id", "a", "a"),
-		request("stream_id", "b", "b"),
-	}, bp, gcBoundary); !ok {
-		t.Fatal("distinct matching text contexts should qualify")
-	}
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
-		request("stream_id", "same", "same"),
-		request("stream_id", "same", "same"),
-	}, bp, gcBoundary); ok {
-		t.Fatal("duplicate contexts can invalidate one another")
-	}
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
-		request("stream_id", "a", "b"),
-		request("stream_id", "b", "b"),
-	}, bp, gcBoundary); ok {
-		t.Fatal("an event outside its request context can affect another request")
-	}
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
-		request("stream_id", "a", "a"),
-		request("account_id", "b", "b"),
-	}, bp, gcBoundary); ok {
-		t.Fatal("different context keys must use the isolated path")
-	}
-
-	multiple := request("stream_id", "a", "a")
-	multiple.consistency = append(multiple.consistency, multiple.consistency[0])
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{multiple}, bp, gcBoundary); ok {
-		t.Fatal("multiple observations must use the isolated path")
-	}
-	complex := request("stream_id", "a", "a")
-	complex.consistency[0].Criteria[0].Tags = append(
-		complex.consistency[0].Criteria[0].Tags,
-		eventstore.ReadTag{Key: "kind", Value: "credit"},
-	)
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{complex}, bp, gcBoundary); ok {
-		t.Fatal("multi-tag criteria must use the isolated path")
-	}
-
-	bp.indexes.replaceBoundaryFields(gcBoundary, map[string]sqliteFieldInfo{
-		"stream_id": {valueType: "numeric", declaredField: true},
-	})
-	if _, ok := independentCCCContexts([]*sqliteSaveRequest{
-		request("stream_id", "42", "42"),
-		request("stream_id", "42.0", "42.0"),
-	}, bp, gcBoundary); ok {
-		t.Fatal("distinct strings can alias under numeric equality")
 	}
 }
 
