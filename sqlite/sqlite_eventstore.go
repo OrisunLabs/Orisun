@@ -213,7 +213,6 @@ func readCriteriaAsList(criteria []eventstore.ReadCriterion) []map[string]any {
 // ---------------------------------------------------------------------------
 
 type SqliteSaveEvents struct {
-	pools    map[string]*BoundaryPools
 	registry *BoundaryRegistry
 	logger   logging.Logger
 	notifier *SqliteEventNotifier
@@ -234,14 +233,11 @@ type SqliteSaveEvents struct {
 	workerWG  sync.WaitGroup
 
 	// Flush accounting, exposed for tests and debug logging.
-	gcMultiFlushes         atomic.Int64
-	gcSingleFlushes        atomic.Int64
-	gcUnconditionalFlushes atomic.Int64
-	gcIndependentFlushes   atomic.Int64
+	gcMultiFlushes  atomic.Int64
+	gcSingleFlushes atomic.Int64
 	// gcTestFlushHook runs inside a flush's recover scope after the write
 	// connection is taken, with the live batch size. Test-only; nil in production.
-	gcTestFlushHook   func(batchSize int)
-	gcDisableSetPaths bool
+	gcTestFlushHook func(batchSize int)
 }
 
 const (
@@ -276,7 +272,6 @@ func newSqliteSaveEventsWithRegistry(
 		return nil, err
 	}
 	s := &SqliteSaveEvents{
-		pools:    registry.pools,
 		registry: registry,
 		logger:   logger,
 
@@ -431,25 +426,6 @@ func allocateGlobalIDs(conn *sqlite.Conn, count int) (firstID, lastID int64, err
 // SQLite's bound-parameter limit. Callers hold an open transaction, so the full batch
 // commits atomically regardless of chunking.
 func insertEventBatch(conn *sqlite.Conn, events eventstore.PreparedEventBatch, firstID, transactionID int64) error {
-	positioned := make([]positionedPreparedEvent, len(events))
-	for i, event := range events {
-		positioned[i] = positionedPreparedEvent{
-			event: event, globalID: firstID + int64(i), transactionID: transactionID,
-		}
-	}
-	return insertPositionedEventBatch(conn, positioned)
-}
-
-type positionedPreparedEvent struct {
-	event         eventstore.PreparedEvent
-	globalID      int64
-	transactionID int64
-}
-
-// insertPositionedEventBatch inserts events from multiple requests while
-// retaining each request's transaction position. The caller has already
-// allocated one contiguous global-ID range for the whole flush.
-func insertPositionedEventBatch(conn *sqlite.Conn, events []positionedPreparedEvent) error {
 	created := time.Now().UTC()
 	for start := 0; start < len(events); start += sqliteMaxEventsPerInsert {
 		end := min(start+sqliteMaxEventsPerInsert, len(events))
@@ -459,12 +435,12 @@ func insertPositionedEventBatch(conn *sqlite.Conn, events []positionedPreparedEv
 		sb.Grow(64 + len(chunk)*5)
 		sb.WriteString("INSERT INTO orisun_es_event (data) VALUES ")
 		insertArgs := make([]any, 0, len(chunk)*sqliteInsertParamsPerEvent)
-		for i, positioned := range chunk {
+		for i, event := range chunk {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
 			sb.WriteString("(?)")
-			data, err := positionedDocument(positioned.event, positioned.transactionID, positioned.globalID, created)
+			data, err := positionedDocument(event, transactionID, firstID+int64(start+i), created)
 			if err != nil {
 				return err
 			}

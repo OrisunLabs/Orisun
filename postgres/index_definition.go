@@ -53,15 +53,8 @@ func (db *PostgresAdminDB) verifyBoundaryIndexDefinition(ctx context.Context, sc
 	if !sameTable {
 		return false, statuscode.Errorf(statuscode.AlreadyExists, "index %q belongs to a different table", name)
 	}
-	if _, err = tx.ExecContext(ctx, `CREATE TEMP TABLE orisun_index_definition (data JSONB, transaction_id BIGINT, global_id BIGINT) ON COMMIT DROP`); err != nil {
-		return false, err
-	}
-	if _, err = tx.ExecContext(ctx, "CREATE INDEX orisun_index_definition_idx ON orisun_index_definition USING btree ("+expressions+")"+predicate); err != nil {
-		return false, err
-	}
-	var expected string
-	var ignored bool
-	if err = tx.QueryRowContext(ctx, postgresIndexDefinitionSQL, "pg_temp.orisun_index_definition_idx", "pg_temp.orisun_index_definition").Scan(&ignored, &ignored, &expected); err != nil {
+	expected, err := expectedPostgresIndexDefinition(ctx, tx, expressions, predicate)
+	if err != nil {
 		return false, err
 	}
 	if actual != expected {
@@ -103,4 +96,19 @@ func (db *PostgresAdminDB) checkBoundaryIndexMetadata(ctx context.Context, bound
 		return nil, statuscode.Errorf(statuscode.AlreadyExists, "index %q already exists with a different definition; drop it before replacing it", name)
 	}
 	return existing, nil
+}
+
+// Use PostgreSQL's own deparser for both online ownership checks and migrations.
+func expectedPostgresIndexDefinition(ctx context.Context, tx *sql.Tx, expressions, predicate string) (string, error) {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE orisun_index_definition (data JSONB, transaction_id BIGINT, global_id BIGINT) ON COMMIT DROP`); err != nil {
+		return "", err
+	}
+	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS pg_temp.orisun_index_definition")
+	if _, err := tx.ExecContext(ctx, "CREATE INDEX orisun_index_definition_idx ON orisun_index_definition USING btree ("+expressions+")"+predicate); err != nil {
+		return "", err
+	}
+	var expected string
+	var ignored bool
+	err := tx.QueryRowContext(ctx, postgresIndexDefinitionSQL, "pg_temp.orisun_index_definition_idx", "pg_temp.orisun_index_definition").Scan(&ignored, &ignored, &expected)
+	return expected, err
 }

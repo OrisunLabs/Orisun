@@ -23,10 +23,10 @@ func migrateBoundaryStorage(ctx context.Context, tx *sql.Tx, schema, boundary st
 	if err := tx.QueryRowContext(ctx, "SELECT version FROM "+versions+" WHERE id = 1 FOR UPDATE").Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 {
-		return fmt.Errorf("boundary schema version %d is newer than supported version 3", version)
+	if version > 4 {
+		return fmt.Errorf("boundary schema version %d is newer than supported version 4", version)
 	}
-	if version == 3 {
+	if version == 4 {
 		return nil
 	}
 
@@ -40,9 +40,14 @@ func migrateBoundaryStorage(ctx context.Context, tx *sql.Tx, schema, boundary st
 			return err
 		}
 	}
-	if err := migrateEventEnvelope(ctx, tx, schema, boundary); err != nil {
+	if version < 3 {
+		if err := migrateEventEnvelope(ctx, tx, schema, boundary); err != nil {
+			return err
+		}
+	}
+	if err := migrateOrderedContextIndexes(ctx, tx, schema, boundary); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, "UPDATE "+versions+" SET version = 3 WHERE id = 1")
+	_, err := tx.ExecContext(ctx, "UPDATE "+versions+" SET version = 4 WHERE id = 1")
 	return err
 }

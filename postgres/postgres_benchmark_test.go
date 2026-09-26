@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -534,8 +535,8 @@ func BenchmarkPostgres_GroupCommitCCCMultiEvent10000(b *testing.B) {
 	}, false, false, 2)
 }
 
-// BenchmarkPostgres_GroupCommitGeneralCCC10000 forces the general criterion
-// state resolver with mixed keys, two-tag AND, and two-criterion OR queries.
+// BenchmarkPostgres_GroupCommitGeneralCCC10000 exercises mixed keys,
+// two-tag AND, and two-criterion OR queries through group commit.
 func BenchmarkPostgres_GroupCommitGeneralCCC10000(b *testing.B) {
 	benchmarkPostgresGroupCommitCCC10000(b, config.PostgresGroupCommitConfig{}, true, true, 1)
 }
@@ -782,4 +783,62 @@ func benchmarkPostgresGroupCommitCCC10000(
 		saveEvents.close()
 		teardown()
 	}
+}
+
+// BenchmarkPostgres_GroupCommitIndexedHistory isolates repeated SQL batches
+// against existing contexts, using an event-type partial index and full positions.
+func BenchmarkPostgres_GroupCommitIndexedHistory(b *testing.B) {
+	const contexts, history = 128, 64
+	db, teardown := setupBenchmarkDB(b)
+	defer teardown()
+	logger, err := logging.ZapLogger("error")
+	require.NoError(b, err)
+	saver := NewPostgresSaveEvents(context.Background(), db, logger, map[string]config.BoundaryToPostgresSchemaMapping{
+		"bench_boundary": {Boundary: "bench_boundary", Schema: "public"},
+	})
+	defer saver.close()
+	_, err = db.Exec(`CREATE INDEX history_guard ON public.bench_boundary_orisun_es_event ((data->>'context'), transaction_id DESC, global_id DESC) WHERE data->>'__eventType' = 'HistoryGuard'`)
+	require.NoError(b, err)
+	request := func(i, count int) *postgresSaveRequest {
+		events := make([]orisun.EventWithMapTags, count)
+		for j := range events {
+			events[j] = orisun.EventWithMapTags{EventId: uuid.NewString(), EventType: "HistoryGuard", Data: map[string]any{"context": fmt.Sprint(i)}}
+		}
+		prepared, err := orisun.PrepareEventsForSave(events)
+		require.NoError(b, err)
+		return &postgresSaveRequest{ctx: context.Background(), events: prepared}
+	}
+	seeds := make([]*postgresSaveRequest, contexts)
+	requests := make([]*postgresSaveRequest, contexts)
+	for i := range seeds {
+		seeds[i] = request(i, history)
+		requests[i] = request(i, 1)
+	}
+	positions, err := saver.executeBatch(context.Background(), "bench_boundary", seeds)
+	require.NoError(b, err)
+	for i, position := range positions {
+		require.NoError(b, position.err)
+		commit, err := strconv.ParseInt(position.transactionID, 10, 64)
+		require.NoError(b, err)
+		requests[i].consistency = []orisun.ConsistencyCheck{{
+			Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{{Key: "context", Value: fmt.Sprint(i)}, {Key: "__eventType", Value: "HistoryGuard"}}}},
+			Position: orisun.Position{CommitPosition: commit, PreparePosition: position.globalID},
+		}}
+	}
+	_, err = db.Exec(`ANALYZE public.bench_boundary_orisun_es_event`)
+	require.NoError(b, err)
+	b.ResetTimer()
+	for range b.N {
+		outcomes, err := saver.executeBatch(context.Background(), "bench_boundary", requests)
+		require.NoError(b, err)
+		require.Len(b, outcomes, contexts)
+		for i, outcome := range outcomes {
+			require.NoError(b, outcome.err)
+			commit, err := strconv.ParseInt(outcome.transactionID, 10, 64)
+			require.NoError(b, err)
+			requests[i].consistency[0].Position = orisun.Position{CommitPosition: commit, PreparePosition: outcome.globalID}
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(contexts*b.N)/b.Elapsed().Seconds(), "saves/sec")
 }

@@ -32,16 +32,21 @@ grpcurl -H "$AUTH" \
 
 ### High-throughput CCC
 
-PostgreSQL group commit resolves canonical CCC event batches as criterion
+All PostgreSQL saves use one group-commit implementation, including batches of
+one and unconditional writes. It resolves CCC event batches as criterion
 state rather than issuing one database query per request. It:
 
 - deduplicates the batch's AND criteria
-- groups criteria by their indexed key shape
-- reads the current position of each criterion set-wise
-- computes which incoming events match every criterion
+- reads each distinct criterion's latest persisted position using literal predicates and `ORDER BY ... LIMIT 1` branches in one statement
+- groups criteria by key shape and matches final event documents through direct criterion-ID lookups
 - evaluates each observation's OR query in request order, updating criterion state after
   every accepted request
 - bulk-inserts accepted events once
+
+Literal predicates let PostgreSQL use event-type partial indexes during write-time
+CCC checks, just as it does during context reads. Historical matches are no longer
+joined and ranked for each criterion shape. Applications still own their indexes;
+unindexed criteria can require scans.
 
 This supports duplicate contexts, different keys, multi-tag AND criteria,
 multi-criterion OR queries, multiple query-level observations, and query-less
@@ -55,11 +60,10 @@ points to the highest event in that save that matched the criterion. Later
 queued saves therefore observe the same `(transaction_id, global_id)` position
 that they would observe after a separately committed multi-event save.
 
-SQLite bulk-inserts unconditional flushes and flushes containing independent
-single-tag contexts. Other CCC shapes use queue-ordered checks with
-request-local savepoints inside the shared transaction. This bounded split
-avoids a cross-product between incoming events and distinct criteria while
-retaining the transaction and fsync savings of group commit.
+SQLite uses queue-ordered checks with request-local savepoints for every save
+inside the shared group-commit transaction. Each request inserts its events in
+chunks while preserving atomic rollback of its events, write context, and
+positions. This retains the transaction and fsync savings of group commit.
 
 FoundationDB needs a ready covering index for each criterion that does not
 select a native range through `__commitPosition` or `__writeId`. A V2 request with several observations can therefore depend on
@@ -74,13 +78,14 @@ boundary event table. FoundationDB rejects a criteria read or CCC observation wi
 `FAILED_PRECONDITION` if it has neither a native position range nor a ready
 covering secondary index.
 
-The specialized path for independent single-tag contexts also bulk-inserts
-multi-event saves. For burst-oriented workloads, start performance testing with
+PostgreSQL group commit bulk-inserts accepted multi-event saves. For
+burst-oriented workloads, start performance testing with
 `ORISUN_PG_GC_MAX_BATCH_REQUESTS=512`,
 `ORISUN_PG_GC_MAX_BATCH_EVENTS=1024`, and a small coalescing window such as
 `ORISUN_PG_GC_MAX_DELAY=1ms`. The delay trades up to one millisecond of
 low-volume latency for fuller batches, so measure it under the target command
-mix. Request-local validation failures use the isolated ordered path.
+mix. PostgreSQL rejects malformed requests before SQL batching; SQLite uses
+request-local validation and savepoints.
 
 ## Composite Index
 
@@ -177,11 +182,20 @@ PostgreSQL uses concurrent JSONB expression-index builds so boundary writes can
 continue during creation. Orisun verifies `pg_index.indisvalid` before reporting
 an index as `READY`. If a concurrent build fails or a retry finds an invalid
 physical index, Orisun drops that invalid index and leaves the logical
-definition `BUILDING` so the operation can be retried cleanly. SQLite uses JSON
-expression indexes and automatically appends descending event-position columns
-to API-managed indexes. An equality lookup on the full declared `TEXT` field shape can
+definition `BUILDING` so the operation can be retried cleanly. PostgreSQL and
+SQLite append `transaction_id DESC, global_id DESC` after the declared fields
+in API-managed indexes. SQLite uses JSON expression indexes. An equality lookup
+on the full declared `TEXT` field shape can
 therefore find its latest matching event without sorting the context's complete
 history.
+
+The PostgreSQL boundary schema version 4 migration rebuilds older API-managed
+indexes with the position columns. It verifies each physical definition against
+its metadata, preserves partial predicates and field types, and leaves unmanaged
+indexes untouched. Rebuilding runs transactionally during boundary initialization
+and holds an exclusive table lock; allow maintenance time and disk space for
+large indexes. A conflicting physical definition aborts the migration and rolls
+back earlier rebuilds. Subsequent startups skip the completed migration.
 
 On the first SQLite startup after upgrading from an older physical index shape,
 Orisun atomically rebuilds API-managed indexes from their stored definitions.

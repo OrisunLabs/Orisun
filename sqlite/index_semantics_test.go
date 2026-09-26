@@ -147,40 +147,28 @@ func TestScalarTextIndexMigrationRollsBack(t *testing.T) {
 }
 
 func TestTypedIndexPreservesDistinctContextsInGroupCommit(t *testing.T) {
-	for _, isolated := range []bool{false, true} {
-		name := "independent"
-		if isolated {
-			name = "isolated"
-		}
-		t.Run(name, func(t *testing.T) {
-			saver, pool, cleanup := newGCTestSaver(t)
-			defer cleanup()
-			saver.gcDisableSetPaths = isolated
-			logger, err := logging.ZapLogger("error")
-			require.NoError(t, err)
-			admin := NewSqliteAdminDB(map[string]*BoundaryPools{"test": pool}, "test", logger)
-			require.NoError(t, admin.CreateBoundaryIndex(t.Context(), "test", "value", []eventstore.BoundaryIndexField{{JsonKey: "value", ValueType: "numeric"}}, nil, ""))
-			var requests []*sqliteSaveRequest
-			for _, value := range []string{"42", "042"} {
-				requests = append(requests, &sqliteSaveRequest{
-					ctx:         t.Context(),
-					inserts:     preparedGCEvents(t, mustEvent(t, "Created", map[string]any{"value": value}, nil)),
-					consistency: gcConsistency(eventstore.NotExistsPosition(), gcReadCriterion(eventstore.ReadTag{Key: "value", Value: value})),
-					result:      make(chan sqliteSaveResult, 1),
-				})
-			}
-			prepareGCWriteContexts(t, requests)
-			saver.runFlush("test", pool, requests)
-			for i, req := range requests {
-				result := <-req.result
-				require.NoError(t, result.err)
-				require.EqualValues(t, i+1, result.globalID)
-			}
-			if !isolated {
-				require.EqualValues(t, 1, saver.gcIndependentFlushes.Load())
-			}
-			require.Equal(t, 1, countEventsMatching(t, pool, map[string]any{"value": "42"}))
-			require.Equal(t, 1, countEventsMatching(t, pool, map[string]any{"value": "042"}))
+	saver, pool, cleanup := newGCTestSaver(t)
+	defer cleanup()
+	logger, err := logging.ZapLogger("error")
+	require.NoError(t, err)
+	admin := NewSqliteAdminDB(map[string]*BoundaryPools{"test": pool}, "test", logger)
+	require.NoError(t, admin.CreateBoundaryIndex(t.Context(), "test", "value", []eventstore.BoundaryIndexField{{JsonKey: "value", ValueType: "numeric"}}, nil, ""))
+	var requests []*sqliteSaveRequest
+	for _, value := range []string{"42", "042"} {
+		requests = append(requests, &sqliteSaveRequest{
+			ctx:         t.Context(),
+			inserts:     preparedGCEvents(t, mustEvent(t, "Created", map[string]any{"value": value}, nil)),
+			consistency: gcConsistency(eventstore.NotExistsPosition(), gcReadCriterion(eventstore.ReadTag{Key: "value", Value: value})),
+			result:      make(chan sqliteSaveResult, 1),
 		})
 	}
+	prepareGCWriteContexts(t, requests)
+	saver.runFlush("test", pool, requests)
+	for i, req := range requests {
+		result := <-req.result
+		require.NoError(t, result.err)
+		require.EqualValues(t, i+1, result.globalID)
+	}
+	require.Equal(t, 1, countEventsMatching(t, pool, map[string]any{"value": "42"}))
+	require.Equal(t, 1, countEventsMatching(t, pool, map[string]any{"value": "042"}))
 }

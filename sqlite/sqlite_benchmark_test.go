@@ -90,34 +90,16 @@ func (benchNoopPublishingTracker) InsertLastPublishedEvent(context.Context, stri
 	return nil
 }
 
-// benchSaveFn picks the write path for a benchmark mode: "group" is the real
-// Save API (always batched); "direct" bypasses the queue via the package
-// helper to measure the pre-group-commit per-request transaction baseline.
-func benchSaveFn(saver *SqliteSaveEvents, mode string) func(context.Context, []orisun.EventWithMapTags, string, *orisun.Position, *orisun.Query) (string, int64, error) {
-	if mode == "direct" {
-		return func(ctx context.Context, events []orisun.EventWithMapTags, boundary string, pos *orisun.Position, query *orisun.Query) (string, int64, error) {
-			return saveBypassingQueue(saver, ctx, events, boundary, pos, query)
-		}
-	}
-	if mode == "group-isolated" {
-		// Test/benchmark-only control that preserves the exact request while
-		// isolating set-path gains from transaction/fsync amortization.
-		saver.gcDisableSetPaths = true
-		return saver.Save
-	}
-	return saver.Save
-}
-
-// BenchmarkSqlite_GroupCommitVsDirect pits the batched write path against the
-// per-request transaction path under FULL synchronous — the configuration
-// group commit is meant to pay for. Independent contexts (no CCC).
-func BenchmarkSqlite_GroupCommitVsDirect(b *testing.B) {
-	for _, mode := range []string{"group", "group-isolated", "direct"} {
+// BenchmarkSqlite_GroupCommitBatchSize compares flush sizes using the same
+// save implementation under FULL synchronous durability.
+func BenchmarkSqlite_GroupCommitBatchSize(b *testing.B) {
+	for _, batchSize := range []int{1, sqliteGroupCommitMaxBatchRequests} {
 		for _, conc := range []int{1, 16, 100} {
-			b.Run(fmt.Sprintf("mode=%s/workers=%d", mode, conc), func(b *testing.B) {
+			b.Run(fmt.Sprintf("batch=%d/workers=%d", batchSize, conc), func(b *testing.B) {
 				saver, _, _, teardown := setupBenchmarkPools(b)
 				defer teardown()
-				save := benchSaveFn(saver, mode)
+				saver.gcMaxBatchRequests = batchSize
+				save := saver.Save
 
 				ctx := context.Background()
 				b.ResetTimer()
@@ -209,29 +191,24 @@ func BenchmarkSqlite_GroupCommitDelay(b *testing.B) {
 	}
 }
 
-// BenchmarkSqlite_GroupCommitVsDirect_CCC is the same comparison on the hot
-// CCC path: every save carries a per-stream criterion and expected position.
-// "group" exercises independent-ccc; "group-isolated" forces the savepoint
-// loop with the exact same request.
-//
-// Per-save cost grows with table size (the CCC check scans the criterion's
-// index slice), so cross-mode numbers are only comparable at equal iteration
-// counts — run with a fixed -benchtime=Nx, not a duration.
-func BenchmarkSqlite_GroupCommitVsDirect_CCC(b *testing.B) {
+// BenchmarkSqlite_GroupCommitBatchSize_CCC compares flush sizes for CCC saves.
+// Use a fixed -benchtime=Nx for comparable table sizes across configurations.
+func BenchmarkSqlite_GroupCommitBatchSize_CCC(b *testing.B) {
 	benchmarkSqliteGroupCommitCCC(b, false)
 }
 
-func BenchmarkSqlite_GroupCommitVsDirect_GeneralCCC(b *testing.B) {
+func BenchmarkSqlite_GroupCommitBatchSize_GeneralCCC(b *testing.B) {
 	benchmarkSqliteGroupCommitCCC(b, true)
 }
 
 func benchmarkSqliteGroupCommitCCC(b *testing.B, general bool) {
-	for _, mode := range []string{"group", "group-isolated", "direct"} {
+	for _, batchSize := range []int{1, sqliteGroupCommitMaxBatchRequests} {
 		for _, conc := range []int{16, 32, 64, 100} {
-			b.Run(fmt.Sprintf("mode=%s/workers=%d", mode, conc), func(b *testing.B) {
+			b.Run(fmt.Sprintf("batch=%d/workers=%d", batchSize, conc), func(b *testing.B) {
 				saver, _, admin, teardown := setupBenchmarkPools(b)
 				defer teardown()
-				save := benchSaveFn(saver, mode)
+				saver.gcMaxBatchRequests = batchSize
+				save := saver.Save
 
 				ctx := context.Background()
 				streamIds, positions := prepopulateStreams(b, ctx, saver, conc, 5)

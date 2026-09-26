@@ -79,12 +79,12 @@ func TestWriteContextRPCAndRestart(t *testing.T) {
 	require.Equal(t, "value", after.Consistency[0].Query.Criteria[0].Tags[0].Value)
 }
 
-func TestWriteContextGroupCommitPaths(t *testing.T) {
-	for _, path := range []sqliteFlushPath{sqliteFlushUnconditional, sqliteFlushIndependentCCC, sqliteFlushIsolated} {
-		t.Run(path.String(), func(t *testing.T) {
+func TestWriteContextGroupCommit(t *testing.T) {
+	for _, mode := range []string{"unconditional", "checked"} {
+		t.Run(mode, func(t *testing.T) {
 			saver, pool, cleanup := newGCTestSaver(t)
 			defer cleanup()
-			requests := make([]*sqliteSaveRequest, 2*sqliteMaxWriteContextsPerInsert+3)
+			requests := make([]*sqliteSaveRequest, 128)
 			for i := range requests {
 				value := fmt.Sprint(i)
 				events, err := orisun.PrepareEventsForSave([]orisun.EventWithMapTags{
@@ -93,7 +93,7 @@ func TestWriteContextGroupCommitPaths(t *testing.T) {
 				})
 				require.NoError(t, err)
 				req := &sqliteSaveRequest{ctx: t.Context(), inserts: events, result: make(chan sqliteSaveResult, 1)}
-				if path != sqliteFlushUnconditional {
+				if mode != "unconditional" {
 					req.consistency = []orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{{Key: "context", Value: value}}}}, Position: orisun.NotExistsPosition()}}
 					if i == 1 {
 						req.consistency[0].Position = orisun.Position{CommitPosition: 123, PreparePosition: 123}
@@ -104,19 +104,13 @@ func TestWriteContextGroupCommitPaths(t *testing.T) {
 				req.consistencyJSON = string(data)
 				requests[i] = req
 			}
-			var predicates []string
-			if path == sqliteFlushIndependentCCC {
-				var ok bool
-				predicates, ok = independentCCCContexts(requests)
-				require.True(t, ok)
-			}
 			conn, err := pool.Write.Take(t.Context())
 			require.NoError(t, err)
-			accepted, err := saver.flushTx(conn, pool, "test", requests, path, predicates)
+			accepted, err := saver.flushTx(conn, requests)
 			pool.Write.Put(conn)
 			require.NoError(t, err)
 			want := len(requests) - 1
-			if path == sqliteFlushUnconditional {
+			if mode == "unconditional" {
 				want = len(requests)
 			}
 			require.Len(t, accepted, want)
@@ -162,7 +156,7 @@ func TestWriteContextRollsBackOnEventInsertFailure(t *testing.T) {
 	}
 	conn, err := pool.Write.Take(t.Context())
 	require.NoError(t, err)
-	accepted, err := saver.flushTx(conn, pool, "test", requests, sqliteFlushIsolated, nil)
+	accepted, err := saver.flushTx(conn, requests)
 	pool.Write.Put(conn)
 	require.NoError(t, err)
 	require.Len(t, accepted, 1)
@@ -176,20 +170,16 @@ func TestWriteContextRollsBackOnEventInsertFailure(t *testing.T) {
 	}}))
 }
 
-func TestWriteContextBatchRollbackAcrossChunks(t *testing.T) {
+func TestWriteContextRequestRollbackAcrossEventChunks(t *testing.T) {
 	for _, failAt := range []string{"context", "event"} {
 		t.Run(failAt, func(t *testing.T) {
 			saver, pool, cleanup := newGCTestSaver(t)
 			defer cleanup()
-			requests := make([]*sqliteSaveRequest, sqliteMaxWriteContextsPerInsert+1)
-			for i := range requests {
-				requests[i] = &sqliteSaveRequest{
-					ctx:             t.Context(),
-					inserts:         orisun.PreparedEventBatch{{EventId: fmt.Sprint(i), DataJSON: "{}", MetadataJSON: "{}"}},
-					consistencyJSON: "[]",
-					result:          make(chan sqliteSaveResult, 1),
-				}
+			events := make(orisun.PreparedEventBatch, sqliteMaxEventsPerInsert+1)
+			for i := range events {
+				events[i] = orisun.PreparedEvent{EventId: fmt.Sprint(i), EventType: "Created", DataJSON: "{}", MetadataJSON: "{}"}
 			}
+			request := &sqliteSaveRequest{ctx: t.Context(), inserts: events, consistencyJSON: "[]", result: make(chan sqliteSaveResult, 1)}
 			conn, err := pool.Write.Take(t.Context())
 			require.NoError(t, err)
 			defer pool.Write.Put(conn)
@@ -197,12 +187,14 @@ func TestWriteContextBatchRollbackAcrossChunks(t *testing.T) {
 			if failAt == "event" {
 				table, column = "orisun_es_event", "global_id"
 			}
-			// Abort after at least one complete context chunk was inserted.
+			// Event failure occurs after a complete event chunk was inserted.
 			require.NoError(t, sqlitex.Execute(conn, fmt.Sprintf(
 				"CREATE TRIGGER reject_last BEFORE INSERT ON %s WHEN NEW.%s = %d BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
-				table, column, len(requests)), nil))
-			_, err = saver.flushTx(conn, pool, "test", requests, sqliteFlushUnconditional, nil)
-			require.ErrorContains(t, err, "injected failure")
+				table, column, len(events)), nil))
+			accepted, err := saver.flushTx(conn, []*sqliteSaveRequest{request})
+			require.NoError(t, err)
+			require.Empty(t, accepted)
+			require.ErrorContains(t, (<-request.result).err, "injected failure")
 			require.NoError(t, sqlitex.Execute(conn,
 				"SELECT (SELECT COUNT(*) FROM orisun_es_write), (SELECT COUNT(*) FROM orisun_es_event), next_id FROM orisun_es_seq",
 				&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
@@ -212,9 +204,11 @@ func TestWriteContextBatchRollbackAcrossChunks(t *testing.T) {
 					return nil
 				}}))
 			require.NoError(t, sqlitex.Execute(conn, "DROP TRIGGER reject_last", nil))
-			accepted, err := saver.flushTx(conn, pool, "test", requests, sqliteFlushUnconditional, nil)
+			retry := &sqliteSaveRequest{ctx: t.Context(), inserts: events, consistencyJSON: "[]", result: make(chan sqliteSaveResult, 1)}
+			accepted, err = saver.flushTx(conn, []*sqliteSaveRequest{retry})
 			require.NoError(t, err)
-			require.Len(t, accepted, len(requests))
+			require.Len(t, accepted, 1)
+			require.EqualValues(t, len(events), accepted[0].globalID)
 		})
 	}
 }

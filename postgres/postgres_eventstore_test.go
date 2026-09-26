@@ -531,11 +531,11 @@ func insertEventInTx(ctx context.Context, tx *sql.Tx, eventID, eventType string)
 	var newGlobalID, latestTransactionID, latestGlobalID int64
 	err := tx.QueryRowContext(
 		ctx,
-		`SELECT * FROM public.insert_events_v2($1::text, $2::text, $3::jsonb, $4::jsonb)`,
+		`SELECT new_global_id, latest_transaction_id, latest_global_id
+         FROM public.insert_event_requests_v2($1::text, $2::text, $3::jsonb)`,
 		"test_boundary",
 		"public",
-		[]byte(`[]`),
-		[]byte(eventsJSON),
+		[]byte(`[{"consistency":[],"events":`+eventsJSON+`}]`),
 	).Scan(&newGlobalID, &latestTransactionID, &latestGlobalID)
 	return latestGlobalID, err
 }
@@ -1404,7 +1404,7 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 		_, err = db.ExecContext(ctx, `
 			CREATE INDEX CONCURRENTLY test_boundary_invalid_amount_idx
 			ON public.test_boundary_orisun_es_event
-			USING btree (((data->>'amount')::numeric))
+			USING btree (((data->>'amount')::numeric), transaction_id DESC, global_id DESC)
 		`)
 		require.Error(t, err)
 		exists, valid = indexValidity("test_boundary_invalid_amount_idx")

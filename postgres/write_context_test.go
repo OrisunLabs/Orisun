@@ -41,22 +41,22 @@ func TestWriteContextContract(t *testing.T) {
 	require.Equal(t, 3, count)
 }
 
-func TestWriteContextSQLGroupCommitPaths(t *testing.T) {
+func TestWriteContextSQLGroupCommit(t *testing.T) {
 	container, err := setupTestContainer(t)
 	require.NoError(t, err)
 	defer container.container.Terminate(context.Background())
 	db, err := setupTestDatabase(t, container)
 	require.NoError(t, err)
 	defer db.Close()
-	for _, path := range []string{"unconditional", "independent", "canonical", "isolated"} {
-		t.Run(path, func(t *testing.T) {
-			boundary := "write_" + path
+	for _, mode := range []string{"unconditional", "checked"} {
+		t.Run(mode, func(t *testing.T) {
+			boundary := "write_" + mode
 			require.NoError(t, RunDbScripts(db, boundary, "public", false, t.Context()))
 			payloads := make([]postgresBatchPayload, 3)
 			checks := make([][]orisun.ConsistencyCheck, 3)
 			for i := range payloads {
 				value := fmt.Sprint(i)
-				if path != "unconditional" {
+				if mode != "unconditional" {
 					checks[i] = []orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{{Key: "context", Value: value}}}}, Position: orisun.NotExistsPosition()}}
 					if i == 1 {
 						checks[i][0].Position = orisun.Position{CommitPosition: 123, PreparePosition: 123}
@@ -72,21 +72,9 @@ func TestWriteContextSQLGroupCommitPaths(t *testing.T) {
 				payloads[i].Events, err = json.Marshal(events)
 				require.NoError(t, err)
 			}
-			query := insertEventRequestsWithConsistency
-			args := []any{boundary, "public"}
-			switch path {
-			case "unconditional":
-				query = insertUnconditionalEventRequests
-			case "independent":
-				query = insertIndependentEventRequestsWithConsistency
-				args = append(args, "context")
-			case "canonical":
-				query = insertCanonicalEventRequestsWithConsistency
-			}
 			payload, err := json.Marshal(payloads)
 			require.NoError(t, err)
-			args = append(args, payload)
-			rows, err := db.QueryContext(t.Context(), fmt.Sprintf(query, "public"), args...)
+			rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", payload)
 			require.NoError(t, err)
 			ids := map[int]string{}
 			for rows.Next() {
@@ -94,7 +82,7 @@ func TestWriteContextSQLGroupCommitPaths(t *testing.T) {
 				var gid, tx, last sql.NullInt64
 				var code, message sql.NullString
 				require.NoError(t, rows.Scan(&index, &gid, &tx, &last, &code, &message))
-				if index == 1 && path != "unconditional" {
+				if index == 1 && mode != "unconditional" {
 					require.True(t, message.Valid)
 					continue
 				}
@@ -104,7 +92,7 @@ func TestWriteContextSQLGroupCommitPaths(t *testing.T) {
 			require.NoError(t, rows.Err())
 			require.NoError(t, rows.Close())
 			want := 2
-			if path == "unconditional" {
+			if mode == "unconditional" {
 				want = 3
 			}
 			require.Len(t, ids, want)
@@ -129,20 +117,12 @@ func TestWriteContextSQLGroupCommitPaths(t *testing.T) {
 			var count int
 			require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public."+boundary+"_orisun_es_write").Scan(&count))
 			require.Equal(t, want, count)
-			// A row insertion failure after context allocation must roll the context
-			// back as well. The isolated SQL entry point catches this per request.
+			// An insertion failure rolls back the entire flush, including write contexts.
 			broken := []postgresBatchPayload{{Consistency: json.RawMessage(`[]`), Events: json.RawMessage(`[{"event_id":"invalid-uuid","event_type":"Invalid","data":{},"metadata":{}}]`)}}
 			encoded, err := json.Marshal(broken)
 			require.NoError(t, err)
-			failed, err := db.Query(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", encoded)
-			require.NoError(t, err)
-			require.True(t, failed.Next())
-			var index int
-			var gid, tx, last sql.NullInt64
-			var code, message sql.NullString
-			require.NoError(t, failed.Scan(&index, &gid, &tx, &last, &code, &message))
-			require.True(t, message.Valid)
-			require.NoError(t, failed.Close())
+			_, err = db.Exec(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", encoded)
+			require.Error(t, err)
 			require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public."+boundary+"_orisun_es_write").Scan(&count))
 			require.Equal(t, want, count)
 		})
