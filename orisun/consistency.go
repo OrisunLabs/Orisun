@@ -113,31 +113,43 @@ func normalizeConsistencyQuery(query *Query) ([]ReadCriterion, string, error) {
 		if criterion == nil || len(criterion.Tags) == 0 {
 			return nil, "", fmt.Errorf("criterion %d has no tags", criterionIndex)
 		}
-		tagsByKey := make(map[string]string, len(criterion.Tags))
+		predicates := make(map[string]ReadTag, len(criterion.Tags))
+		equalities := make(map[string]string)
 		for tagIndex, tag := range criterion.Tags {
 			if tag == nil {
 				return nil, "", fmt.Errorf("criterion %d tag %d is nil", criterionIndex, tagIndex)
 			}
-			if tag.Key == "" {
-				return nil, "", fmt.Errorf("criterion %d tag %d has no key", criterionIndex, tagIndex)
+			if err := ValidateTag(tag.Key, tag.Value, tag.Operator); err != nil {
+				return nil, "", err
 			}
-			if previous, duplicate := tagsByKey[tag.Key]; duplicate && previous != tag.Value {
-				return nil, "", fmt.Errorf("criterion %d repeats key %q with a different value", criterionIndex, tag.Key)
+			operator, _ := CanonicalTagOperator(tag.Operator)
+			if operator == "eq" {
+				if previous, exists := equalities[tag.Key]; exists && previous != tag.Value {
+					return nil, "", fmt.Errorf("criterion %d repeats key %q with a different value", criterionIndex, tag.Key)
+				}
+				equalities[tag.Key] = tag.Value
+				operator = ""
 			}
-			tagsByKey[tag.Key] = tag.Value
+			identity := fmt.Sprintf("%d:%s%d:%s%d:%s", len(tag.Key), tag.Key, len(operator), operator, len(tag.Value), tag.Value)
+			predicates[identity] = ReadTag{Key: tag.Key, Value: tag.Value, Operator: operator}
 		}
-
-		tagKeys := make([]string, 0, len(tagsByKey))
-		for key := range tagsByKey {
-			tagKeys = append(tagKeys, key)
+		normalized := ReadCriterion{Tags: make([]ReadTag, 0, len(predicates))}
+		for _, tag := range predicates {
+			normalized.Tags = append(normalized.Tags, tag)
 		}
-		sort.Strings(tagKeys)
+		sort.Slice(normalized.Tags, func(i, j int) bool {
+			a, b := normalized.Tags[i], normalized.Tags[j]
+			if a.Key != b.Key {
+				return a.Key < b.Key
+			}
+			if a.Operator != b.Operator {
+				return a.Operator < b.Operator
+			}
+			return a.Value < b.Value
+		})
 		criterionKey := strings.Builder{}
-		normalized := ReadCriterion{Tags: make([]ReadTag, 0, len(tagKeys))}
-		for _, key := range tagKeys {
-			value := tagsByKey[key]
-			fmt.Fprintf(&criterionKey, "%d:%s%d:%s", len(key), key, len(value), value)
-			normalized.Tags = append(normalized.Tags, ReadTag{Key: key, Value: value})
+		for _, tag := range normalized.Tags {
+			fmt.Fprintf(&criterionKey, "%d:%s%d:%s%d:%s", len(tag.Key), tag.Key, len(tag.Operator), tag.Operator, len(tag.Value), tag.Value)
 		}
 		key := criterionKey.String()
 		if _, duplicate := criteriaByKey[key]; duplicate {

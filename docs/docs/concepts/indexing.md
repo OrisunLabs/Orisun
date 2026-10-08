@@ -110,7 +110,7 @@ EOF
 ## Field value types
 
 `value_type` controls the index expression, not CCC equality. PostgreSQL and
-SQLite criteria compare scalar values as text regardless of index definitions:
+SQLite equality predicates compare scalar values as text regardless of index definitions:
 JSON number `42` and string `"42"` match the criterion `"42"`, while string
 `"042"` does not. Creating or dropping an index must not change those matches.
 Use `TEXT` indexes for these equality queries, including keys whose JSON values
@@ -145,6 +145,9 @@ EOF
 ```
 
 Each condition `operator` must be one of `=`, `>`, `<`, `>=`, or `<=`; any other value is rejected. `condition_combinator` is `AND` by default, or `OR` when any condition may match.
+
+These are index-definition conditions. Query tag operators use `eq`, `ne`,
+`gt`, `gte`, `lt`, and `lte`; see [Tag comparison operators](../api/eventstore#tag-comparison-operators).
 
 ## Drop An Index
 

@@ -3,6 +3,7 @@ package eventdata
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -48,7 +49,9 @@ func MetadataValue(metadata string) json.RawMessage {
 // backend, while the delivered event retains its public envelope shape.
 func EnvelopeFields(data string, envelope Envelope) (map[string]any, error) {
 	var fields map[string]any
-	if err := json.Unmarshal([]byte(data), &fields); err != nil {
+	dataDecoder := json.NewDecoder(strings.NewReader(data))
+	dataDecoder.UseNumber()
+	if err := dataDecoder.Decode(&fields); err != nil {
 		return nil, err
 	}
 	if fields == nil {

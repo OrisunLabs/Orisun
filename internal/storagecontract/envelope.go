@@ -74,7 +74,7 @@ func Envelope(t *testing.T, saver orisun.EventsSaver, reader orisun.EventsRetrie
 		require.Equal(t, id, result[0].EventId)
 		criterion := orisun.ReadCriterion{}
 		for _, tag := range tags {
-			criterion.Tags = append(criterion.Tags, orisun.ReadTag{Key: tag.Key, Value: tag.Value})
+			criterion.Tags = append(criterion.Tags, orisun.ReadTag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator})
 		}
 		latest, err := reader.GetLatestByCriteria(t.Context(), orisun.LatestByCriteriaQuery{Boundary: boundary, Criteria: []orisun.ReadCriterion{criterion}})
 		require.NoError(t, err)

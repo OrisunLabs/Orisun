@@ -150,6 +150,12 @@ func (s *PostgresSaveEvents) SavePrepared(
 }
 
 func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEventsRequest) (eventstore.ReadEventBatch, error) {
+	if req == nil {
+		return nil, statuscode.New(statuscode.InvalidArgument, "get events request is required")
+	}
+	if err := eventstore.ValidateQuery(req.Query); err != nil {
+		return nil, err
+	}
 	if s.logger.IsDebugEnabled() {
 		s.logger.Debugf("Getting events from request: %v", req)
 	}
@@ -247,6 +253,9 @@ func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEve
 // SQL statement (get_latest_by_criteria_v1 builds a UNION ALL of LIMIT-1
 // subqueries), so all returned carried state comes from one snapshot.
 func (s *PostgresGetEvents) GetLatestByCriteria(ctx context.Context, query eventstore.LatestByCriteriaQuery) (eventstore.LatestByCriteriaBatch, error) {
+	if err := eventstore.ValidateReadCriteria(query.Criteria); err != nil {
+		return eventstore.LatestByCriteriaBatch{}, err
+	}
 	entry, ok := s.registry.lookup(query.Boundary)
 	if !ok {
 		return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "no schema found for boundary: %s", query.Boundary)
@@ -315,28 +324,14 @@ func (s *PostgresGetEvents) GetLatestByCriteria(ctx context.Context, query event
 func getReadCriteriaAsList(criteria []eventstore.ReadCriterion) []map[string]any {
 	result := make([]map[string]any, 0, len(criteria))
 	for _, criterion := range criteria {
-		if len(criterion.Tags) == 0 {
-			continue
+		if len(criterion.Tags) > 0 {
+			result = append(result, eventstore.EncodeCriterion(criterion.Tags))
 		}
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
-		result = append(result, anded)
 	}
 	return result
 }
-
 func getCriteriaAsList(query *eventstore.Query) []map[string]any {
-	result := make([]map[string]any, 0, len(query.Criteria))
-	for _, criterion := range query.Criteria {
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
-		result = append(result, anded)
-	}
-	return result
+	return eventstore.EncodeQueryCriteria(query)
 }
 
 type PostgresAdminDB struct {

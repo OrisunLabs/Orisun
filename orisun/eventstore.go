@@ -529,6 +529,9 @@ func (s *EventStore) GetEvents(ctx context.Context, req *GetEventsRequest) (*Get
 	if req.Count > MaxReadBatchSize {
 		return nil, statuscode.Errorf(statuscode.InvalidArgument, "Count cannot exceed %d", MaxReadBatchSize)
 	}
+	if err := ValidateQuery(req.Query); err != nil {
+		return nil, err
+	}
 	if err := s.RequireBoundaryActive(req.Boundary); err != nil {
 		return nil, err
 	}
@@ -557,6 +560,9 @@ func (s *EventStore) GetLatestByCriteria(ctx context.Context, req *GetLatestByCr
 	}
 	if len(req.Criteria) == 0 {
 		return nil, statuscode.Errorf(statuscode.InvalidArgument, "at least one criterion is required")
+	}
+	if err := ValidateQuery(&Query{Criteria: req.Criteria}); err != nil {
+		return nil, err
 	}
 	for i, criterion := range req.Criteria {
 		if criterion == nil || len(criterion.Tags) == 0 {
@@ -589,7 +595,7 @@ func latestQueryFromRequest(req *GetLatestByCriteriaRequest) LatestByCriteriaQue
 	for i, criterion := range req.Criteria {
 		start := offset
 		for _, tag := range criterion.Tags {
-			tags[offset] = ReadTag{Key: tag.Key, Value: tag.Value}
+			tags[offset] = ReadTag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 			offset++
 		}
 		criteria[i].Tags = tags[start:offset]
@@ -634,6 +640,9 @@ func (s *EventStore) SubscribeToAllEvents(
 	subscriberName := request.SubscriberName
 	afterPosition := legacySubscriptionPosition(request.AfterPosition)
 	query := legacySubscriptionQuery(request.Query)
+	if err := ValidateQuery(query); err != nil {
+		return err
+	}
 	subscriptionName := boundary + "__" + subscriberName
 	subscriptionCtx, cancelSubscription := context.WithCancel(ctx)
 	defer cancelSubscription()
@@ -945,7 +954,7 @@ func legacySubscriptionQuery(query coreeventstore.Query) *Query {
 	for index, criterion := range query.Criteria {
 		result.Criteria[index] = &Criterion{Tags: make([]*Tag, len(criterion.Tags))}
 		for tagIndex, tag := range criterion.Tags {
-			result.Criteria[index].Tags[tagIndex] = &Tag{Key: tag.Key, Value: tag.Value}
+			result.Criteria[index].Tags[tagIndex] = &Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result
@@ -1019,7 +1028,7 @@ func (s *EventStore) eventMatchesQueryCriteria(event *Event, criteria *Query) bo
 		allTagsMatch := true
 		for _, criteriaTag := range criteriaGroup.Tags {
 			eventTag, ok := unmarshaledData[criteriaTag.Key]
-			if !ok || !eventTagEquals(eventTag, criteriaTag.Value) {
+			if !ok || !MatchTagValue(eventTag, criteriaTag.Value, criteriaTag.Operator) {
 				allTagsMatch = false
 				break
 			}

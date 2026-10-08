@@ -1,3 +1,104 @@
+-- Compare JSON number tokens exactly, including values beyond float64 precision.
+-- Invalid numeric targets are incomparable. Exponents do not allocate expanded
+-- decimal strings.
+CREATE OR REPLACE FUNCTION orisun_compare_number(a TEXT, b TEXT)
+RETURNS INT LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+    tokens TEXT[] := ARRAY[a,b];
+    digits TEXT[] := ARRAY['',''];
+    magnitudes NUMERIC[] := ARRAY[0::NUMERIC,0::NUMERIC];
+    negatives BOOLEAN[] := ARRAY[FALSE,FALSE];
+    token TEXT;
+    exponent_at INT;
+    decimal_at INT;
+    fraction_length INT;
+    i INT;
+    comparison INT := 0;
+BEGIN
+    FOR i IN 1..2 LOOP
+        token := tokens[i];
+        IF token !~ '^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$' THEN RETURN NULL; END IF;
+        negatives[i] := left(token,1) = '-';
+        IF negatives[i] THEN token := substring(token FROM 2); END IF;
+        exponent_at := strpos(lower(token), 'e');
+        IF exponent_at > 0 THEN
+            magnitudes[i] := substring(token FROM exponent_at+1)::NUMERIC;
+            token := left(token, exponent_at-1);
+        END IF;
+        decimal_at := strpos(token, '.');
+        fraction_length := 0;
+        IF decimal_at > 0 THEN
+            fraction_length := length(token)-decimal_at;
+            token := replace(token, '.', '');
+        END IF;
+        digits[i] := ltrim(token, '0');
+        IF digits[i] = '' THEN negatives[i] := FALSE;
+        ELSE magnitudes[i] := magnitudes[i] + length(digits[i])-fraction_length;
+        END IF;
+    END LOOP;
+    IF negatives[1] <> negatives[2] THEN
+        RETURN CASE WHEN negatives[1] THEN -1 ELSE 1 END;
+    END IF;
+    IF digits[1] = '' AND digits[2] = '' THEN RETURN 0;
+    ELSIF digits[1] = '' THEN comparison := -1;
+    ELSIF digits[2] = '' THEN comparison := 1;
+    ELSIF magnitudes[1] < magnitudes[2] THEN comparison := -1;
+    ELSIF magnitudes[1] > magnitudes[2] THEN comparison := 1;
+    ELSE
+        digits[1] := rpad(digits[1], greatest(length(digits[1]),length(digits[2])), '0');
+        digits[2] := rpad(digits[2], length(digits[1]), '0');
+        IF digits[1] COLLATE "C" < digits[2] COLLATE "C" THEN comparison := -1;
+        ELSIF digits[1] COLLATE "C" > digits[2] COLLATE "C" THEN comparison := 1;
+        END IF;
+    END IF;
+    RETURN CASE WHEN negatives[1] THEN -comparison ELSE comparison END;
+END;
+$$;
+
+-- One renderer owns predicates for reads, latest observations, persisted CCC
+-- checks, and matching accepted events within a group-commit transaction.
+-- data_expression is supplied only by the storage implementation, never a query.
+CREATE OR REPLACE FUNCTION orisun_criterion_sql(criterion JSONB, data_expression TEXT DEFAULT 'data')
+RETURNS TEXT LANGUAGE plpgsql IMMUTABLE SET search_path FROM CURRENT AS $$
+DECLARE
+    field_key TEXT;
+    field_value JSONB;
+    predicates JSONB;
+    predicate JSONB;
+    operator_name TEXT;
+    sql_operator TEXT;
+    target TEXT;
+    scalar_expression TEXT;
+    parts TEXT[] := '{}';
+BEGIN
+    FOR field_key, field_value IN SELECT * FROM jsonb_each(criterion) ORDER BY key LOOP
+        IF jsonb_typeof(field_value) = 'string' THEN
+            predicates := jsonb_build_array(jsonb_build_object('operator','eq','value',field_value));
+        ELSIF jsonb_typeof(field_value) = 'array' AND jsonb_array_length(field_value) > 0 THEN
+            predicates := field_value;
+        ELSE RAISE EXCEPTION 'invalid tag predicates';
+        END IF;
+        FOR predicate IN SELECT * FROM jsonb_array_elements(predicates) LOOP
+            operator_name := COALESCE(NULLIF(predicate->>'operator',''), 'eq');
+            sql_operator := CASE operator_name WHEN 'eq' THEN '=' WHEN 'ne' THEN '<>'
+                WHEN 'gt' THEN '>' WHEN 'gte' THEN '>=' WHEN 'lt' THEN '<' WHEN 'lte' THEN '<=' END;
+            IF sql_operator IS NULL THEN RAISE EXCEPTION 'unsupported tag operator %', operator_name; END IF;
+            target := predicate->>'value';
+            scalar_expression := format('(%s ->> %L)', data_expression, field_key);
+            IF operator_name IN ('eq','ne') THEN
+                parts := parts || format('(%s %s %L)', scalar_expression, sql_operator, target);
+            ELSE
+                parts := parts || format(
+                    '(CASE jsonb_typeof(%s -> %L) WHEN ''string'' THEN (%s COLLATE "C" %s %L COLLATE "C") WHEN ''number'' THEN (orisun_compare_number(%s, %L) %s 0) ELSE FALSE END)',
+                    data_expression, field_key, scalar_expression, sql_operator, target,
+                    scalar_expression, target, sql_operator);
+            END IF;
+        END LOOP;
+    END LOOP;
+    RETURN CASE WHEN cardinality(parts) = 0 THEN 'TRUE' ELSE '(' || array_to_string(parts, ' AND ') || ')' END;
+END;
+$$;
+
 -- Canonical envelope encoding is owned by the storage write path.
 CREATE OR REPLACE FUNCTION orisun_event_document(payload JSONB, meta JSONB, tx BIGINT, gid BIGINT, wid BIGINT, created TIMESTAMPTZ)
 RETURNS JSONB LANGUAGE SQL STABLE AS $$
@@ -243,10 +344,10 @@ DECLARE
     prefixed_seq_name         TEXT;
     criterion_shape           JSONB;
     shape_criteria            JSONB;
-    criterion_key             TEXT;
-    join_parts                TEXT[];
     latest_selects            TEXT[] := '{}'::TEXT[];
     criterion_shapes          JSONB[] := '{}'::JSONB[];
+    predicate_selects         TEXT[] := '{}'::TEXT[];
+    matching_criterion_id     INT;
     event_record              RECORD;
     event_criterion           JSONB;
     latest_record             RECORD;
@@ -310,14 +411,13 @@ BEGIN
                 -- planner; each lookup needs only the latest stored match.
                 FOR crit IN SELECT value FROM jsonb_array_elements(shape_criteria)
                     LOOP
-                        join_parts := '{}';
-                        FOR criterion_key IN SELECT value #>> '{}' FROM jsonb_array_elements(criterion_shape)
-                            LOOP
-                                join_parts := join_parts || format(
-                                    '(stored.data ->> %L = %L)',
-                                    criterion_key, crit ->> criterion_key
-                                );
-                            END LOOP;
+                        IF EXISTS (SELECT 1 FROM jsonb_each(crit) WHERE jsonb_typeof(value) <> 'string') THEN
+                            predicate_selects := predicate_selects || format(
+                                'SELECT %s AS id WHERE %s',
+                                (criterion_ids ->> crit::TEXT)::INT + 1,
+                                orisun_criterion_sql(crit, '$1')
+                            );
+                        END IF;
                         latest_selects := latest_selects || format(
                             '(SELECT %L::JSONB AS criterion, stored.transaction_id, stored.global_id
                               FROM %I.%I stored
@@ -325,7 +425,7 @@ BEGIN
                               ORDER BY stored.transaction_id DESC, stored.global_id DESC
                               LIMIT 1)',
                             crit::TEXT, schema, boundary_name || '_orisun_es_event',
-                            array_to_string(join_parts, ' AND ')
+                            orisun_criterion_sql(crit, 'stored.data')
                         );
                     END LOOP;
 
@@ -457,6 +557,12 @@ BEGIN
                                     criterion_gids[criterion_id] := event_record.global_id;
                                 END IF;
                             END LOOP;
+                        IF cardinality(predicate_selects) > 0 THEN
+                            FOR matching_criterion_id IN EXECUTE array_to_string(predicate_selects, ' UNION ALL ') USING event_record.document LOOP
+                                criterion_tx_ids[matching_criterion_id] := inserted_tx_id;
+                                criterion_gids[matching_criterion_id] := event_record.global_id;
+                            END LOOP;
+                        END IF;
                     END LOOP;
             END IF;
 
@@ -634,6 +740,7 @@ CREATE OR REPLACE FUNCTION get_matching_events_v4(
             )
     LANGUAGE plpgsql
     STABLE
+    SET search_path FROM CURRENT
 AS
 $$
 DECLARE
@@ -657,18 +764,13 @@ BEGIN
     qualified_table_name := format('%I.%I_orisun_es_event', schema, boundary_name);
 
     -- Build the content query as an OR of criteria, where each criterion is
-    -- an AND of tag equality checks.
+    -- an AND of tag predicates.
     IF criteria_array IS NOT NULL THEN
         all_parts := '{}';
         FOR crit IN SELECT jsonb_array_elements(criteria_array)
             LOOP
-                crit_parts := '{}';
-                FOR k, v IN SELECT * FROM jsonb_each_text(crit)
-                    LOOP
-                        crit_parts := crit_parts || format('(data->>%L = %L)', k, v);
-                    END LOOP;
-                IF array_length(crit_parts, 1) > 0 THEN
-                    all_parts := all_parts || ('(' || array_to_string(crit_parts, ' AND ') || ')');
+                IF crit <> '{}'::JSONB THEN
+                    all_parts := all_parts || orisun_criterion_sql(crit);
                 END IF;
             END LOOP;
         criteria_sql := CASE
@@ -738,6 +840,7 @@ CREATE OR REPLACE FUNCTION get_latest_by_criteria_v2(
             )
     LANGUAGE plpgsql
     STABLE
+    SET search_path FROM CURRENT
 AS
 $$
 DECLARE
@@ -758,17 +861,12 @@ BEGIN
 
     FOR crit IN SELECT jsonb_array_elements(criteria_array)
         LOOP
-            crit_parts := '{}';
-            FOR k, v IN SELECT * FROM jsonb_each_text(crit)
-                LOOP
-                    crit_parts := crit_parts || format('(data->>%L = %L)', k, v);
-                END LOOP;
-            IF array_length(crit_parts, 1) IS NULL THEN
+            IF crit = '{}'::JSONB THEN
                 RAISE EXCEPTION 'criterion % has no tags', idx;
             END IF;
             selects := selects || format(
                     '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created::timestamptz, CASE WHEN e.write_id IS NULL THEN '''' ELSE e.transaction_id::TEXT || '':'' || e.write_id::TEXT END FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
-                    idx, qualified_table_name, array_to_string(crit_parts, ' AND '));
+                    idx, qualified_table_name, orisun_criterion_sql(crit, 'e.data'));
             idx := idx + 1;
         END LOOP;
 

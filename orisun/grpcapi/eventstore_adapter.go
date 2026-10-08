@@ -429,7 +429,7 @@ func domainCriteriaFromProto(criteria []*Criterion) []*orisun.Criterion {
 			if tag == nil {
 				continue
 			}
-			result[index].Tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value}
+			result[index].Tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result
@@ -449,7 +449,7 @@ func coreQueryFromProto(query *Query) coreeventstore.Query {
 			if tag == nil {
 				continue
 			}
-			result.Criteria[index].Tags[tagIndex] = coreeventstore.Tag{Key: tag.Key, Value: tag.Value}
+			result.Criteria[index].Tags[tagIndex] = coreeventstore.Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result
@@ -462,7 +462,7 @@ func criterionToProto(criterion *orisun.Criterion) *Criterion {
 	result := &Criterion{Tags: make([]*Tag, len(criterion.Tags))}
 	for index, tag := range criterion.Tags {
 		if tag != nil {
-			result.Tags[index] = &Tag{Key: tag.Key, Value: tag.Value}
+			result.Tags[index] = &Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result

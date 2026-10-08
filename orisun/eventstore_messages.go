@@ -9,8 +9,9 @@ type Position struct {
 }
 
 type Tag struct {
-	Key   string
-	Value string
+	Key      string
+	Value    string
+	Operator string
 }
 
 type Criterion struct {

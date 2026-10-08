@@ -93,14 +93,42 @@ func buildCriteriaSQL(criteria []map[string]any) (string, error) {
 	return strings.Join(orParts, " OR "), nil
 }
 
-// renderCriterionPredicate owns CCC equality for reads and writes. Index metadata
-// must never change which events a content query observes.
+// renderCriterionPredicate owns content-query comparison for reads and CCC.
+// Index metadata must never change which events a content query observes.
 func renderCriterionPredicate(key string, value any) (string, error) {
-	lit, err := sqlValueLiteral(value)
-	if err != nil {
-		return "", fmt.Errorf("criteria key %q: %w", key, err)
+	switch value.(type) {
+	case []eventstore.TagPredicate, []any:
+	default:
+		// Scalar entries retain the existing equality representation.
+		lit, err := sqlValueLiteral(value)
+		if err != nil {
+			return "", fmt.Errorf("criteria key %q: %w", key, err)
+		}
+		return sqliteJSONScalarTextExpr(key) + " = " + lit, nil
 	}
-	return sqliteJSONScalarTextExpr(key) + " = " + lit, nil
+	predicates, err := eventstore.DecodeTagPredicates(value)
+	if err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, len(predicates))
+	for _, predicate := range predicates {
+		op, err := eventstore.TagSQLOperator(predicate.Operator)
+		if err != nil {
+			return "", err
+		}
+		lit, err := sqlValueLiteral(predicate.Value)
+		if err != nil {
+			return "", err
+		}
+		expr := sqliteJSONScalarTextExpr(key)
+		if op == "=" || op == "<>" {
+			parts = append(parts, expr+" "+op+" "+lit)
+		} else {
+			path := jsonPathLiteral(key)
+			parts = append(parts, fmt.Sprintf("(CASE json_type(data, %s) WHEN 'text' THEN (%s COLLATE BINARY %s %s) WHEN 'integer' THEN (orisun_compare_number(data -> %s, %s) %s 0) WHEN 'real' THEN (orisun_compare_number(data -> %s, %s) %s 0) ELSE 0 END)", path, expr, op, lit, path, lit, op, path, lit, op))
+		}
+	}
+	return "(" + strings.Join(parts, " AND ") + ")", nil
 }
 
 // sqliteJSONScalarTextExpr mirrors PG's `data->>'key'` text rendering: booleans
@@ -185,27 +213,10 @@ func sqliteBooleanArg(v any) any {
 }
 
 func criteriaAsList(query *eventstore.Query) []map[string]any {
-	out := make([]map[string]any, 0, len(query.Criteria))
-	for _, c := range query.Criteria {
-		anded := make(map[string]any, len(c.Tags))
-		for _, t := range c.Tags {
-			anded[t.Key] = t.Value
-		}
-		out = append(out, anded)
-	}
-	return out
+	return eventstore.EncodeQueryCriteria(query)
 }
-
 func readCriteriaAsList(criteria []eventstore.ReadCriterion) []map[string]any {
-	out := make([]map[string]any, len(criteria))
-	for index, criterion := range criteria {
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
-		out[index] = anded
-	}
-	return out
+	return eventstore.EncodeReadCriteria(criteria)
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +457,12 @@ func newSqliteGetEventsWithRegistry(registry *BoundaryRegistry, logger logging.L
 }
 
 func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEventsRequest) (eventstore.ReadEventBatch, error) {
+	if req == nil {
+		return nil, statuscode.New(statuscode.InvalidArgument, "get events request is required")
+	}
+	if err := eventstore.ValidateQuery(req.Query); err != nil {
+		return nil, err
+	}
 	pool, ok := s.registry.eventPool(req.Boundary)
 	if !ok {
 		return nil, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", req.Boundary)
@@ -531,6 +548,9 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 // sees the same database state. Independent client reads cannot substitute —
 // an event committing between them can hide below the observed max position.
 func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventstore.LatestByCriteriaQuery) (eventstore.LatestByCriteriaBatch, error) {
+	if err := eventstore.ValidateReadCriteria(query.Criteria); err != nil {
+		return eventstore.LatestByCriteriaBatch{}, err
+	}
 	pool, ok := s.registry.eventPool(query.Boundary)
 	if !ok {
 		return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", query.Boundary)
@@ -559,10 +579,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 	}
 	found := false
 	for i, criterion := range query.Criteria {
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
+		anded := eventstore.EncodeCriterion(criterion.Tags)
 		if len(anded) == 0 {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "criterion has no tags")
 		}

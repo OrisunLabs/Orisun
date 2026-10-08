@@ -380,9 +380,13 @@ func (x *Position) GetPreparePosition() int64 {
 }
 
 type Tag struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	// Supported: eq, ne, gt, gte, lt, lte. Empty means eq.
+	// Ordered comparisons use the stored JSON type: numbers numerically,
+	// strings lexicographically. Missing/null values never match.
+	Operator      string `protobuf:"bytes,3,opt,name=operator,proto3" json:"operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -427,6 +431,13 @@ func (x *Tag) GetKey() string {
 func (x *Tag) GetValue() string {
 	if x != nil {
 		return x.Value
+	}
+	return ""
+}
+
+func (x *Tag) GetOperator() string {
+	if x != nil {
+		return x.Operator
 	}
 	return ""
 }
@@ -2206,10 +2217,11 @@ const file_eventstore_proto_rawDesc = "" +
 	"\x10eventstore.proto\x12\x06orisun\x1a\x1fgoogle/protobuf/timestamp.proto\"^\n" +
 	"\bPosition\x12'\n" +
 	"\x0fcommit_position\x18\x01 \x01(\x03R\x0ecommitPosition\x12)\n" +
-	"\x10prepare_position\x18\x02 \x01(\x03R\x0fpreparePosition\"-\n" +
+	"\x10prepare_position\x18\x02 \x01(\x03R\x0fpreparePosition\"I\n" +
 	"\x03Tag\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value\",\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x12\x1a\n" +
+	"\boperator\x18\x03 \x01(\tR\boperator\",\n" +
 	"\tCriterion\x12\x1f\n" +
 	"\x04tags\x18\x01 \x03(\v2\v.orisun.TagR\x04tags\"6\n" +
 	"\x05Query\x12-\n" +

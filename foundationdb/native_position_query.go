@@ -16,27 +16,39 @@ import (
 // never require an asynchronously maintained copy of the committed position.
 // A commit or write ID is the required leading key; prepare position alone
 // cannot select a bounded slice of this ordered keyspace.
-func (b *Backend) nativeCriterionRange(boundary string, criterion map[string]string) (fdb.KeyRange, bool) {
+func (b *Backend) nativeCriterionRange(boundary string, criterion map[string]any) (fdb.KeyRange, bool) {
 	prefix := prefixRange(b.eventPrefix(boundary))
 	empty := fdb.KeyRange{Begin: prefix.Begin, End: prefix.Begin}
 	var tx, first, last int64
 	last = 1<<32 - 1
-	if id, ok := criterion["__writeId"]; ok {
+	if id, ok := criterionEquality(criterion, "__writeId"); ok {
 		pos, err := eventstore.ValidateWriteContextRequest(&eventstore.GetWriteContextRequest{Boundary: boundary, WriteId: id})
 		if err != nil || pos.PreparePosition > last {
 			return empty, true
 		}
 		tx, first, last = pos.CommitPosition, pos.PreparePosition & ^int64(65535), pos.PreparePosition
-	} else if value, ok := criterion["__commitPosition"]; ok {
+	} else if value, ok := criterionEquality(criterion, "__commitPosition"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || parsed < 0 || strconv.FormatInt(parsed, 10) != value {
 			return empty, true
 		}
 		tx = parsed
+	} else if predicates, ok := criterion["__commitPosition"]; ok {
+		lower, upper, possible := commitBounds(predicates)
+		if !possible {
+			return empty, true
+		}
+		begin := b.eventKeyForPosition(boundary, &eventstore.Position{CommitPosition: lower})
+		end := keyAfter(b.eventKeyForPosition(boundary, &eventstore.Position{CommitPosition: upper, PreparePosition: last}))
+		return fdb.KeyRange{Begin: begin, End: end}, true
+	} else if _, ok := criterion["__writeId"]; ok {
+		// Write IDs are strings; their lexicographic order differs from native
+		// commit order. The native range must cover all candidate positions.
+		return prefix, true
 	} else {
 		return fdb.KeyRange{}, false
 	}
-	if value, ok := criterion["__preparePosition"]; ok {
+	if value, ok := criterionEquality(criterion, "__preparePosition"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || parsed < first || parsed > last || strconv.FormatInt(parsed, 10) != value {
 			return empty, true
@@ -48,7 +60,7 @@ func (b *Backend) nativeCriterionRange(boundary string, criterion map[string]str
 	return fdb.KeyRange{Begin: begin, End: end}, true
 }
 
-func (b *Backend) scanNativeCriterion(ctx context.Context, rt fdb.ReadTransaction, boundary string, criterion map[string]string, native fdb.KeyRange, from *eventstore.Position, direction eventstore.Direction, count int) (eventstore.ReadEventBatch, error) {
+func (b *Backend) scanNativeCriterion(ctx context.Context, rt fdb.ReadTransaction, boundary string, criterion map[string]any, native fdb.KeyRange, from *eventstore.Position, direction eventstore.Direction, count int) (eventstore.ReadEventBatch, error) {
 	begin, end := b.eventRangeForCursor(boundary, from, direction)
 	if bytes.Compare(begin.FDBKey(), native.Begin.FDBKey()) < 0 {
 		begin = native.Begin
@@ -61,7 +73,7 @@ func (b *Backend) scanNativeCriterion(ctx context.Context, rt fdb.ReadTransactio
 
 // scanEventRange applies predicates before counting results. Unfiltered reads
 // can also bound the database range request by the requested count.
-func scanEventRange(ctx context.Context, rt fdb.ReadTransaction, keyRange fdb.KeyRange, direction eventstore.Direction, count int, criterion map[string]string) (eventstore.ReadEventBatch, error) {
+func scanEventRange(ctx context.Context, rt fdb.ReadTransaction, keyRange fdb.KeyRange, direction eventstore.Direction, count int, criterion map[string]any) (eventstore.ReadEventBatch, error) {
 	if bytes.Compare(keyRange.Begin.FDBKey(), keyRange.End.FDBKey()) >= 0 {
 		return nil, nil
 	}
@@ -110,7 +122,7 @@ func scanEventRange(ctx context.Context, rt fdb.ReadTransaction, keyRange fdb.Ke
 	return events, nil
 }
 
-func (b *Backend) scanCriterion(ctx context.Context, rt fdb.ReadTransaction, boundary string, indexes []indexDefinition, criterion map[string]string, from *eventstore.Position, direction eventstore.Direction, count int) (eventstore.ReadEventBatch, error) {
+func (b *Backend) scanCriterion(ctx context.Context, rt fdb.ReadTransaction, boundary string, indexes []indexDefinition, criterion map[string]any, from *eventstore.Position, direction eventstore.Direction, count int) (eventstore.ReadEventBatch, error) {
 	if native, ok := b.nativeCriterionRange(boundary, criterion); ok {
 		return b.scanNativeCriterion(ctx, rt, boundary, criterion, native, from, direction, count)
 	}

@@ -46,10 +46,11 @@ func (p Position) Before(other Position) bool {
 	return p.Compare(other) < 0
 }
 
-// Tag is one equality predicate over canonical event data.
+// Tag is one predicate over canonical event data.
 type Tag struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key      string `json:"key"`
+	Value    string `json:"value"`
+	Operator string `json:"operator,omitempty"`
 }
 
 // Criterion is a conjunction of tags. A Query matches when any one of its

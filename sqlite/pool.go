@@ -71,6 +71,9 @@ func openSQLitePools(
 	uri := sqliteURI(dbPath, poolCfg)
 
 	prepare := func(conn *sqlite.Conn) error {
+		if err := registerTagComparison(conn); err != nil {
+			return err
+		}
 		// Belt-and-braces: apply pragmas explicitly in case the URI hints are ignored.
 		for _, p := range sqlitePragmas(poolCfg) {
 			if err := sqlitex.ExecuteTransient(conn, p, nil); err != nil {

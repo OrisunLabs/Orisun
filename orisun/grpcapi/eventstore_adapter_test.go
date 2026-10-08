@@ -345,3 +345,21 @@ func TestEventStoreAdapterMapsIndexInventory(t *testing.T) {
 		t.Fatalf("GetIndex(missing) code = %v, want NotFound", status.Code(err))
 	}
 }
+
+func TestTagOperatorsSurviveTransportConversions(t *testing.T) {
+	for _, operator := range []string{"", "eq", "ne", "gt", "gte", "lt", "lte"} {
+		input := &Criterion{Tags: []*Tag{{Key: "amount", Value: "10", Operator: operator}}}
+		domain := domainCriteriaFromProto([]*Criterion{input})
+		if domain[0].Tags[0].Operator != operator {
+			t.Fatalf("lost domain operator %q", operator)
+		}
+		returned := criterionToProto(domain[0])
+		if returned.Tags[0].Operator != operator {
+			t.Fatalf("lost returned operator %q", operator)
+		}
+		subscription := coreQueryFromProto(&Query{Criteria: []*Criterion{input}})
+		if subscription.Criteria[0].Tags[0].Operator != operator {
+			t.Fatalf("lost subscription operator %q", operator)
+		}
+	}
+}

@@ -123,7 +123,7 @@ func readCriteria(criteria []coreeventstore.Criterion) []orisun.ReadCriterion {
 	for index, criterion := range criteria {
 		result[index] = orisun.ReadCriterion{Tags: make([]orisun.ReadTag, len(criterion.Tags))}
 		for tagIndex, tag := range criterion.Tags {
-			result[index].Tags[tagIndex] = orisun.ReadTag{Key: tag.Key, Value: tag.Value}
+			result[index].Tags[tagIndex] = orisun.ReadTag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result
@@ -158,7 +158,7 @@ func legacyQuery(query coreeventstore.Query) *orisun.Query {
 	for index, criterion := range query.Criteria {
 		tags := make([]*orisun.Tag, len(criterion.Tags))
 		for tagIndex, tag := range criterion.Tags {
-			tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value}
+			tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 		result.Criteria[index] = &orisun.Criterion{Tags: tags}
 	}

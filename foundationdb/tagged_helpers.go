@@ -15,35 +15,20 @@ import (
 // These helpers support the FoundationDB-backed implementation and therefore
 // belong behind the same build tag as backend.go and lock.go.
 
-func criteriaAsMaps(query *eventstore.Query) []map[string]string {
-	if query == nil {
-		return nil
-	}
-	out := make([]map[string]string, 0, len(query.Criteria))
-	for _, criterion := range query.Criteria {
-		m := make(map[string]string, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			m[tag.Key] = tag.Value
-		}
-		if len(m) > 0 {
-			out = append(out, m)
-		}
-	}
-	return out
+func criteriaAsMaps(query *eventstore.Query) []map[string]any {
+	return nonemptyCriteria(eventstore.EncodeQueryCriteria(query))
 }
-
-func readCriteriaAsMaps(criteria []eventstore.ReadCriterion) []map[string]string {
-	out := make([]map[string]string, 0, len(criteria))
+func readCriteriaAsMaps(criteria []eventstore.ReadCriterion) []map[string]any {
+	return nonemptyCriteria(eventstore.EncodeReadCriteria(criteria))
+}
+func nonemptyCriteria(criteria []map[string]any) []map[string]any {
+	result := make([]map[string]any, 0, len(criteria))
 	for _, criterion := range criteria {
-		m := make(map[string]string, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			m[tag.Key] = tag.Value
-		}
-		if len(m) > 0 {
-			out = append(out, m)
+		if len(criterion) > 0 {
+			result = append(result, criterion)
 		}
 	}
-	return out
+	return result
 }
 
 func hasCriteria(query *eventstore.Query) bool {
