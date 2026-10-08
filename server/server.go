@@ -821,8 +821,11 @@ func startGRPCServer(
 		grpc.MaxConcurrentStreams(config.Grpc.MaxConcurrentStreams),
 		grpc.MaxRecvMsgSize(config.Grpc.MaxReceiveMessageSize),
 		grpc.MaxSendMsgSize(config.Grpc.MaxSendMessageSize),
-		grpc.InitialWindowSize(config.Grpc.InitialWindowSize),
-		grpc.InitialConnWindowSize(config.Grpc.InitialConnWindowSize),
+		// Preserve the fixed-window behavior of our configured sizes from
+		// gRPC 1.84. Initial*WindowSize now enables dynamic sizing; its BDP
+		// estimator can shrink these windows and emit invalid WINDOW_UPDATEs.
+		grpc.StaticStreamWindowSize(config.Grpc.InitialWindowSize),
+		grpc.StaticConnWindowSize(config.Grpc.InitialConnWindowSize),
 		grpc.WriteBufferSize(config.Grpc.WriteBufferSize),
 		grpc.ReadBufferSize(config.Grpc.ReadBufferSize),
 	)

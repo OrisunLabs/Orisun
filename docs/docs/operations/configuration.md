@@ -96,8 +96,8 @@ with `existed_before_catalog: true`.
 | `ORISUN_GRPC_MAX_CONCURRENT_STREAMS` | `10000` | Maximum concurrent HTTP/2 streams per connection. |
 | `ORISUN_GRPC_MAX_RECEIVE_MESSAGE_SIZE` | `67108864` | Maximum inbound gRPC message size, 64 MB by default. |
 | `ORISUN_GRPC_MAX_SEND_MESSAGE_SIZE` | `67108864` | Maximum outbound gRPC message size, 64 MB by default. |
-| `ORISUN_GRPC_INITIAL_WINDOW_SIZE` | `1048576` | HTTP/2 stream flow-control window, 1 MB by default. |
-| `ORISUN_GRPC_INITIAL_CONN_WINDOW_SIZE` | `1048576` | HTTP/2 connection flow-control window, 1 MB by default. |
+| `ORISUN_GRPC_INITIAL_WINDOW_SIZE` | `1048576` | Fixed HTTP/2 stream flow-control window, 1 MB by default. Automatic window sizing is disabled. |
+| `ORISUN_GRPC_INITIAL_CONN_WINDOW_SIZE` | `1048576` | Fixed HTTP/2 connection flow-control window, 1 MB by default. Automatic window sizing is disabled. |
 | `ORISUN_GRPC_WRITE_BUFFER_SIZE` | `65536` | gRPC write buffer size. |
 | `ORISUN_GRPC_READ_BUFFER_SIZE` | `65536` | gRPC read buffer size. |
 | `ORISUN_GRPC_KEEPALIVE_MIN_TIME` | `5s` | Minimum client keepalive interval accepted by the server. |

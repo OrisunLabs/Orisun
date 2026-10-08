@@ -93,8 +93,8 @@ func (benchNoopPublishingTracker) InsertLastPublishedEvent(context.Context, stri
 // BenchmarkSqlite_GroupCommitBatchSize compares flush sizes using the same
 // save implementation under FULL synchronous durability.
 func BenchmarkSqlite_GroupCommitBatchSize(b *testing.B) {
-	for _, batchSize := range []int{1, sqliteGroupCommitMaxBatchRequests} {
-		for _, conc := range []int{1, 16, 100} {
+	for _, batchSize := range []int{1, 128, 512, 1024} {
+		for _, conc := range []int{1, 16, 100, 1024} {
 			b.Run(fmt.Sprintf("batch=%d/workers=%d", batchSize, conc), func(b *testing.B) {
 				saver, _, _, teardown := setupBenchmarkPools(b)
 				defer teardown()
@@ -331,7 +331,7 @@ func BenchmarkSqlite_EventStoreBurst10000(b *testing.B) {
 		b.StopTimer()
 
 		if fail > 0 {
-			b.Logf("burst had %d failures", fail)
+			b.Errorf("burst had %d failures", fail)
 		}
 		b.ReportMetric(float64(ok)/elapsed.Seconds(), "events/sec")
 		b.ReportMetric(float64(elapsed.Milliseconds()), "ms/burst")
@@ -423,7 +423,7 @@ func BenchmarkSqlite_GRPCEventStoreBurst10000(b *testing.B) {
 		b.StopTimer()
 
 		if fail > 0 {
-			b.Logf("burst had %d failures", fail)
+			b.Errorf("burst had %d failures", fail)
 		}
 		b.ReportMetric(float64(ok)/elapsed.Seconds(), "events/sec")
 		b.ReportMetric(float64(elapsed.Milliseconds()), "ms/burst")
@@ -485,8 +485,8 @@ func sqliteGRPCServerOptions(b *testing.B, optionSet, authMode string, eventStor
 	if optionSet == "cmd_like" {
 		opts = append(opts,
 			grpc.MaxConcurrentStreams(10000),
-			grpc.InitialWindowSize(sqliteBenchGRPCWindowSize),
-			grpc.InitialConnWindowSize(sqliteBenchGRPCWindowSize),
+			grpc.StaticStreamWindowSize(sqliteBenchGRPCWindowSize),
+			grpc.StaticConnWindowSize(sqliteBenchGRPCWindowSize),
 			grpc.WriteBufferSize(sqliteBenchGRPCWriteBufferSize),
 			grpc.ReadBufferSize(sqliteBenchGRPCReadBufferSize),
 		)
@@ -564,8 +564,8 @@ func createTCPBenchClients(b *testing.B, addr string, n int, authMode string) []
 		conn, err := grpc.Dial(addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(sqliteBenchGRPCMaxMessageSize)),
-			grpc.WithInitialWindowSize(sqliteBenchGRPCWindowSize),
-			grpc.WithInitialConnWindowSize(sqliteBenchGRPCWindowSize),
+			grpc.WithStaticStreamWindowSize(sqliteBenchGRPCWindowSize),
+			grpc.WithStaticConnWindowSize(sqliteBenchGRPCWindowSize),
 			grpc.WithWriteBufferSize(sqliteBenchGRPCWriteBufferSize),
 			grpc.WithReadBufferSize(sqliteBenchGRPCReadBufferSize),
 		)
@@ -630,7 +630,7 @@ func runGRPCSaveBurst10000(b *testing.B, clients []sqliteGRPCBenchClient) {
 
 	elapsed := time.Since(startTime)
 	if fail > 0 {
-		b.Logf("burst had %d failures", fail)
+		b.Errorf("burst had %d failures", fail)
 	}
 	b.ReportMetric(float64(ok)/elapsed.Seconds(), "events/sec")
 	b.ReportMetric(float64(elapsed.Milliseconds()), "ms/burst")
@@ -1043,7 +1043,7 @@ func BenchmarkSqlite_Burst10000(b *testing.B) {
 				b.StopTimer()
 
 				if fail > 0 {
-					b.Logf("burst had %d failures", fail)
+					b.Errorf("burst had %d failures", fail)
 				}
 				totalOK += ok
 				totalElapsed += elapsed

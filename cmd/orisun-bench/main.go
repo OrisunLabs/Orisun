@@ -293,8 +293,8 @@ func connect(ctx context.Context, config benchmarkConfig) (*benchmarkClient, err
 		config.Address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)),
-		grpc.WithInitialWindowSize(1024*1024),
-		grpc.WithInitialConnWindowSize(1024*1024),
+		grpc.WithStaticStreamWindowSize(1024*1024),
+		grpc.WithStaticConnWindowSize(1024*1024),
 		grpc.WithWriteBufferSize(64*1024),
 		grpc.WithReadBufferSize(64*1024),
 	)
