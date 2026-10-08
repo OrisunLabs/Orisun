@@ -1067,6 +1067,12 @@ For `SaveEventsV2`, construct one observation from the exact combined criteria s
 
 Catch-up subscriptions replay stored events, then switch to live JetStream delivery.
 
+When `after_position` is omitted, the subscription delivers the latest stored
+event matching the query once, then continues with newer matching events in
+ascending position order. If no stored event matches, it waits for future
+matches. An explicit `after_position` is exclusive: the event at that position
+is not replayed. The delivery cursor advances only after successful delivery.
+
 Only one active subscription may use the same boundary and subscriber-name
 pair. Orisun holds a renewable JetStream lease for the complete catch-up and
 live lifetime. Closing the stream releases it immediately; if the subscriber

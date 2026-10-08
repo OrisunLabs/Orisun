@@ -674,7 +674,7 @@ func (s *EventStore) SubscribeToAllEvents(
 		if lastProcessedPosition == nil {
 			// Start from the end if no position specified
 			getEventsReq = &GetEventsRequest{
-				Count:     batchSize,
+				Count:     1,
 				Direction: Direction_DESC,
 				Boundary:  boundary,
 				Query:     query,
@@ -720,16 +720,15 @@ func (s *EventStore) SubscribeToAllEvents(
 				if err := handler(gCtx, neutralSubscriptionReadEvent(*readEvent)); err != nil {
 					return statuscode.Errorf(statuscode.Internal, "event handler failed during catch-up: %v", err)
 				}
-			}
-
-			lastProcessedPosition = &Position{
-				CommitPosition:  readEvent.CommitPosition,
-				PreparePosition: readEvent.PreparePosition,
+				lastProcessedPosition = &Position{
+					CommitPosition:  readEvent.CommitPosition,
+					PreparePosition: readEvent.PreparePosition,
+				}
 			}
 		}
 
 		// If we got fewer events than requested, we're caught up
-		if len(batch) < batchSize {
+		if getEventsReq.Direction == Direction_ASC && len(batch) < batchSize {
 			s.logger.Info("Catch-up phase completed: reached end of event store")
 			break
 		}
