@@ -10,7 +10,7 @@ indexes without exposing Admin.
 
 Admin is available in every server flavor:
 
-- PostgreSQL-compatible server
+- PostgreSQL server
 - SQLite-only server
 
 Administrative mutations require the `ADMIN` role. The `OPERATIONS` role can
@@ -47,6 +47,10 @@ Set a production password with `ORISUN_ADMIN_PASSWORD` before exposing the serve
 | `GetUserCount` | Return total active user count. Requires `ADMIN`. |
 | `GetEventCount` | Return event count for a boundary. Requires `ADMIN` or `OPERATIONS`. |
 
+`SetUserBoundaryPermissions` exists in the protobuf but returns `UNIMPLEMENTED`
+in this runtime. `boundary_permissions` supplied on `CreateUser` is not applied;
+event access uses the role model in [Security & Authorization](../operations/security).
+
 ## Boundary lifecycle
 
 Boundary definitions and lifecycle transitions are durable events in the admin
@@ -55,7 +59,7 @@ append commits; physical provisioning continues asynchronously.
 
 | Status | Meaning |
 | --- | --- |
-| `BOUNDARY_LIFECYCLE_STATUS_PROVISIONING` | The definition is durable, but the backend, runtime registry, publisher, and projectors may not be ready yet. |
+| `BOUNDARY_LIFECYCLE_STATUS_PROVISIONING` | The definition is durable, but the backend, runtime registry, notification relay, and projectors may not be ready yet. |
 | `BOUNDARY_LIFECYCLE_STATUS_ACTIVE` | Shared physical provisioning completed. Each server independently installs the activated boundary before accepting requests for it. |
 | `BOUNDARY_LIFECYCLE_STATUS_FAILED` | A provisioning attempt failed and no later activation has been recorded. Inspect `last_error`; the server retries the definition independently with capped exponential backoff. |
 
@@ -97,7 +101,7 @@ Use `CreateBoundary` to define a boundary and idempotently ensure its physical
 storage:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateBoundary <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateBoundary <<EOF
 {
   "name": "orders",
   "description": "Order lifecycle events",
@@ -115,9 +119,9 @@ Use the same command to attach restored storage in the current format or the
 supported `0.13.0` upgrade format. Older storage formats are rejected:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateBoundary <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateBoundary <<EOF
 {
-  "name": "restored_orders",
+  "name": "orders",
   "description": "Restored orders",
   "placement": {
     "backend": "postgres",
@@ -127,15 +131,16 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateBoundary <<EOF
 EOF
 ```
 
-The provisioner uses the same initialization and activation flow in both
-cases. Legacy boundaries discovered at startup are recorded automatically with
-this flag. See
+The provisioner uses the same initialization and activation flow in both cases.
+There is no import flag or startup discovery. Use the original boundary name
+when attaching its existing tables or SQLite files; changing the name selects
+different physical storage. See
 [Boundary management](../operations/configuration#boundary-management).
 
 ## ListBoundaries
 
 ```bash
-grpcurl -H "$AUTH" localhost:5005 orisun.Admin/ListBoundaries
+grpcurl -plaintext -H "$AUTH" localhost:5005 orisun.Admin/ListBoundaries
 ```
 
 The response includes active, provisioning, and failed definitions. Use it for
@@ -144,7 +149,7 @@ readiness checks and operational inventory.
 ## GetBoundary
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"name":"orders"}' \
   localhost:5005 orisun.Admin/GetBoundary
 ```
@@ -167,7 +172,7 @@ succeed and the boundary subsequently become `FAILED`.
 ## CreateUser
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateUser <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateUser <<EOF
 {
   "name": "Ops User",
   "username": "ops",
@@ -186,6 +191,9 @@ Required fields:
 | `password` | Initial password. |
 | `roles` | Role list. Valid values are `ADMIN` and `OPERATIONS`. |
 
+`username` must contain at least three characters, `password` at least six,
+and `roles` must contain at least one supported role.
+
 Roles are validated exactly and are case-sensitive. The accepted values are
 `ADMIN` and `OPERATIONS`; an unsupported value such as `admin` is rejected with
 `INVALID_ARGUMENT`. See
@@ -194,13 +202,13 @@ Roles are validated exactly and are case-sensitive. The accepted values are
 ## ListUsers
 
 ```bash
-grpcurl -H "$AUTH" localhost:5005 orisun.Admin/ListUsers
+grpcurl -plaintext -H "$AUTH" localhost:5005 orisun.Admin/ListUsers
 ```
 
 ## DeleteUser
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"user_id":"550e8400-e29b-41d4-a716-446655440000"}' \
   localhost:5005 orisun.Admin/DeleteUser
 ```
@@ -211,7 +219,7 @@ revokes the deleted user's active session tokens.
 ## ChangePassword
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/ChangePassword <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.Admin/ChangePassword <<EOF
 {
   "user_id": "550e8400-e29b-41d4-a716-446655440000",
   "current_password": "changeit",
@@ -229,7 +237,7 @@ password after this call succeeds.
 ## ValidateCredentials
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"username":"ops","password":"change-this"}' \
   localhost:5005 orisun.Admin/ValidateCredentials
 ```
@@ -239,14 +247,17 @@ user. The check does not issue another session token.
 
 ## GetUserCount
 
+Counts are maintained by background projections and may briefly lag a successful
+write. They are operational statistics, not CCC observations.
+
 ```bash
-grpcurl -H "$AUTH" localhost:5005 orisun.Admin/GetUserCount
+grpcurl -plaintext -H "$AUTH" localhost:5005 orisun.Admin/GetUserCount
 ```
 
 ## GetEventCount
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders"}' \
   localhost:5005 orisun.Admin/GetEventCount
 ```

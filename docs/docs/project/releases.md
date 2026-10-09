@@ -49,14 +49,16 @@ Do not create release tags manually unless you are repairing a failed release an
 
 ## Breaking Releases
 
-Use a minor-version bump for storage or API changes that require operator action. For example, the PostgreSQL position migration that changes public `commit_position` values from PostgreSQL internal transaction IDs to Orisun logical positions is released as `0.3.1`, not another `0.2.x` patch.
+While Orisun is below `1.0`, use a minor-version bump for storage or API changes
+that require operator action. Describe the supported upgrade source explicitly;
+this release upgrades storage from `0.13.0` and rejects older formats.
 
 Breaking release notes should include:
 
 - what changed for existing deployments,
 - whether startup migrations run automatically,
 - backup and rollback expectations,
-- any required one-node-first rollout steps for clustered deployments,
+- the required stop-all-old-nodes, then start-one-upgraded-node sequence for clustered deployments,
 - whether external consumers need to remap stored positions.
 
 ## Binary Assets
@@ -82,7 +84,7 @@ The release workflow publishes the same tags to Docker Hub (`orisunlabs/orisun`)
 | --- | --- |
 | `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
-| `orisunlabs/orisun:<version>-pg` | PostgreSQL-compatible release version |
+| `orisunlabs/orisun:<version>-pg` | PostgreSQL release version |
 | `orisunlabs/orisun:<version>-sqlite` | SQLite-only release version |
 
 Use the same suffixes with `ghcr.io/orisunlabs/orisun` when you prefer GHCR.

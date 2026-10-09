@@ -89,13 +89,13 @@ Event-store write metrics:
 | `orisun.eventstore.commits` | Event batches committed successfully. |
 | `orisun.eventstore.events` | Events committed successfully. |
 | `orisun.eventstore.payload.size` | Uncompressed event data and metadata bytes committed successfully. |
-| `orisun.eventstore.commit.duration` | Durable backend commit-attempt duration in seconds, including failed attempts. |
+| `orisun.eventstore.commit.duration` | Save-attempt duration in seconds, including queue wait, backend commit, and failed attempts. |
 | `orisun.ccc.conflicts` | Writes rejected because their Command Context Consistency context changed. |
 
 Write metrics include `orisun.boundary.name`. Commit duration also includes
 `orisun.eventstore.commit.status`; failures add the bounded `error.type`
 status. CCC conflicts include a bounded `orisun.ccc.criterion_shape` value:
-`unscoped`, `position_only`, `empty_criterion`,
+`unscoped`, `multiple_queries`, `empty_criterion`,
 `single_criterion_single_tag`, `single_criterion_multiple_tags`, or
 `multiple_criteria`. Criterion keys and values and raw error messages are
 never metric attributes.
@@ -121,7 +121,7 @@ Operationally useful log lines include:
 - notification relay boundary-lease contention in clustered deployments,
 - subscription/projector checkpoint progress, backend read failures, and notification publish errors.
 
-Use `DEBUG` to trace authentication, subscription handover, and per-call detail; keep `INFO` or higher in production.
+Use `DEBUG` to trace authentication, subscription setup, and per-call detail; keep `INFO` or higher in production.
 
 ## Profiling
 

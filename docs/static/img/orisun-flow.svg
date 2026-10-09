@@ -16,7 +16,7 @@
     <rect width="264" height="160" rx="8" fill="#0E7D69"/>
     <text x="54" y="62" fill="#F6FFFB" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="900">Orisun</text>
     <text x="54" y="96" fill="#D5FFF2" font-family="Inter, Arial, sans-serif" font-size="17">context checks</text>
-    <text x="54" y="124" fill="#D5FFF2" font-family="Inter, Arial, sans-serif" font-size="17">publisher loop</text>
+    <text x="54" y="124" fill="#D5FFF2" font-family="Inter, Arial, sans-serif" font-size="17">backend reads</text>
   </g>
   <path d="M760 284H886" stroke="#C7872D" stroke-width="10" stroke-linecap="round"/>
   <path d="M868 266L896 284L868 302" stroke="#C7872D" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
@@ -26,10 +26,10 @@
     <rect width="180" height="74" rx="8" fill="#C7872D"/>
     <text x="34" y="44" fill="#1F1608" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900">Storage</text>
     <rect y="96" width="180" height="74" rx="8" fill="#CA6347"/>
-    <text x="30" y="140" fill="#FFF7F4" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900">JetStream</text>
+    <text x="30" y="140" fill="#FFF7F4" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900">NATS hints</text>
   </g>
   <g transform="translate(264 450)">
     <rect width="672" height="54" rx="8" fill="#162A26" stroke="#24413A"/>
-    <text x="28" y="35" fill="#ECF4F0" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">No skipped committed events. Sequential publishing per boundary.</text>
+    <text x="28" y="35" fill="#ECF4F0" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">Durable event history. Ordered backend subscriptions.</text>
   </g>
 </svg>

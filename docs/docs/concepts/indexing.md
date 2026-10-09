@@ -25,7 +25,7 @@ AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
 ## Simple Index
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id","fields":[{"json_key":"customer_id","value_type":"TEXT"}]}' \
   localhost:5005 orisun.EventStore/CreateIndex
 ```
@@ -47,6 +47,10 @@ Literal predicates let PostgreSQL use event-type partial indexes during write-ti
 CCC checks, just as it does during context reads. Historical matches are no longer
 joined and ranked for each criterion shape. Applications still own their indexes;
 unindexed criteria can require scans.
+
+Equality criteria use the direct criterion-ID lookup. Criteria with non-equality
+operators use generated predicates against each accepted event document so
+in-batch checks retain the same semantics as persisted reads.
 
 This supports duplicate contexts, different keys, multi-tag AND criteria,
 multi-criterion OR queries, multiple query-level observations, and query-less
@@ -88,7 +92,7 @@ request-local validation and savepoints.
 ## Composite Index
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "orders",
   "name": "category_priority",
@@ -113,16 +117,23 @@ for the scalar-text CCC predicates.
 | Value | Backend cast |
 | --- | --- |
 | `TEXT` | Text (default). |
-| `NUMERIC` | Numeric, for range and ordering predicates. |
-| `BOOLEAN` | Boolean. |
-| `TIMESTAMPTZ` | Timestamp with time zone. |
+| `NUMERIC` | Backend numeric cast; not the exact-decimal query comparison expression. |
+| `BOOLEAN` | PostgreSQL boolean cast; SQLite integer cast. |
+| `TIMESTAMPTZ` | SQLite text expression. PostgreSQL emits a text-to-timestamptz cast, which PostgreSQL rejects in an index because it is not immutable. |
+
+Typed index definitions do not change query semantics. Numeric range queries
+use exact-decimal comparison functions, so a `NUMERIC` cast index does not
+directly accelerate them. For current content queries, start with `TEXT`
+indexes on selective equality keys. PostgreSQL partial-index conditions compare
+text; SQLite conditions use the indexed field type when one is declared. Keep
+partial-index predicates aligned with the backend query expression.
 
 ## Partial Index
 
 A partial index covers only events that match its `conditions`, keeping the index small and focused on one event category.
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "orders",
   "name": "placed_amount",
@@ -145,7 +156,7 @@ These are index-definition conditions. Query tag operators use `eq`, `ne`,
 ## Drop An Index
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/DropIndex
 ```
@@ -156,16 +167,16 @@ Use `ListIndexes` for a boundary-wide inventory and `GetIndex` for one logical
 name:
 
 ```bash
-grpcurl -H "$AUTH" -d '{"boundary":"orders"}' \
+grpcurl -plaintext -H "$AUTH" -d '{"boundary":"orders"}' \
   localhost:5005 orisun.EventStore/ListIndexes
 
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/GetIndex
 ```
 
 Each definition includes its fields, conditions, combinator, and state.
-`BUILDING` means the index is registered but its backfill has not completed;
+`BUILDING` means the definition is registered but its physical build has not completed;
 `READY` means it can be used.
 Synchronous PostgreSQL and SQLite creation normally returns only after the
 index is ready.

@@ -71,7 +71,7 @@ Choose SQLite when a single active node is acceptable and simplicity matters. It
 
 ## Boundary State
 
-A boundary is a logical domain. Boundaries isolate event logs, indexes, notification subjects, and projector checkpoints. The admin boundary contains the event-sourced boundary catalog. Use the Admin `CreateBoundary` RPC for both new and existing physical storage. Active servers and embedded stores provision and begin publishing the boundary without a restart.
+A boundary is a logical domain. Boundaries isolate event logs, indexes, notification subjects, and projector checkpoints. The admin boundary contains the event-sourced boundary catalog. Use the Admin `CreateBoundary` RPC for both new and existing physical storage. Active servers and embedded stores provision and install the boundary's notification relay and subscriptions without a restart.
 
 PostgreSQL maps boundaries to schemas. `ORISUN_PG_ADMIN_SCHEMA` identifies the
 admin boundary's schema:
@@ -95,7 +95,7 @@ each catalogued boundary to files:
 ## Migrating between backends
 
 The public API is the same across supported backends, but storage files,
-keyspaces, and database schemas are backend-specific. Treat a backend change as
+and database schemas are backend-specific. Treat a backend change as
 an event replay:
 
 1. Stop writes to the source or establish an application-level cutover point.

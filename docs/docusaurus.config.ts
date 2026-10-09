@@ -88,7 +88,7 @@ const config: Config = {
       {
         name: 'description',
         content:
-          'Orisun is an event database for decisions that must stay correct as facts change, with declared context checks and sequential publishing per boundary.',
+          'Orisun is an event database for decisions that must stay correct as facts change, with declared context checks and ordered backend subscriptions.',
       },
     ],
     navbar: {

@@ -5,12 +5,13 @@ description: Run Orisun directly inside a Go service.
 
 Go services can embed Orisun directly instead of running the gRPC server as a separate process.
 
-This guide follows the current `main` branch and includes the upcoming
-`SaveEventsV2` API. To build against that API before its first tagged release,
-install the canonical module path from `main`:
+This guide describes the selected documentation version. `v0.13.0` already
+supports `SaveEventsV2`; notification simplification and backend removal are
+changes after that release. For **Next**, build against the exact source revision
+you intend to run:
 
 ```bash
-go get github.com/OrisunLabs/Orisun@main
+go get 'github.com/OrisunLabs/Orisun@<revision>'
 ```
 
 For production, pin the exact release version that contains the APIs you use
@@ -151,7 +152,8 @@ for {
 	}
 	switch boundary.Status {
 	case boundarymodel.StatusActive:
-		// The runtime registry, publisher, and physical storage are ready.
+		// Shared provisioning completed; the local runtime may still be installing.
+		// Retry a brief FAILED_PRECONDITION from event operations.
 		goto ready
 	case boundarymodel.StatusFailed:
 		// Provisioning is retried automatically; expose the current cause.
@@ -185,7 +187,7 @@ Use `CreateBoundary` to attach restored storage in the current format:
 
 ```go
 existing, err := store.CreateBoundary(ctx, boundarymodel.Definition{
-	Name:                 "restored_orders",
+	Name:        "orders",
 	Description:          "Existing order event log",
 	Placement: boundarymodel.Placement{
 		Backend:   "postgres",
@@ -220,7 +222,7 @@ use(boundaries, boundary)
 At startup, embedded stores replay catalog definitions into the local runtime.
 PostgreSQL uses `ORISUN_PG_ADMIN_SCHEMA` only to locate the admin boundary;
 application schema placements come from the catalog. SQLite
-also install application boundaries only from catalog definitions.
+also installs application boundaries only from catalog definitions.
 
 Startup upgrades storage from `0.13.0` without rewriting event
 documents. Older formats are rejected; historical boundary mappings are not imported.
@@ -242,7 +244,10 @@ for _, e := range batch {
 }
 ```
 
-One page is capped at 10,000 events; page forward from the last event's position for larger reads.
+Embedded backend reads default `Count: 0` to 1,000 and clamp counts to 10,000.
+`FromPosition` is inclusive; for larger reads request at least two rows, discard
+only the first row equal to the previous cursor, and continue from the last
+returned position. See [paging](../concepts/positions#positions-and-paging).
 
 For carried-state command contexts, `GetLatestByCriteria` takes a `LatestByCriteriaQuery` and returns a `LatestByCriteriaBatch`. Matches align positionally with the input criteria and expose a `Found` flag:
 
@@ -359,7 +364,7 @@ Embedded stores expose the same high-level behavior as the server:
 - create and import boundaries
 - list and inspect boundary lifecycle state
 - create and drop boundary indexes
-- preserve backend-specific publishing guarantees
+- deliver ordered events from durable backend reads
 
 ## Shutdown
 

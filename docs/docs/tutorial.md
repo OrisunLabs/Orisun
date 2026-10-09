@@ -192,7 +192,7 @@ client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "accounts",
   "consistency": [{
@@ -326,7 +326,7 @@ Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(lates
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<EOF
 {
   "boundary": "accounts",
   "criteria": [
@@ -480,7 +480,7 @@ client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "accounts",
   "consistency": [{
@@ -668,7 +668,7 @@ client.createIndex(Eventstore.CreateIndexRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "accounts",
   "name": "account_root",
@@ -682,7 +682,7 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 }
 EOF
 
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "accounts",
   "name": "account_scope",
@@ -700,7 +700,10 @@ Both the CCC consistency check and read queries can now use indexes. See [Indexi
 
 ## 6. Project to a read model
 
-A balance read model stays current by subscribing. Catch-up replay reads stored history first, then switches to live JetStream delivery:
+A balance read model stays current through ordered backend reads. The same
+subscription replays history and drains newly committed matches when Core NATS
+hints arrive. Start from `{0, 0}` to rebuild all history; omitting the position
+starts with only the latest matching event:
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
@@ -718,7 +721,7 @@ handler := orisun.NewSimpleEventHandler().
 sub, err := client.SubscribeToEvents(ctx, &eventstore.CatchUpSubscribeToEventStoreRequest{
 	Boundary:       "accounts",
 	SubscriberName: "balance-projector",
-	AfterPosition:  &eventstore.Position{CommitPosition: -1, PreparePosition: -1},
+	AfterPosition:  &eventstore.Position{CommitPosition: 0, PreparePosition: 0},
 }, handler)
 if err != nil {
 	return err
@@ -734,7 +737,7 @@ const subscription = client.subscribeToEvents(
   {
     subscriberName: 'balance-projector',
     boundary: 'accounts',
-    afterPosition: { commitPosition: -1, preparePosition: -1 },
+    afterPosition: { commitPosition: 0, preparePosition: 0 },
   },
   async (event) => {
     // apply the event, persist side effects, then checkpoint event.position
@@ -754,7 +757,7 @@ EventSubscription sub = client.subscribeToEvents(
         .setBoundary("accounts")
         .setSubscriberName("balance-projector")
         .setAfterPosition(Eventstore.Position.newBuilder()
-            .setCommitPosition(-1).setPreparePosition(-1).build())
+            .setCommitPosition(0).setPreparePosition(0).build())
         .build(),
     new EventSubscription.EventHandler() {
         public void onEvent(Eventstore.Event event) { /* apply + checkpoint */ }
@@ -769,11 +772,11 @@ EventSubscription sub = client.subscribeToEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
 {
   "subscriber_name": "balance-projector",
   "boundary": "accounts",
-  "after_position": {"commit_position": -1, "prepare_position": -1}
+  "after_position": {"commit_position": 0, "prepare_position": 0}
 }
 EOF
 ```

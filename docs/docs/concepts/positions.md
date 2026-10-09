@@ -66,18 +66,32 @@ Do not substitute `WriteResult.log_position`, a boundary head, or the newest
 event from an unrelated query. A position is meaningful for CCC only when it
 is paired with the exact query whose latest match it describes.
 
-PostgreSQL serializes position assignment per boundary from position draw through commit. That keeps public positions commit-ordered, so an observed context position is a valid stable upper bound for later consistency checks. SQLite naturally has one writer per boundary file.
+PostgreSQL serializes position assignment per boundary from position draw through commit. That keeps public positions commit-ordered, so an observed context position is a valid stable upper bound for later consistency checks. SQLite naturally has one writer per boundary file. Group commit can put several saves in one physical transaction; each save still has its own logical commit position and write ID.
 
 ## Positions and paging
 
-`GetEvents` reads a bounded page. To walk a boundary or a criteria set, page forward using the position of the last event you received:
+`GetEvents.from_position` is **inclusive** in both directions: ascending reads
+include positions greater than or equal to it, and descending reads include
+positions less than or equal to it. Omit it to read from the beginning in `ASC`
+or from the latest match in `DESC`.
 
-1. Call `GetEvents` with `from_position` (`{0, 0}` for the first page) and a `count`.
-2. Process the returned events.
-3. Use the `position` of the last event as the `from_position` for the next call.
-4. Stop when a page returns fewer events than `count`.
+For forward paging:
 
-Reads return a stable committed prefix, so a page never contains events that a later page should have ordered before it. Because delivery and paging boundaries can overlap a position, keep consumers idempotent and deduplicate by `event_id` rather than assuming each event is seen exactly once.
+1. Use `{0, 0}` for the first cursor and request between 2 and 10,000 rows.
+2. Discard only the first row if its complete position equals the cursor.
+3. Process the remaining rows in order and use the last returned position as
+   the next cursor. Do not increment either position component.
+4. Stop when the **original** page contains fewer rows than requested, before
+   subtracting the cursor row. A page containing only the cursor has no new rows.
+
+A one-row request is valid for a single lookup, but cannot advance an inclusive
+paging loop once the cursor matches a row. Counts outside 1–10,000 return
+`INVALID_ARGUMENT` over gRPC; the server does not silently truncate them.
+
+Ascending reads return a stable committed prefix. Descending latest lookups do
+not apply PostgreSQL's ascending visibility barrier. Each page has its own read
+snapshot; multiple pages are not a fixed snapshot of the whole log. Keep consumers
+idempotent and obtain fresh CCC observations after a long replay.
 
 ## Subscriptions
 

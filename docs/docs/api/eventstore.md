@@ -99,7 +99,7 @@ AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
 Send the header on every call:
 
 ```bash
-grpcurl -H "$AUTH" localhost:5005 orisun.EventStore/Ping
+grpcurl -plaintext -H "$AUTH" localhost:5005 orisun.EventStore/Ping
 ```
 
   </TabItem>
@@ -114,9 +114,9 @@ Events have four caller-supplied fields:
 | `event_id` | Stable event identifier. Use UUIDs for portability; the docs use UUIDv7 examples. PostgreSQL requires UUID format, while SQLite accepts any string. Orisun does not deduplicate writes by `event_id`; use it for application-level retry recognition and consumer deduplication. |
 | `event_type` | Event type name, for example `OrderPlaced`. |
 | `data` | JSON object encoded as a string. Criteria queries match this JSON object. |
-| `metadata` | JSON object encoded as a string. Use for request source, tracing, or non-domain metadata. |
+| `metadata` | JSON object encoded as a string for tracing or non-domain metadata. Omission or JSON null becomes `{}`; arrays and scalars are rejected over gRPC. |
 
-Orisun also stores a durable `position` and `date_created` on committed events.
+Orisun also stores a durable `position`, `date_created`, and `write_id` on committed events. Empty or JSON-null `data` is normalized to `{}`; arrays and scalar data are rejected. SDK validators can impose stricter caller-side requirements.
 
 :::note
 Storage backends expose the event envelope through reserved fields in the
@@ -245,7 +245,7 @@ _, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 For multiple independently read contexts, include multiple observations:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
   "events": [{
@@ -440,7 +440,7 @@ Eventstore.WriteResult result = client.saveEventsV2(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
   "events": [
@@ -458,14 +458,16 @@ EOF
   </TabItem>
 </Tabs>
 
-The response contains the position of the last committed event in the batch:
+An example response contains the write ID and position of the last committed
+event. Position values vary by backend; treat the returned pair as opaque:
 
 ```json
 {
   "log_position": {
     "commit_position": 1,
     "prepare_position": 0
-  }
+  },
+  "write_id": "1:0"
 }
 ```
 
@@ -557,7 +559,7 @@ client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
   "consistency": [{
@@ -683,7 +685,7 @@ Eventstore.GetEventsResponse resp = client.getEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
 {
   "boundary": "orders",
   "from_position": {
@@ -755,7 +757,7 @@ Eventstore.GetEventsResponse resp = client.getEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
 {
   "boundary": "orders",
   "query": {
@@ -820,7 +822,7 @@ Eventstore.GetEventsResponse resp = client.getEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
 {
   "boundary": "orders",
   "from_position": {
@@ -853,18 +855,35 @@ EOF
 }
 ```
 
-`Event` adds `position` and `date_created` to the fields supplied at write time. `CatchUpSubscribeToEvents` delivers the same event shape.
+`Event` adds `position`, `date_created`, and `write_id` to the fields supplied at write time. `CatchUpSubscribeToEvents` delivers the same event shape.
 
 ### Paging through a boundary
 
-`GetEvents` returns one bounded page (`count`, server-capped at 10000). To walk the whole log or a criteria set, page forward:
+`GetEvents.from_position` is **inclusive** in both directions: ascending reads
+include positions greater than or equal to it, and descending reads include
+positions less than or equal to it. Omit it to read from the beginning in `ASC`
+or from the latest match in `DESC`.
 
-1. First call uses `from_position` `{0, 0}` to start at the beginning.
-2. Process the page, then take the `position` of the last event.
-3. Pass it as `from_position` on the next call.
-4. Stop when a page returns fewer events than `count`.
+For forward paging:
 
-Keep the consumer idempotent and deduplicate by `event_id` rather than assuming exactly-once paging. The position model behind `from_position` and `direction` is described in [Positions and Ordering](../concepts/positions).
+1. Use `{0, 0}` for the first cursor and request between 2 and 10,000 rows.
+2. Discard only the first row if its complete position equals the cursor.
+3. Process the remaining rows in order and use the last returned position as
+   the next cursor. Do not increment either position component.
+4. Stop when the **original** page contains fewer rows than requested, before
+   subtracting the cursor row. A page containing only the cursor has no new rows.
+
+A one-row request is valid for a single lookup, but cannot advance an inclusive
+paging loop once the cursor matches a row. Counts outside 1–10,000 return
+`INVALID_ARGUMENT` over gRPC; the server does not silently truncate them.
+
+Ascending reads return a stable committed prefix. Descending latest lookups do
+not apply PostgreSQL's ascending visibility barrier. Each page has its own read
+snapshot; multiple pages are not a fixed snapshot of the whole log. Keep consumers
+idempotent and obtain fresh CCC observations after a long replay.
+
+Omit `query` to read all events; an empty criteria list also leaves the read
+unfiltered. Use non-empty criteria for content filters.
 
 ### Use `GetEvents` as a command context
 
@@ -968,7 +987,7 @@ Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<EOF
 {
   "boundary": "ledger",
   "criteria": [
@@ -997,7 +1016,7 @@ For `SaveEventsV2`, construct one observation from the exact combined criteria s
 ## CatchUpSubscribeToEvents
 
 Subscriptions read matching events from the backend throughout their lifetime.
-NATS boundary hints trigger reads; an subscription-owned idle watchdog hints timer recovers
+NATS boundary hints trigger reads; a subscription-owned idle watchdog recovers
 missed hints. The backend evaluates the complete query for both historical and
 new events. See [Delivery Guarantees](../concepts/delivery-guarantees).
 
@@ -1085,7 +1104,7 @@ EventSubscription sub = client.subscribeToEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
 {
   "subscriber_name": "order-projector",
   "boundary": "orders",
@@ -1160,7 +1179,7 @@ client.subscribeToEvents(Eventstore.CatchUpSubscribeToEventStoreRequest.newBuild
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
 {
   "subscriber_name": "placed-orders",
   "boundary": "orders",
@@ -1215,7 +1234,7 @@ client.ping();
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d '{}' localhost:5005 orisun.EventStore/Ping
+grpcurl -plaintext -H "$AUTH" -d '{}' localhost:5005 orisun.EventStore/Ping
 ```
 
   </TabItem>
@@ -1259,7 +1278,7 @@ System.out.printf("node=%s version=%s backend=%s%n",
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d '{}' \
+grpcurl -plaintext -H "$AUTH" -d '{}' \
   localhost:5005 orisun.EventStore/GetServerInfo
 ```
 
@@ -1334,7 +1353,7 @@ client.createIndex(Eventstore.CreateIndexRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "orders",
   "name": "customer_id",
@@ -1348,7 +1367,10 @@ EOF
   </TabItem>
 </Tabs>
 
-`value_type` is `TEXT`, `NUMERIC`, `BOOLEAN`, or `TIMESTAMPTZ`. Add `conditions` for a partial index. Each condition `operator` must be one of `=`, `>`, `<`, `>=`, or `<=`. See [Indexing](../concepts/indexing) for composite and partial index examples.
+`value_type` declares `TEXT`, `NUMERIC`, `BOOLEAN`, or `TIMESTAMPTZ`. Prefer
+`TEXT` for current equality queries. PostgreSQL currently rejects the generated
+`TIMESTAMPTZ` cast as a non-immutable index expression; SQLite stores it as text.
+Add `conditions` for a partial index. Each condition `operator` must be one of `=`, `>`, `<`, `>=`, or `<=`. See [Indexing](../concepts/indexing) for composite and partial index examples.
 
 ## ListIndexes and GetIndex
 
@@ -1384,10 +1406,10 @@ Eventstore.GetIndexResponse one = client.getIndex("orders", "customer_id");
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d '{"boundary":"orders"}' \
+grpcurl -plaintext -H "$AUTH" -d '{"boundary":"orders"}' \
   localhost:5005 orisun.EventStore/ListIndexes
 
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/GetIndex
 ```
@@ -1434,7 +1456,7 @@ client.dropIndex(Eventstore.DropIndexRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/DropIndex
 ```

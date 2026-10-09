@@ -34,16 +34,16 @@ older published clients. Updating source revisions does not publish new packages
   <TabItem value="go" label="Go" default>
 
 ```bash
-go get github.com/oexza/orisun-client-go
+go get 'github.com/oexza/orisun-client-go@<revision>'
 ```
 
   </TabItem>
   <TabItem value="node" label="Node.js">
 
-The package is currently installed from GitHub (npm publication is pending):
+Install a published version that matches your server, or pin a GitHub revision:
 
 ```bash
-npm install github:OrisunLabs/orisun-node-client
+npm install 'github:OrisunLabs/orisun-node-client#<revision>'
 ```
 
 Or in `package.json`:
@@ -51,7 +51,7 @@ Or in `package.json`:
 ```json
 {
   "dependencies": {
-    "@orisun/eventstore-client": "github:OrisunLabs/orisun-node-client"
+    "@orisun/eventstore-client": "github:OrisunLabs/orisun-node-client#<revision>"
   }
 }
 ```
@@ -75,7 +75,7 @@ Published to GitHub Packages. Add the repository and dependency, then authentica
     <dependency>
         <groupId>com.orisunlabs</groupId>
         <artifactId>orisun-java-client</artifactId>
-        <version>0.0.1</version>
+        <version>CLIENT_VERSION</version>
     </dependency>
 </dependencies>
 ```
@@ -94,7 +94,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.orisunlabs:orisun-java-client:0.0.1'
+    implementation 'com.orisunlabs:orisun-java-client:CLIENT_VERSION'
 }
 ```
 
@@ -142,8 +142,9 @@ if (boundary.status !== BoundaryStatus.ACTIVE) {
 const {boundaries} = await admin.listBoundaries();
 ```
 
-Set `existedBeforeCatalog: true` on `createBoundary(...)` when the physical
-storage already exists. The command returns a definition in `PROVISIONING`; do
+Use the same `createBoundary(...)` shape to attach existing supported storage.
+Retain its original boundary name and placement; there is no import flag.
+The command returns a definition in `PROVISIONING`; do
 not treat the response as readiness. In clustered deployments, retry an EventStore
 request that briefly returns `FAILED_PRECONDITION` after the shared catalog
 becomes `ACTIVE`; the selected node is still completing its local runtime
@@ -163,6 +164,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
+	"os/signal"
 
 	orisun "github.com/oexza/orisun-client-go"
 	eventstore "github.com/oexza/orisun-client-go/eventstore"
@@ -179,7 +182,8 @@ func main() {
 	}
 	defer client.Close()
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 	accountOpenedID := "018f2d5e-0001-7000-8000-000000000001"
 	accountRootQuery := &eventstore.Query{
 		Criteria: []*eventstore.Criterion{{
@@ -260,6 +264,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer sub.Close()
+	<-ctx.Done() // Keep the process alive until interrupted.
 }
 ```
 
@@ -356,6 +361,7 @@ import com.orisunlabs.orisun.client.OrisunClient;
 import com.orisunlabs.orisun.client.OptimisticConcurrencyException;
 import com.orisunlabs.orisun.client.EventSubscription;
 import com.orisun.eventstore.Eventstore;
+import java.util.concurrent.CountDownLatch;
 
 try (OrisunClient client = OrisunClient.newBuilder()
     .withServer("localhost", 5005)
@@ -419,7 +425,8 @@ try (OrisunClient client = OrisunClient.newBuilder()
               .build())
           .build());
 
-  // 4. Subscribe a projector after the command just committed.
+  // 4. Keep the client open until the subscription ends.
+  CountDownLatch finished = new CountDownLatch(1);
   EventSubscription sub = client.subscribeToEvents(
       Eventstore.CatchUpSubscribeToEventStoreRequest.newBuilder()
           .setBoundary("accounts")
@@ -428,10 +435,11 @@ try (OrisunClient client = OrisunClient.newBuilder()
           .build(),
       new EventSubscription.EventHandler() {
           public void onEvent(Eventstore.Event event) { /* apply + checkpoint */ }
-          public void onError(Throwable error) { error.printStackTrace(); }
-          public void onCompleted() {}
+          public void onError(Throwable error) { error.printStackTrace(); finished.countDown(); }
+          public void onCompleted() { finished.countDown(); }
       });
 
+  finished.await();
   sub.close();
 }
 ```
@@ -529,7 +537,7 @@ cached session and the existing client retains its original Basic credentials.
 With `grpcurl`, send HTTP Basic in the `authorization` metadata header:
 
 ```bash
-grpcurl -H 'Authorization: Basic YWRtaW46Y2hhbmdlaXQ=' localhost:5005 orisun.EventStore/Ping
+grpcurl -plaintext -H 'Authorization: Basic YWRtaW46Y2hhbmdlaXQ=' localhost:5005 orisun.EventStore/Ping
 ```
 
 Each authenticated response sets an `x-auth-token` header. A long-lived client can capture that token once and send it as `x-auth-token` on subsequent calls instead of re-sending Basic credentials; Orisun validates the token first and falls back to Basic. Read the full model in [Security & Authorization](../operations/security).
@@ -541,7 +549,8 @@ The service definitions live in the main repository:
 - [`proto/eventstore.proto`](https://github.com/OrisunLabs/Orisun/blob/main/proto/eventstore.proto)
 - [`proto/admin.proto`](https://github.com/OrisunLabs/Orisun/blob/main/proto/admin.proto)
 
-Generated Go bindings are kept in `orisun/`.
+Generated server Go bindings are kept in `orisun/grpcapi/`; SDK bindings live
+in each client repository.
 
 ## Generate stubs for another language
 
@@ -557,9 +566,43 @@ python -m grpc_tools.protoc \
 Swap the `*_out` plugins for your target language. With gRPC reflection enabled (the default), you can also explore the API live:
 
 ```bash
-grpcurl -H "$AUTH" localhost:5005 list
-grpcurl -H "$AUTH" localhost:5005 describe orisun.EventStore
+grpcurl -plaintext -H "$AUTH" localhost:5005 list
+grpcurl -plaintext -H "$AUTH" localhost:5005 describe orisun.EventStore
 ```
+
+## Single-query saves
+
+The existing SDK `SaveEvents`/`saveEvents` request shape remains supported.
+Its `query.subsetQuery` and `query.expectedPosition` are translated into one
+`SaveEventsV2.consistency` observation. A missing position with a non-empty
+query means `{-1, -1}`; no query or an empty criteria list means an unconditional
+append. The server exposes only the `SaveEventsV2` write RPC, so upgrade old
+SDK binaries before connecting to this release. Keeping the method name does
+not make an old binary use the new RPC.
+
+## Subscription lifecycle and checkpoints
+
+`after_position` is exclusive when supplied. Omit it to receive the latest
+matching stored event once, then newer matches; use `{0, 0}` for a complete
+replay. Subscriber names coordinate a lease, not a stored application checkpoint.
+SDK helpers do not automatically reconnect from durable progress. Persist your
+own checkpoint and recreate the subscription after transport failure or expiry.
+
+The server advances its cursor when a gRPC send succeeds, before client-side
+processing is acknowledged. Go and Node callbacks run sequentially, but their
+current helpers log/report a callback error and continue receiving. To avoid
+checkpointing beyond a failed event, stop or cancel processing, then reconnect
+from your durable checkpoint. In Go, cancel the subscription context rather
+than calling `Close()` from its own handler. Node returns a cancellable gRPC
+stream; call `cancel()` to terminate it.
+
+Java subscriptions inherit the configured RPC timeout as a stream deadline
+(default 30 seconds). `EventSubscription.close()` currently suppresses callbacks
+and invokes completion locally; it does not cancel the underlying RPC immediately.
+Close the client/channel or let its deadline terminate the RPC before expecting
+the server lease to be released. These are SDK lifecycle limits, not event
+acknowledgements. Embedded callbacks differ: returning an error ends the
+subscription immediately. See [Go embedding](../embedding/go#embedded-subscriptions).
 
 ## Compatibility
 

@@ -78,7 +78,7 @@ Operational notes:
 
 - Persist `/var/lib/orisun` or the configured `ORISUN_SQLITE_DIR`.
 - Run exactly one active Orisun writer node.
-- Back up every `{boundary}.db` file, every `{boundary}_metadata.db` file, and the NATS store directory if live delivery retention matters during restore.
+- Back up every `{boundary}.db` file, every `{boundary}_metadata.db` file using a consistent backup of both databases for each boundary. Persist the configured NATS store separately; notifications have no retained event history.
 - Treat the admin boundary files as mandatory: its event log contains the
   boundary catalog. Restoring application files without the matching admin
   boundary requires an explicit `CreateBoundary` call before those files are usable.
@@ -89,13 +89,15 @@ SQLite has no clustered mode, but a single boundary file goes further than most 
 
 ### 1. Vertical headroom first
 
-Each boundary file already runs WAL mode with a read pool sized to `runtime.NumCPU()` and a single serialized writer. On NVMe storage with batched `SaveEventsV2` calls, a single boundary sustains tens of thousands of events per second. Before adding infrastructure:
+Each boundary file already runs WAL mode with a CPU-based read pool (overridable with `ORISUN_SQLITE_READ_POOL_SIZE`) and a single serialized writer. The [published benchmarks](./benchmarks.mdx#sqlite-results) reached tens of
+thousands of events per second on their stated machine and workload; those
+historical measurements are not a capacity guarantee for this release. Before adding infrastructure:
 
 - batch writes, because the per-transaction cost dominates the per-event cost
 - keep `ORISUN_SQLITE_DIR` on local NVMe, never on NFS or other network filesystems (file locking is unreliable there)
 - raise `LimitNOFILE` and give the node enough memory for the page cache
 
-The per-boundary write ceiling is fundamental: one writer per file, and subscription reads require stable position order per boundary. This same per-boundary ordering ceiling exists in PostgreSQL mode; SQLite just reaches it sooner.
+The per-boundary write ceiling is fundamental: one writer per file, and subscription reads require stable position order per boundary. This same per-boundary ordering ceiling exists in PostgreSQL mode; the measured ceiling depends on storage, durability, and workload.
 
 ### 2. Shard by boundary
 
@@ -124,9 +126,14 @@ If one boundary alone outgrows a node, sharding cannot help. Split the domain in
 
 The gap in a single-node deployment is availability, not throughput. Two complementary tools:
 
-**[Litestream](https://litestream.io)** continuously replicates SQLite WAL segments to S3-compatible storage. It runs as a sidecar, needs no Orisun changes, and gives a recovery point of seconds. Replicate every `{boundary}.db` and `{boundary}_metadata.db` in `ORISUN_SQLITE_DIR`. Recovery is a restore-and-restart: minutes of downtime, near-zero data loss. This should be the baseline for any production SQLite deployment.
+**[Litestream](https://litestream.io)** continuously replicates SQLite WAL segments to S3-compatible storage. It can run alongside Orisun. Replicate every `{boundary}.db` and
+`{boundary}_metadata.db` in `ORISUN_SQLITE_DIR`, including the admin catalog.
+Replication is asynchronous; measure recovery-point and restore-time objectives
+and verify consistency between each event file and its metadata file. This
+repository does not provide a tested Litestream deployment profile.
 
-**[LiteFS](https://fly.io/docs/litefs/)** replicates the files to warm standby machines with lease-based primary election, cutting failover from minutes to seconds. Run Orisun only on the current primary: Orisun is not read-only-aware (event and projector writes require an active writer), so a second Orisun process must not run against a replica copy. Standbys hold warm files; on failover, the new primary starts Orisun. LiteFS adds operational moving parts (FUSE, a lease backend), so adopt it only when restore-time recovery is too slow.
+**[LiteFS](https://fly.io/docs/litefs/)** replicates the files to warm standby machines with lease-based primary election. Failover time depends on the host deployment.
+This repository does not provide a tested LiteFS deployment profile. Run Orisun only on the current primary: Orisun is not read-only-aware (event and projector writes require an active writer), so a second Orisun process must not run against a replica copy. Standbys hold warm files; on failover, the new primary starts Orisun. LiteFS adds operational moving parts (FUSE, a lease backend), so adopt it only when restore-time recovery is too slow.
 
 Do not copy live database files with `cp` or filesystem snapshots alone; under WAL a bare file copy can be torn. Use Litestream, the SQLite backup API, or stop the node first.
 
@@ -150,7 +157,9 @@ This profile is useful when:
 - the database needs independent backup and operational controls
 - you may later add more Orisun nodes
 
-Persist the NATS store directory for durable JetStream state. PostgreSQL remains the event source of truth.
+Persist the configured NATS store directory. The lease bucket and the admin
+messaging stream are currently memory-backed; NATS persistence does not replace
+PostgreSQL backups or preserve application checkpoints.
 
 ## PostgreSQL Major Upgrades
 
@@ -166,12 +175,12 @@ Recommended upgrade sequence:
 
 1. Stop all Orisun nodes cleanly.
 2. Back up PostgreSQL and the NATS store directory.
-3. If the Orisun installation is older than `0.8.0`, upgrade to `0.8.0` and
-   verify it before upgrading PostgreSQL or moving to a newer Orisun release.
+3. Confirm Orisun storage is current or from `0.13.0`. Older formats require
+   the [export/import procedure](./upgrading-event-envelope), not a direct startup upgrade.
 4. Upgrade PostgreSQL using your platform's normal process.
 5. Start one Orisun node first and wait for every catalogued boundary to
    initialize.
-6. Confirm publishers/projectors are healthy, then start the rest of the Orisun nodes.
+6. Confirm notification relays and projectors are healthy, then start the rest of the Orisun nodes.
 
 Current releases clear stale `pg_xact_id` values when a restored database or
 new cluster has restarted its transaction-ID range. PostgreSQL transaction IDs
@@ -197,7 +206,12 @@ Each node should have unique:
 - `ORISUN_NATS_SERVER_NAME`
 - `ORISUN_NATS_STORE_DIR`
 
-Core NATS routes transient hints across the cluster without notification replicas. JetStream remains enabled for leases and admin messaging; use at least three nodes for a production cluster.
+Core NATS routes transient hints across the cluster without notification replicas.
+JetStream remains enabled for leases and admin messaging. The runtime currently
+creates the `ORISUN_LOCKS` KV bucket with memory storage and **one replica**;
+adding three nodes does not replicate that lease state. Do not assume automatic
+lease availability after losing its hosting node. Test NATS recovery before relying
+on a clustered deployment for availability.
 
 Expected notification relay behavior:
 
@@ -214,7 +228,12 @@ For transaction mode:
 - SQL functions use schema-qualified table references.
 - The Go-side pool uses multi-statement transactions normally.
 - PgBouncer 1.21+ should be configured with compatible prepared-statement handling.
-- Older PgBouncer deployments should use simple protocol mode or compatible describe-cache settings.
+- Orisun does not expose a query-protocol switch through configuration. Validate
+  compatibility against its current pgx driver and your PgBouncer configuration.
+- `LISTEN/NOTIFY` needs a persistent session. Route the listener through a
+  session-mode endpoint, or set `ORISUN_PG_LISTEN_ENABLED=false` and accept
+  subscription idle-watchdog latency. Orisun uses the same configured endpoint
+  for its listener and database pools.
 
 ## Runtime Tuning
 
@@ -233,17 +252,23 @@ Effective values are logged at startup.
 | gRPC request message size | `ORISUN_GRPC_MAX_RECEIVE_MESSAGE_SIZE` (default 64 MB) | Caps one gRPC request, including `SaveEventsV2`; it therefore bounds event payload plus consistency observations. Split very large batches. |
 | Event `data` / `metadata` | JSON string per field | No separate field cap; the whole request must fit the message-size limit above. |
 | Subscription read batch | 100 events | Inclusive forward reads discard the cursor event; memory remains bounded per subscription. |
-| `GetEvents` page | `count` per request, server-capped at 10000 | Page with `from_position`; see [Positions and Ordering](../concepts/positions#positions-and-paging). |
+| `GetEvents` page | `count` per request, valid range 1–10,000; larger counts are rejected | Page with `from_position`; see [Positions and Ordering](../concepts/positions#positions-and-paging). |
 | Notification buffering (per subscription) | NATS client defaults; one pending drain wake-up | Core NATS retains no history. Recovery reads the backend. |
-| Subscription idle watchdog | `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` (default 1s) | Positive silence threshold since the last received hint. At expiry publish a NATS hint, which triggers a backend drain. |
+| Subscription idle watchdog | `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` (default 10s) | Positive silence threshold since the last received hint. At expiry publish a NATS hint, which triggers a backend drain. |
 
 Sizing guidance:
 
 - Keep batches comfortably under the configured gRPC receive limit. For bulk imports, chunk into many ordered, unconditional `SaveEventsV2` calls.
 - Reuse one official client/channel per target for hot writes. The Node and Java clients set Orisun's high-throughput gRPC defaults and cache auth tokens after the first authenticated response.
-- For bursty writers, cap concurrent `SaveEventsV2` calls on that one client around 512-1024 in flight. Launching every pending write at once adds client-side HTTP/2 stream and scheduler overhead without improving the single-boundary write ceiling.
-- Measure backend read load as subscription counts grow. Notification retention does not determine recovery or subscriber lag.
-- Subscribers that routinely fall out of the live window are served from durable storage; this is correct but increases read load. Scale retention or subscriber throughput accordingly.
+- For bursty writers, use bounded concurrency and measure throughput and tail latency.
+  More requests in flight can add HTTP/2 stream and scheduler overhead after the
+  per-boundary write path is saturated.
+- Measure backend read load as subscription counts grow. Every event is read
+  from storage, whether historical or newly committed; notifications have no live
+  retention window.
+- Tune indexes, read pools, subscriber throughput, and the idle threshold against
+  the actual workload. A shorter idle threshold increases NATS hint and backend
+  read traffic even on quiet boundaries.
 
 ## Security Checklist
 
@@ -262,5 +287,6 @@ notification JetStream event stream, publisher checkpoint, or backup polling loo
 Fresh storage initializes directly. The immediately preceding storage version
 upgrades automatically; older formats are rejected. Follow the
 [storage upgrade policy](./upgrading-event-envelope) for the supported source versions
-and the export/import procedure for older deployments. A current-format backup preserves positions and write contexts;
+and the export/import procedure for older deployments. FoundationDB is no longer
+a supported backend; retain the old binary to export its application events. A current-format backup preserves positions and write contexts;
 reconnect subscriptions using those retained positions after restoring the catalog.

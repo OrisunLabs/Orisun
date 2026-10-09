@@ -13,7 +13,7 @@ Two properties define Orisun's position:
 
 1. **Consistency is scoped by event content, not by a fixed stream.** A command preserves every complete event query it depended on together with that query's latest matching position, then saves only if all of those observations are still current. This is Orisun's [Command Context Consistency](./concepts/command-context-consistency) model.
 2. **The event store and the delivery layer are one system.** The durable log
-   in PostgreSQL or SQLite is the source of truth; embedded NATS
+   in PostgreSQL or SQLite is the source of truth;
    Core NATS carries boundary hints; subscriptions deliver events from ordered
    backend reads and recover missed hints through NATS idle watchdog messages. See
    [Delivery Guarantees](./concepts/delivery-guarantees).
@@ -25,7 +25,7 @@ Most adjacent tools optimize one of consistency, throughput, simplicity, or deco
 | Tool | Consistency model | Source of truth | Delivery | Ops model |
 | --- | --- | --- | --- | --- |
 | Orisun | Content-scoped optimistic (CCC) | PostgreSQL or SQLite | Ordered backend replay and subscriptions, hints plus idle watchdog | One deployable server |
-| Kafka | Partition order; no command consistency check | Kafka log (retention-bounded) | Log tailing by offset | Broker cluster (KRaft or ZooKeeper) |
+| Kafka | Partition order; no command consistency check | Kafka log (retention-bounded) | Log tailing by offset | Broker cluster (KRaft) |
 | EventStoreDB | Stream / aggregate optimistic (expected revision) | EventStoreDB store | Subscriptions + projections | Dedicated server |
 | PostgreSQL `LISTEN/NOTIFY` | None | Your tables | Best-effort notifications (≤ 8 KB, not durable, no replay) | Existing Postgres |
 | NATS JetStream | None | JetStream streams | Durable streams, acks, retention | NATS server cluster |
@@ -36,7 +36,8 @@ Most adjacent tools optimize one of consistency, throughput, simplicity, or deco
 
 Choose Kafka when you need a general-purpose streaming backbone across many services, maximum ingest throughput, and producers/consumers that are fully decoupled.
 
-Choose Orisun when commands must read event history, make a consistency-checked decision, and commit and deliver through ordered backend subscriptions, without assembling a broker, publisher, and store yourself. Kafka and Orisun are not mutually exclusive: Orisun can front Kafka-free delivery with embedded JetStream, or sit beside an existing Kafka deployment.
+Choose Orisun when commands must read event history, make a consistency-checked decision, and commit and deliver through ordered backend subscriptions, without assembling a broker, publisher, and store yourself. An application can also forward Orisun subscription events into an existing
+Kafka deployment when it needs a separate streaming backbone.
 
 ## Orisun vs EventStoreDB
 
@@ -62,7 +63,9 @@ Choose Orisun when you need a durable, ordered, replayable event log with consis
 
 Choose JetStream directly when you need durable messaging and streaming across services, and the consistency model lives in your application or another system.
 
-Choose Orisun when you want JetStream-class delivery plus an event store and a consistency model in one server, instead of running them as separate systems. Orisun can also connect to an external JetStream-enabled NATS server with `ORISUN_NATS_URL`.
+Choose Orisun when you want ordered event subscriptions backed by a durable
+event store and CCC in one server. Its EventStore API does not expose JetStream
+work queues, message acknowledgements, or retention controls. Orisun can also connect to an external JetStream-enabled NATS server with `ORISUN_NATS_URL`.
 
 ## When to choose Orisun
 
@@ -70,7 +73,7 @@ Choose Orisun when:
 
 - commands read event history and commit conditionally on it,
 - consistency spans a subset of events rather than always a fixed stream,
-- you want the store, publisher, API, auth, indexes, and telemetry in one deployable server,
+- you want the store, subscriptions, API, auth, indexes, and telemetry in one deployable server,
 - projectors must recover from downtime without depending only on broker retention.
 
 Reach for another tool when:

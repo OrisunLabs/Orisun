@@ -3,6 +3,12 @@ title: Upgrading from 0.9 to 0.10
 description: Prepare supported backends and YugabyteDB deployments for the 0.10.0 breaking release.
 ---
 
+:::note
+This page describes the historical **0.10.0** release. It is not the upgrade
+procedure for Next. Next only upgrades storage from `0.13.0`; use the
+[current storage upgrade policy](./upgrading-event-envelope) for all other sources.
+:::
+
 Orisun 0.10.0 removes YugabyteDB support and the `ORISUN_PG_DIALECT`
 configuration. The PostgreSQL backend now targets PostgreSQL only.
 

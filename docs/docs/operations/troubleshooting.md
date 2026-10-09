@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Diagnose startup, API, consistency, and publishing issues.
+description: Diagnose startup, API, consistency, and subscription issues.
 ---
 
 Start with the symptom table, then use the focused sections below.
@@ -11,8 +11,8 @@ Start with the symptom table, then use the focused sections below.
 | `ALREADY_EXISTS` | Expected CCC conflict; re-query context and retry only if the command is still valid. |
 | Boundary stays `PROVISIONING` or becomes `FAILED` | Inspect `Admin/GetBoundary.last_error`, placement, backend connectivity, and provisioning retry logs. |
 | Slow criteria queries | Missing JSON field indexes for the selected backend. |
-| Publisher lag | PostgreSQL listener health, SQLite signal/polling health, NATS health, boundary lock ownership. |
-| Duplicate delivery | Expected after publish/checkpoint failure; deduplicate by `event_id`. |
+| Subscription lag | Backend query cost, handler/checkpoint progress, NATS health, idle threshold, and relay lease ownership. |
+| Duplicate delivery | Expected when resuming from an application checkpoint that trails delivered events; deduplicate by `event_id`. |
 | Cluster instability | NATS quorum, routes, unique ports, persistent store directories. |
 
 ## gRPC Reflection
@@ -28,7 +28,7 @@ Use the default Basic auth header for examples:
 
 ```bash
 AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
-grpcurl -H "$AUTH" localhost:5005 list
+grpcurl -plaintext -H "$AUTH" localhost:5005 list
 ```
 
 ## Boundary Not Found
@@ -37,8 +37,8 @@ Requests to unknown or not-yet-installed boundaries are rejected. Query the
 catalog first:
 
 ```bash
-grpcurl -H "$AUTH" localhost:5005 orisun.Admin/ListBoundaries
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" localhost:5005 orisun.Admin/ListBoundaries
+grpcurl -plaintext -H "$AUTH" \
   -d '{"name":"orders"}' \
   localhost:5005 orisun.Admin/GetBoundary
 ```
@@ -53,11 +53,12 @@ grpcurl -H "$AUTH" \
 - Do not call create again for a failed definition. Its immutable name
   already exists and the server is retrying it independently.
 
-If startup reports that an existing PostgreSQL admin store has no boundary
-catalog, the installation skipped the required 0.8.0 bridge. Start 0.8.0 with
-the complete legacy `ORISUN_PG_SCHEMAS` mapping, verify every boundary is
-`ACTIVE`, then upgrade again using `ORISUN_PG_ADMIN_SCHEMA`. Do not try to
-recreate catalog entries manually.
+If startup reports an unsupported storage version or an existing admin store
+without its catalog, stop and verify the restored backup and source version.
+Only `0.13.0` upgrades in place. Older and unversioned stores require export
+with their matching binary and import into fresh storage; see the
+[storage upgrade policy](./upgrading-event-envelope). Do not change version markers
+or assume that restoring application tables restores the admin catalog.
 
 For SQLite, verify both `{boundary}.db` and `{boundary}_metadata.db` are in
 `ORISUN_SQLITE_DIR` before registration.

@@ -36,7 +36,7 @@ and checkpoints          the admin boundary
 boundary signal relay    provisioning + local
         |                 runtime installation
         v
-embedded JetStream
+Core NATS hints
         |
         v
 backend-draining subscriptions and projectors
@@ -64,14 +64,14 @@ Several invariants shape the implementation:
 ## Runtime composition
 
 `server.Run` is the shared composition root. A backend initializer supplies
-narrow implementations for saving, reading, locking, admin state, publisher
+narrow implementations for saving, reading, locking, admin state, projector
 checkpoints, wake-up signals, and boundary provisioning. The server then wires
 those ports into:
 
-1. the embedded NATS and JetStream runtime;
+1. embedded or caller-supplied NATS with JetStream enabled;
 2. the transport-neutral EventStore core;
 3. the admin boundary and boundary lifecycle slices;
-4. one publisher contender per locally installed boundary;
+4. one notification relay contender per locally installed boundary;
 5. internal projectors and catch-up subscriptions; and
 6. the gRPC transport.
 
@@ -100,15 +100,15 @@ runtime resource. Creation deliberately separates those two concerns.
    `BoundaryProvisioningFailed`.
 5. Every process also owns a uniquely named runtime subscription. On an
    activation event it installs the boundary into that process's backend
-   registry and signal provider, starts the local publisher contender and
+   registry and signal provider, starts the local notification relay contender and
    dynamic projectors, and only then opens the local request gate.
 6. `ListBoundaries` and `GetBoundary` rebuild catalog state from the durable
    lifecycle events.
 
 Provisioning and installation are idempotent because either can be retried
 after a crash or partial attempt. A replacement controller replays the catalog
-while holding the same subscription lease. Active definitions do not repeat
-physical provisioning, but their streams are re-ensured.
+while holding the same subscription lease. Active definitions are initialized and installed locally at startup; notifications
+require no stream provisioning.
 
 Startup replays activation state before gRPC is exposed. Live subscription
 gaps cause another replay. A boundary may therefore be durably `ACTIVE` before
@@ -129,10 +129,11 @@ boundary list.
 | SQLite | A boundary maps to its event database and metadata database files. |
 
 The admin boundary is bootstrapped so it can contain the catalog that activates
-all other boundaries. Existing storage must use the current schema. Startup
-rejects older formats and installs active placements from catalog definitions.
+all other boundaries. Existing storage must use the current or supported `0.13.0` schema. Startup
+upgrades `0.13.0`, rejects older formats, and installs active placements from
+catalog definitions.
 
-## `SaveEventsV2`: one contract, three concurrency models
+## `SaveEventsV2`: one contract, two concurrency models
 
 Before invoking a backend, the EventStore core validates the request, converts
 events into an immutable prepared batch, and checks the local active-boundary
@@ -176,8 +177,9 @@ The SQL function deduplicates criteria and groups them once by key shape. It
 resolves each criterion's latest persisted position with literal predicates and
 `ORDER BY ... LIMIT 1`, then evaluates requests in queue order. Accepted requests
 project their final event documents onto each distinct criterion key shape and
-look up the matching criterion ID directly. This avoids rebuilding a SQL join
-against every criterion for each accepted request. Events advance criterion
+look up matching equality criterion IDs directly. Non-equality predicates are
+evaluated against each accepted document. This retains the same comparisons for
+stored events and earlier events in the flush. Events advance criterion
 state in order, so later requests observe earlier accepted writes, including
 queries on store-owned envelope fields. A CCC conflict rejects only that request.
 Accepted events and their write contexts are bulk-inserted together.
@@ -265,8 +267,8 @@ returning a later committed position first. Rows restored from a dump may have
 a null marker because an XID is not meaningful across clusters; those rows are
 already durable and are safe to read.
 
-The publisher depends on this barrier. `LISTEN/NOTIFY` can wake it, but a
-wake-up cannot prove that every earlier transaction is visible.
+Ascending subscription reads depend on this barrier. `LISTEN/NOTIFY` wakes the
+notification relay, but a hint cannot prove that every earlier transaction is visible.
 
 ### Read batches
 
@@ -275,8 +277,10 @@ timestamps. Internal subscriptions and projectors can consume those values
 without constructing a protobuf object graph for every row. The gRPC adapter
 materializes generated response objects only at the transport boundary.
 
-Read pages are capped at 10,000 events. Internal drainers advance by the last
-position and continue across pages.
+The gRPC API rejects counts outside 1–10,000; embedded backend reads default
+a zero count to 1,000 and clamp larger counts to 10,000. Forward reads are
+inclusive. Internal drainers discard only the first row equal to their cursor
+and advance from the last successfully delivered position.
 
 ## Content-query indexes
 
@@ -301,7 +305,9 @@ and the [`CreateIndex` API](./api/eventstore#createindex).
 ## Boundary notification relays
 
 The notification manager starts one local relay contender per installed
-boundary. All backends use the shared revision-fenced JetStream KV leases.
+boundary. Both backends use the shared revision-fenced JetStream KV leases
+(`ORISUN_LOCKS`, memory storage, one replica, 15-second lease, renewed every
+five seconds). Lease state is coordination, not durable event progress.
 SQLite still permits only one Orisun node. The PostgreSQL advisory write lock
 serializes position assignment and is separate from relay ownership.
 
@@ -360,7 +366,7 @@ at-least-once delivery.
 | --- | --- | --- |
 | Events | Selected backend | Source of truth, partitioned by boundary |
 | Boundary catalog | Admin boundary event log | Replayed to recover lifecycle state |
-| Index definitions and build state | Selected backend | Boundary-scoped; physical indexes or key ranges are reconciled from it |
+| Index definitions and build state | Selected backend | Boundary-scoped; physical indexes are reconciled from it |
 | Projector checkpoints and projections | Selected backend | Rebuilt or resumed from durable events |
 | Core NATS notification listener | Process memory | One pending hint; recovery comes from subscription backend reads |
 | Active-boundary gate | Process memory | Rebuilt from activation replay before requests are admitted |
@@ -377,7 +383,9 @@ durable event history or advancing a checkpoint incorrectly.
 | Failure | Result |
 | --- | --- |
 | Any CCC observation no longer equals the latest position of its query | That request returns `ALREADY_EXISTS`; none of its events are appended |
-| Request-local error inside a multi-request group flush | That request rolls back; later requests continue in queue order |
+| CCC conflict in a group flush | Only that request is rejected; later requests continue in queue order |
+| SQLite request-local validation or insert failure | Its savepoint rolls back; later requests continue |
+| PostgreSQL SQL statement failure | The outer transaction rolls back every accepted request in that flush |
 | Known outer transaction rollback | No accepted request in that transaction persists |
 | Caller cancellation or connection loss around commit | Outcome may be unknown; retry idempotently |
 | Subscription crash before application checkpoint | Resume from the durable application checkpoint; events can be delivered again |

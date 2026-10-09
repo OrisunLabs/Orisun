@@ -19,7 +19,7 @@ empty boundary wake-up hints; it carries no application event data or metadata.
 
 ## Notifications are not the guarantee
 
-PostgreSQL `LISTEN/NOTIFY`, SQLite post-commit wake-ups,
+PostgreSQL `LISTEN/NOTIFY` and SQLite post-commit wake-ups
 tell a relay that a boundary may have new events. The relay forwards
 an empty hint on `ORISUN_NOTIFICATIONS___<boundary>.changed.v1`.
 
@@ -41,8 +41,9 @@ Backend query latency and handler speed also affect delivery latency.
 
 ## At-least-once delivery
 
-The cursor advances after a handler returns successfully. Failed delivery leaves
-the event eligible for replay. A successful gRPC send is not acknowledgement of
+The server cursor advances after its handler returns successfully. A backend
+read or handler error ends that subscription; failed delivery leaves the event
+eligible for replay when the consumer reconnects with its checkpoint. A successful gRPC send is not acknowledgement of
 an application's transaction or side effects.
 
 Consumers must persist their own checkpoint after durable side effects and

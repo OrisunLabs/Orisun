@@ -32,7 +32,8 @@ A rebuild is a catch-up subscription that starts from the beginning position and
 
 ## Example
 
-Use a distinct `subscriber_name` for the rebuild (or stop the old one first) so the checkpoint does not collide with the live projector.
+Use a distinct `subscriber_name` for the rebuild (or stop the old one first) so its subscriber-name lease does not collide with the live projector.
+Store rebuild checkpoints separately in your own projection storage. Stop delivery on any apply or checkpoint failure and reconnect from the last durable checkpoint. The Go and Node SDKs otherwise continue after handler errors; the examples below cancel explicitly. Commit the read-model update, deduplication record, and checkpoint atomically where possible.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>
@@ -41,24 +42,33 @@ Use a distinct `subscriber_name` for the rebuild (or stop the old one first) so 
 // 1. Reset the target read model out of band (e.g. TRUNCATE, drop+recreate).
 // 2. Rebuild from the beginning, applying each event idempotently.
 
+subCtx, cancel := context.WithCancel(ctx)
+defer cancel()
+
 handler := orisun.NewSimpleEventHandler().
 	WithOnEvent(func(event *eventstore.Event) error {
+		if err := subCtx.Err(); err != nil { return err }
 		// Apply idempotently: upsert keyed by event.eventId, or check a
 		// processed-events table. Redelivery must not double-apply.
 		if alreadyProcessed(event.EventId) {
 			return nil
 		}
 		if err := applyToReadModel(event); err != nil {
+			cancel()
 			return err
 		}
 		// Checkpoint AFTER the side effect is durable.
-		return saveCheckpoint(event.Position)
+		if err := saveCheckpoint(event.Position); err != nil {
+			cancel()
+			return err
+		}
+		return nil
 	}).
 	WithOnError(func(err error) {
 		log.Printf("rebuild stopped: %v", err)
 	})
 
-sub, err := client.SubscribeToEvents(ctx, &eventstore.CatchUpSubscribeToEventStoreRequest{
+sub, err := client.SubscribeToEvents(subCtx, &eventstore.CatchUpSubscribeToEventStoreRequest{
 	Boundary:       "accounts",
 	SubscriberName: "balance-projector-rebuild",
 	AfterPosition:  &eventstore.Position{CommitPosition: 0, PreparePosition: 0},
@@ -77,6 +87,7 @@ defer sub.Close()
 // 1. Reset the target read model out of band (e.g. TRUNCATE, drop+recreate).
 // 2. Rebuild from the beginning, applying each event idempotently.
 
+let failed = false;
 const subscription = client.subscribeToEvents(
   {
     subscriberName: 'balance-projector-rebuild',
@@ -84,11 +95,15 @@ const subscription = client.subscribeToEvents(
     afterPosition: { commitPosition: 0, preparePosition: 0 },
   },
   async (event) => {
-    if (alreadyProcessed(event.eventId)) return;
+    if (failed || alreadyProcessed(event.eventId)) return;
     await applyToReadModel(event); // upsert keyed by event.eventId
     await saveCheckpoint(event.position); // AFTER the side effect is durable
   },
-  (error) => console.error('rebuild stopped:', error),
+  (error) => {
+    failed = true;
+    subscription.cancel();
+    console.error('rebuild stopped:', error);
+  },
 );
 
 // Catch-up replays all history, then the stream switches to live delivery.
@@ -127,7 +142,7 @@ EventSubscription sub = client.subscribeToEvents(
 `grpcurl` opens a streaming subscription you can watch, but a real rebuild needs a program that applies and checkpoints. Use it to verify the replay starts from the beginning:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
 {
   "subscriber_name": "balance-projector-rebuild",
   "boundary": "accounts",
@@ -141,7 +156,11 @@ EOF
 
 ## Cut over
 
-Once the rebuild's catch-up has drained and the subscriber is live, switch readers to the rebuilt model. If you used a separate `subscriber_name`, redirect reads to the new store and retire the old projector. If you reset in place, the live projector simply continues from its new checkpoint.
+Before switching readers, capture a target position or an application marker
+and verify the rebuild has durably processed it. The subscription has no
+separate catch-up-complete message; an empty read is not proof that concurrent
+writes have stopped. Once it reaches your chosen cutover point, switch readers
+to the rebuilt model. If you used a separate `subscriber_name`, redirect reads to the new store and retire the old projector. If you reset in place, the live projector simply continues from its new checkpoint.
 
 ## Speed up large rebuilds
 
@@ -156,5 +175,5 @@ Once the rebuild's catch-up has drained and the subscriber is live, switch reade
 | Reset the target first | So re-applied events rebuild, not append |
 | Start from `{0, 0}` | Beginning cursor that replays the whole log |
 | Apply idempotently | Redelivery must not double-apply |
-| Checkpoint after durability | A restart resumes, never re-emits |
+| Checkpoint after durability | Resume safely; replay between side effects and checkpoints remains possible |
 | Index filter fields | Avoid full-table scans on filtered rebuilds |
