@@ -157,7 +157,7 @@ BEGIN
         pg_xact_id BIGINT,
         transaction_id BIGINT GENERATED ALWAYS AS ((data->>''__commitPosition'')::BIGINT) STORED NOT NULL,
         global_id BIGINT GENERATED ALWAYS AS ((data->>''__preparePosition'')::BIGINT) STORED NOT NULL PRIMARY KEY,
-        write_id BIGINT GENERATED ALWAYS AS (NULLIF(split_part(data->>''__writeId'', '':'', 2), '''')::BIGINT) STORED NOT NULL REFERENCES %I.%I(write_id),
+        write_id BIGINT GENERATED ALWAYS AS (NULLIF(split_part(data->>''__writeId'', '':'', 2), '''')::BIGINT) STORED REFERENCES %I.%I(write_id),
         metadata JSONB GENERATED ALWAYS AS (data->''__metadata'') STORED,
         date_created TEXT GENERATED ALWAYS AS (data->>''__dateCreated'') STORED NOT NULL,
         CHECK ((jsonb_typeof(data->''__dateCreated'') = ''string'' AND (data->>''__dateCreated'')::timestamptz IS NOT NULL) IS TRUE)
@@ -658,7 +658,7 @@ BEGIN
     -- Use dynamic SQL because the boundary table name and criteria predicate are dynamic.
     RETURN QUERY EXECUTE format(
             $q$
-        SELECT transaction_id, global_id, (data->>'__eventId')::UUID AS event_id, data->>'__eventType' AS event_type, data - ARRAY(SELECT key FROM jsonb_object_keys(data) AS key WHERE left(key, 2) = '__') AS data, metadata, date_created::timestamptz, data->>'__writeId'
+        SELECT transaction_id, global_id, (data->>'__eventId')::UUID AS event_id, data->>'__eventType' AS event_type, data - ARRAY(SELECT key FROM jsonb_object_keys(data) AS key WHERE left(key, 2) = '__') AS data, metadata, date_created::timestamptz, COALESCE(data->>'__writeId', '')
         FROM %s
         WHERE
             %2$s AND
@@ -738,7 +738,7 @@ BEGIN
                 RAISE EXCEPTION 'criterion % has no tags', idx;
             END IF;
             selects := selects || format(
-                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created::timestamptz, e.data->>''__writeId'' FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
+                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created::timestamptz, COALESCE(e.data->>''__writeId'', '''') FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
                     idx, qualified_table_name, orisun_criterion_sql(crit, 'e.data'));
             idx := idx + 1;
         END LOOP;

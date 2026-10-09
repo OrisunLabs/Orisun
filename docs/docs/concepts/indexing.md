@@ -197,8 +197,7 @@ on the full declared `TEXT` field shape can
 therefore find its latest matching event without sorting the context's complete
 history.
 
-Fresh stores create indexes in the current format. Startup rejects older storage
-versions instead of rebuilding historical index definitions. Index creation and
+Fresh stores create indexes in the current format. Storage from `0.13.0` upgrades without rebuilding indexes; older formats are rejected. Index creation and
 retry are owned by the index API lifecycle.
 
 

@@ -9,6 +9,7 @@ import (
 
 // Event per-boundary tables: event log, id sequence counter, and index metadata.
 const eventSchemaVersion = 7
+const metadataSchemaVersion = 2
 
 // Fresh databases use the current document schema directly.
 const eventDDL = `
@@ -20,7 +21,7 @@ CREATE TABLE orisun_es_event (
  data TEXT NOT NULL CHECK (json_valid(data) AND json_type(data) = 'object'),
  transaction_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.__commitPosition')) VIRTUAL NOT NULL,
  global_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.__preparePosition')) VIRTUAL NOT NULL UNIQUE,
- write_id INTEGER GENERATED ALWAYS AS (CAST(substr(json_extract(data, '$.__writeId'), instr(json_extract(data, '$.__writeId'), ':') + 1) AS INTEGER)) VIRTUAL NOT NULL REFERENCES orisun_es_write(write_id),
+ write_id INTEGER GENERATED ALWAYS AS (CAST(substr(json_extract(data, '$.__writeId'), instr(json_extract(data, '$.__writeId'), ':') + 1) AS INTEGER)) VIRTUAL REFERENCES orisun_es_write(write_id),
  metadata TEXT GENERATED ALWAYS AS (data -> '__metadata') VIRTUAL,
  date_created TEXT GENERATED ALWAYS AS (json_extract(data, '$.__dateCreated')) VIRTUAL NOT NULL
 );
@@ -82,10 +83,10 @@ func applyMigrations(conn *sqlite.Conn) error {
 }
 
 func applyMetadataMigrations(conn *sqlite.Conn) error {
-	return initializeSchema(conn, metadataDDL, 1)
+	return initializeSchema(conn, metadataDDL, metadataSchemaVersion)
 }
 
-// Existing files must already use the current schema. Never rewrite historical data.
+// Upgrade only the immediately preceding document schema; older formats are rejected.
 func initializeSchema(conn *sqlite.Conn, ddl string, supported int) (err error) {
 	release := sqlitex.Save(conn)
 	defer release(&err)
@@ -95,6 +96,16 @@ func initializeSchema(conn *sqlite.Conn, ddl string, supported int) (err error) 
 	}
 	if version == supported {
 		return nil
+	}
+	if supported == eventSchemaVersion && version == 6 {
+		// 0.13.0 already uses current documents, projections and indexes.
+		return sqlitex.ExecuteTransient(conn, fmt.Sprintf("PRAGMA user_version = %d", supported), nil)
+	}
+	if supported == metadataSchemaVersion && version == 1 {
+		if err := sqlitex.ExecuteTransient(conn, "DROP TABLE IF EXISTS orisun_last_published_event_position", nil); err != nil {
+			return err
+		}
+		return sqlitex.ExecuteTransient(conn, fmt.Sprintf("PRAGMA user_version = %d", supported), nil)
 	}
 	if version != 0 {
 		return fmt.Errorf("unsupported database schema version %d; required version %d", version, supported)

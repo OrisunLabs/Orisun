@@ -656,6 +656,9 @@ Call `GetWriteContext` with:
 }
 ```
 
+Historical events without recorded write-context evidence have an empty `write_id`.
+The storage upgrade preserves that absence; it does not invent observations.
+
 The response contains `write_id` and `consistency`, an array of the same
 `ConsistencyObservation` shape accepted by `SaveEventsV2`. An existing record with
 an empty array means the save was unconditional.

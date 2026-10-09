@@ -37,7 +37,8 @@ The Go binding API defaults to `730`, matching FoundationDB 7.3.x. Keep the inst
 ## Boundary Provisioning
 
 Fresh stores initialize the current format. Existing key ranges must have the
-supported storage version; older unversioned ranges are rejected. See the
+supported storage version or completed upgrade markers from the immediately
+preceding release; other unversioned ranges are rejected. See the
 [storage upgrade policy](./upgrading-event-envelope).
 
 FoundationDB boundaries are defined through `Admin/CreateBoundary`. Use

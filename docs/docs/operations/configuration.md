@@ -72,8 +72,9 @@ Boundary names must be valid PostgreSQL identifiers even when using SQLite: 1-63
 ### Existing storage
 
 Fresh boundaries initialize the current schema directly. Existing storage must
-already use the supported format; startup rejects older and unversioned event
-stores. No automatic conversion or historical boundary discovery runs. To attach
+use the current or `0.13.0` storage format. Startup upgrades the
+`0.13.0` version and rejects older and unversioned event stores. No historical
+boundary discovery runs. To attach
 restored storage in the current format, call `CreateBoundary` with its placement.
 
 ## Server settings

@@ -113,8 +113,8 @@ EOF
 
 The response initially contains `BOUNDARY_LIFECYCLE_STATUS_PROVISIONING`.
 
-Use the same command to attach restored storage that already uses the current
-format. Older storage formats are rejected:
+Use the same command to attach restored storage in the current format or the
+supported `0.13.0` upgrade format. Older storage formats are rejected:
 
 ```bash
 grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateBoundary <<EOF

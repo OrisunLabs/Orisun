@@ -40,7 +40,7 @@ PostgreSQL mode stores two ordering-related values:
 - `pg_xact_id`: PostgreSQL's internal transaction ID, used only as a current-cluster visibility marker so ascending subscription reads do not skip older open transactions.
 
 Do not use PostgreSQL internal transaction IDs as application cursors. Older
-storage formats are rejected. See [Positions and Ordering](./positions).
+storage formats before `0.13.0` are rejected. See [Positions and Ordering](./positions).
 
 ## FoundationDB
 

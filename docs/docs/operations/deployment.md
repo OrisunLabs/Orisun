@@ -177,8 +177,8 @@ Recommended upgrade sequence:
 
 Current releases clear stale `pg_xact_id` values when a restored database or
 new cluster has restarted its transaction-ID range. PostgreSQL transaction IDs
-therefore do not need to be preserved for Orisun correctness. Older storage formats are rejected; this release does not rewrite historical
-event documents, positions, or checkpoints.
+therefore do not need to be preserved for Orisun correctness. The immediately preceding storage version upgrades automatically without rewriting
+event documents, positions, or projector checkpoints. Older formats are rejected.
 
 ## Clustered PostgreSQL
 
@@ -312,7 +312,8 @@ before starting this runtime. Core NATS carries transient boundary hints; subscr
 read ordered events from durable storage and retain their own cursors. There is no
 notification JetStream event stream, publisher checkpoint, or backup polling loop.
 
-Fresh storage initializes directly. Older formats are rejected. Follow the
-[storage upgrade policy](./upgrading-event-envelope) for export and import into a
-fresh deployment. A current-format backup preserves positions and write contexts;
+Fresh storage initializes directly. The immediately preceding storage version
+upgrades automatically; older formats are rejected. Follow the
+[storage upgrade policy](./upgrading-event-envelope) for the supported source versions
+and the export/import procedure for older deployments. A current-format backup preserves positions and write contexts;
 reconnect subscriptions using those retained positions after restoring the catalog.

@@ -14,10 +14,9 @@ go get github.com/OrisunLabs/Orisun@main
 ```
 
 For production, pin the exact release version that contains the APIs you use
-instead of leaving a branch selector in `go.mod`. The latest tagged server
-release is `v0.10.0`, which predates `SaveEventsV2`.
+instead of leaving a branch selector in `go.mod`. The `v0.13.0` release supports `SaveEventsV2`.
 
-This release requires current storage formats. Older formats are rejected;
+Startup upgrades storage from `0.13.0`. Older formats are rejected;
 see the [storage upgrade policy](../operations/upgrading-event-envelope).
 
 Backend-specific embedding packages keep deployments explicit:
@@ -257,8 +256,8 @@ PostgreSQL uses `ORISUN_PG_ADMIN_SCHEMA` only to locate the admin boundary;
 application schema placements come from the catalog. SQLite and FoundationDB
 also install application boundaries only from catalog definitions.
 
-Older storage formats are rejected. Startup does not import historical boundary
-mappings or rewrite existing event documents.
+Startup upgrades storage from `0.13.0` without rewriting event
+documents. Older formats are rejected; historical boundary mappings are not imported.
 
 ## Reading events in-process
 

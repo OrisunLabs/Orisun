@@ -141,10 +141,10 @@ func readEventFromRecord(value []byte, tx, gid int64) (eventstore.ReadEvent, err
 	if err != nil {
 		return eventstore.ReadEvent{}, fmt.Errorf("invalid stored event timestamp: %w", err)
 	}
-	if fields.WriteLastOffset == nil {
-		return eventstore.ReadEvent{}, fmt.Errorf("stored event is missing its write context offset")
+	var writeID string
+	if fields.WriteLastOffset != nil {
+		writeID = eventstore.WriteID(tx, (gid & ^int64(65535))|int64(*fields.WriteLastOffset))
 	}
-	writeID := eventstore.WriteID(tx, (gid & ^int64(65535))|int64(*fields.WriteLastOffset))
 	return eventstore.ReadEvent{
 		WriteId:         writeID,
 		EventId:         fields.EventID,

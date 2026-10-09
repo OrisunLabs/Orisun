@@ -9,7 +9,7 @@ import (
 
 const boundarySchemaVersion = 5
 
-// Validate the storage format before initialization can modify existing objects.
+// Upgrade the immediately preceding document schema in the initialization transaction.
 func requireBoundaryStorage(ctx context.Context, tx *sql.Tx, schema, boundary string) error {
 	table := func(suffix string) string {
 		return pq.QuoteIdentifier(schema) + "." + pq.QuoteIdentifier(boundary+suffix)
@@ -21,7 +21,16 @@ func requireBoundaryStorage(ctx context.Context, tx *sql.Tx, schema, boundary st
 	}
 	if exists {
 		var version int
-		if err := tx.QueryRowContext(ctx, "SELECT version FROM "+versions+" WHERE id = 1").Scan(&version); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT version FROM "+versions+" WHERE id = 1 FOR UPDATE").Scan(&version); err != nil {
+			return err
+		}
+		if version == 4 {
+			// 0.13.0 already has current documents, indexes and contexts.
+			// Keep its event rows and sequence untouched; retire publisher state.
+			if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS "+table("_orisun_last_published_event_position")); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "UPDATE "+versions+" SET version = $1 WHERE id = 1", boundarySchemaVersion)
 			return err
 		}
 		if version != boundarySchemaVersion {
