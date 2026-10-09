@@ -24,7 +24,7 @@ func TestTagOperatorsSurviveReopen(t *testing.T) {
 	dir := t.TempDir()
 	logger, _ := logging.ZapLogger("error")
 	open := func() (*BoundaryPools, *SqliteSaveEvents, *SqliteGetEvents) {
-		pool, err := OpenBoundaryPools(t.Context(), dir, "test", "test")
+		pool, err := OpenBoundaryPools(t.Context(), dir, "test")
 		require.NoError(t, err)
 		pools := map[string]*BoundaryPools{"test": pool}
 		return pool, NewSqliteSaveEvents(pools, logger), NewSqliteGetEvents(pools, logger)

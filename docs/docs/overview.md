@@ -13,7 +13,7 @@ release is `0.10.0`; APIs marked as upcoming are part of the next release.
 The mechanism behind that promise is **Command Context Consistency**: commands query the exact events they depend on, and writes succeed only if that context has not changed.
 
 It stores the event log transactionally in PostgreSQL, SQLite, or FoundationDB
-beta, and delivers committed events through embedded NATS JetStream, including
+beta, and delivers committed events from backend reads with Core NATS wake-ups, including
 catch-up replay and live subscriptions. Storage, consistency checks,
 publishing, indexes, auth, and gRPC APIs ship as one deployable server.
 
@@ -34,11 +34,11 @@ publishing, indexes, auth, and gRPC APIs ship as one deployable server.
 1. **Store** events transactionally in the selected backend.
 2. **Check** command consistency by querying the event subset the command depends on.
 3. **Publish** committed events sequentially per boundary from durable checkpoints.
-4. **Subscribe** with catch-up replay from storage, then live JetStream delivery.
+4. **Subscribe** with ordered backend reads, boundary wake-ups, and a subscription-owned NATS idle watchdog.
 
 ## Quick start
 
-SQLite is the fastest local loop. Event log, admin state, indexes, publisher checkpoints, and embedded JetStream run from one binary with no separate database.
+SQLite is the fastest local loop. Event log, admin state, indexes, projector checkpoints, and embedded JetStream run from one binary with no separate database.
 
 1. Download `orisun-sqlite` from [GitHub Releases](https://github.com/OrisunLabs/Orisun/releases).
 2. Start it with the [SQLite binary example](/docs/getting-started#run-sqlite-from-a-binary).

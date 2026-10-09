@@ -2,9 +2,6 @@ package admin
 
 import (
 	"context"
-	"testing"
-
-	adminevents "github.com/OrisunLabs/Orisun/admin/events"
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	"github.com/OrisunLabs/Orisun/orisun"
@@ -12,13 +9,14 @@ import (
 	"github.com/goccy/go-json"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"testing"
 )
 
 func TestAdminBoundaryRPCsEmitDefinitionEvents(t *testing.T) {
 	for _, test := range []struct {
-		name                 string
-		existedBeforeCatalog bool
-		invoke               func(*AdminServiceServer) (*grpcapi.BoundaryInfo, error)
+		name string
+
+		invoke func(*AdminServiceServer) (*grpcapi.BoundaryInfo, error)
 	}{
 		{
 			name: "new storage",
@@ -35,14 +33,13 @@ func TestAdminBoundaryRPCsEmitDefinitionEvents(t *testing.T) {
 			},
 		},
 		{
-			name:                 "existing storage",
-			existedBeforeCatalog: true,
+			name: "existing storage",
+
 			invoke: func(server *AdminServiceServer) (*grpcapi.BoundaryInfo, error) {
 				response, err := server.CreateBoundary(adminTestContext(), &grpcapi.CreateBoundaryRequest{
-					Name:                 "sales",
-					Description:          "Sales domain",
-					Placement:            &grpcapi.BoundaryPlacementInput{Backend: "postgres", Namespace: "tenant_data"},
-					ExistedBeforeCatalog: true,
+					Name:        "sales",
+					Description: "Sales domain",
+					Placement:   &grpcapi.BoundaryPlacementInput{Backend: "postgres", Namespace: "tenant_data"},
 				})
 				if err != nil {
 					return nil, err
@@ -58,17 +55,14 @@ func TestAdminBoundaryRPCsEmitDefinitionEvents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RPC error = %v", err)
 			}
-			if len(saver.events) != 1 || saver.events[0].EventType != adminevents.EventTypeBoundaryCreated {
-				t.Fatalf("saved events = %#v, want one %s", saver.events, adminevents.EventTypeBoundaryCreated)
+			if len(saver.events) != 1 || saver.events[0].EventType != boundaryevents.EventTypeBoundaryCreated {
+				t.Fatalf("saved events = %#v, want one %s", saver.events, boundaryevents.EventTypeBoundaryCreated)
 			}
 			if boundary.Name != "sales" || boundary.Placement.Namespace != "tenant_data" {
 				t.Fatalf("boundary = %#v", boundary)
 			}
 			if boundary.Status != grpcapi.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_PROVISIONING {
 				t.Fatalf("status = %s", boundary.Status)
-			}
-			if boundary.ExistedBeforeCatalog != test.existedBeforeCatalog {
-				t.Fatalf("existed_before_catalog = %t, want %t", boundary.ExistedBeforeCatalog, test.existedBeforeCatalog)
 			}
 			if boundary.DefinitionPosition.CommitPosition != 12 || boundary.DefinitionPosition.PreparePosition != 13 {
 				t.Fatalf("definition position = %#v", boundary.DefinitionPosition)
@@ -110,8 +104,8 @@ func TestAdminBoundaryCatalogRPCs(t *testing.T) {
 		t.Fatal(err)
 	}
 	retriever := emptyBoundaryRetriever{events: orisun.ReadEventBatch{
-		{EventType: adminevents.EventTypeBoundaryCreated, Data: string(created), CommitPosition: 1, PreparePosition: 1},
-		{EventType: adminevents.EventTypeBoundaryActivated, Data: string(activated), CommitPosition: 2, PreparePosition: 2},
+		{EventType: boundaryevents.EventTypeBoundaryCreated, Data: string(created), CommitPosition: 1, PreparePosition: 1},
+		{EventType: boundaryevents.EventTypeBoundaryActivated, Data: string(activated), CommitPosition: 2, PreparePosition: 2},
 	}}
 	server := NewGRPCAdminServerWithBoundaryCommands(nil, "orisun_admin", nil, nil, nil, nil, &capturingBoundarySaver{}, retriever)
 
@@ -161,7 +155,7 @@ func (r emptyBoundaryRetriever) GetLatestByCriteria(_ context.Context, query ori
 	if r.existing {
 		matches[0] = orisun.LatestCriterionMatch{
 			Found: true,
-			Event: orisun.ReadEvent{EventType: adminevents.EventTypeBoundaryCreated},
+			Event: orisun.ReadEvent{EventType: boundaryevents.EventTypeBoundaryCreated},
 		}
 	}
 	return orisun.LatestByCriteriaBatch{

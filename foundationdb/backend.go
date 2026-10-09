@@ -125,10 +125,9 @@ func InitializeFoundationDBRuntime(
 
 	signalProvider := func(boundary string) eventstore.EventSignal {
 		return &fdbSignal{
-			db:       db,
-			key:      backend.signalKey(boundary),
-			fallback: time.Second,
-			stopped:  make(chan struct{}),
+			db:      db,
+			key:     backend.signalKey(boundary),
+			stopped: make(chan struct{}),
 		}
 	}
 	closeFn := func(context.Context) {
@@ -136,7 +135,7 @@ func InitializeFoundationDBRuntime(
 	}
 	return &DatabaseRuntime{
 		SaveEvents: backend, GetEvents: backend, LockProvider: lockProvider,
-		AdminDB: backend, EventPublishing: backend, SignalProvider: signalProvider,
+		AdminDB: backend, SignalProvider: signalProvider,
 		ProvisionBoundary: backend.ProvisionBoundary,
 		InstallBoundary:   backend.InstallBoundary,
 		Close:             closeFn,
@@ -477,50 +476,6 @@ func (b *Backend) GetLatestByCriteria(ctx context.Context, query eventstore.Late
 		return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.Internal, "get latest by criteria: %v", err)
 	}
 	return result.(eventstore.LatestByCriteriaBatch), nil
-}
-
-func (b *Backend) GetLastPublishedEventPosition(ctx context.Context, boundary string) (eventstore.Position, error) {
-	if err := b.checkBoundary(boundary); err != nil {
-		return eventstore.Position{}, err
-	}
-	result, err := b.db.ReadTransact(func(rt fdb.ReadTransaction) (interface{}, error) {
-		raw := rt.Get(b.lastPublishedKey(boundary)).MustGet()
-		if raw == nil {
-			return storedPosition{Commit: -1, Prepare: -1}, nil
-		}
-		var pos storedPosition
-		if err := json.Unmarshal(raw, &pos); err != nil {
-			return storedPosition{}, err
-		}
-		return pos, nil
-	})
-	if err != nil {
-		return eventstore.Position{}, err
-	}
-	pos := result.(storedPosition)
-	return eventstore.Position{CommitPosition: pos.Commit, PreparePosition: pos.Prepare}, nil
-}
-
-func (b *Backend) InsertLastPublishedEvent(ctx context.Context, boundary string, transactionID, globalID int64) error {
-	if err := b.checkBoundary(boundary); err != nil {
-		return err
-	}
-	_, err := b.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
-		value, err := json.Marshal(storedPosition{Commit: transactionID, Prepare: globalID})
-		if err != nil {
-			return nil, err
-		}
-		tr.Set(b.lastPublishedKey(boundary), value)
-		return nil, nil
-	})
-	return err
-}
-
-// storedPosition is the JSON checkpoint format — same field names as the
-// Position proto's json tags, without copying the proto struct (vet: copylocks).
-type storedPosition struct {
-	Commit  int64 `json:"commit_position"`
-	Prepare int64 `json:"prepare_position"`
 }
 
 func (b *Backend) ListAdminUsers(ctx context.Context) ([]*eventstore.User, error) {
@@ -1082,8 +1037,8 @@ func (b *Backend) GetBoundaryIndex(ctx context.Context, boundary, name string) (
 		if err := json.Unmarshal(raw, &definition); err != nil {
 			return nil, err
 		}
-		if definition.State == "" {
-			definition.State = indexStateReady
+		if definition.State == "" || definition.Generation == "" {
+			return nil, fmt.Errorf("unsupported index metadata for %q", definition.Name)
 		}
 		return boundaryIndexFromFoundationDB(definition), nil
 	})
@@ -1398,8 +1353,8 @@ func (b *Backend) loadIndexes(rt fdb.ReadTransaction, boundary string) ([]indexD
 		if err := json.Unmarshal(kv.Value, &def); err != nil {
 			return nil, err
 		}
-		if def.State == "" {
-			def.State = indexStateReady
+		if def.State == "" || def.Generation == "" {
+			return nil, fmt.Errorf("unsupported index metadata for %q", def.Name)
 		}
 		indexes = append(indexes, def)
 	}
@@ -1432,7 +1387,7 @@ func (b *Backend) InstallBoundary(ctx context.Context, definition boundarymodel.
 	if err := b.validateBoundaryDefinition(definition); err != nil {
 		return err
 	}
-	if err := b.migrateBoundaryStorage(ctx, definition.Name); err != nil {
+	if err := b.requireBoundaryStorage(ctx, definition.Name); err != nil {
 		return err
 	}
 	b.boundaryMu.Lock()
@@ -1458,6 +1413,9 @@ func (b *Backend) ensureBoundaryMarker(ctx context.Context, boundary string) err
 	if err := boundarymodel.ValidateName(boundary); err != nil {
 		return err
 	}
+	if err := b.requireBoundaryStorage(ctx, boundary); err != nil {
+		return err
+	}
 	_, err := b.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
 		if err := contextStatusErr(ctx); err != nil {
 			return nil, err
@@ -1465,10 +1423,7 @@ func (b *Backend) ensureBoundaryMarker(ctx context.Context, boundary string) err
 		tr.Set(b.boundaryMarkerKey(boundary), []byte{1})
 		return nil, nil
 	})
-	if err != nil {
-		return fmt.Errorf("persist FoundationDB boundary %s: %w", boundary, err)
-	}
-	return b.migrateBoundaryStorage(ctx, boundary)
+	return err
 }
 
 func (b *Backend) tupleKey(parts ...tuple.TupleElement) fdb.Key {
@@ -1507,10 +1462,6 @@ func (b *Backend) signalKey(boundary string) fdb.Key {
 	return b.tupleKey(boundary, "signal")
 }
 
-func (b *Backend) lastPublishedKey(boundary string) fdb.Key {
-	return b.tupleKey(boundary, "last_published")
-}
-
 func (b *Backend) indexMetaPrefix(boundary string) fdb.Key {
 	return b.tupleKey(boundary, "index_meta")
 }
@@ -1532,11 +1483,7 @@ func (b *Backend) indexEntryPrefix(boundary string, idx indexDefinition) fdb.Key
 }
 
 func (b *Backend) indexKeyParts(boundary string, idx indexDefinition) tuple.Tuple {
-	parts := tuple.Tuple{b.root, boundary, "index", idx.Name}
-	if idx.Generation != "" {
-		parts = append(parts, idx.Generation)
-	}
-	return parts
+	return tuple.Tuple{b.root, boundary, "index", idx.Name, idx.Generation}
 }
 
 func (b *Backend) indexLookupPrefix(boundary string, idx indexDefinition, criterion map[string]any) fdb.Key {
@@ -1687,22 +1634,21 @@ func keyAfter(key fdb.Key) fdb.Key {
 }
 
 type fdbSignal struct {
-	db       fdb.Database
-	key      fdb.Key
-	fallback time.Duration
-	stopped  chan struct{}
-	once     sync.Once
+	db      fdb.Database
+	key     fdb.Key
+	stopped chan struct{}
+	once    sync.Once
 }
 
 func (s *fdbSignal) Wait(ctx context.Context) error {
 	tr, err := s.db.CreateTransaction()
 	if err != nil {
-		return s.poll(ctx)
+		return err
 	}
 	watch := tr.Watch(s.key)
 	if err := tr.Commit().Get(); err != nil {
 		watch.Cancel()
-		return s.poll(ctx)
+		return err
 	}
 
 	done := make(chan error, 1)
@@ -1719,7 +1665,7 @@ func (s *fdbSignal) Wait(ctx context.Context) error {
 		return context.Canceled
 	case err := <-done:
 		if err != nil {
-			return s.poll(ctx)
+			return err
 		}
 		return nil
 	}
@@ -1729,19 +1675,6 @@ func (s *fdbSignal) Stop() {
 	s.once.Do(func() {
 		close(s.stopped)
 	})
-}
-
-func (s *fdbSignal) poll(ctx context.Context) error {
-	timer := time.NewTimer(s.fallback)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.stopped:
-		return context.Canceled
-	case <-timer.C:
-		return nil
-	}
 }
 
 func (b *Backend) GetWriteContext(ctx context.Context, req *eventstore.GetWriteContextRequest) (*eventstore.WriteContext, error) {

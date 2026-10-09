@@ -55,7 +55,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		GetEvents:         runtime.GetEvents,
 		LockProvider:      runtime.LockProvider,
 		AdminDB:           runtime.AdminDB,
-		EventPublishing:   runtime.EventPublishing,
 		SignalProvider:    runtime.SignalProvider,
 		ProvisionBoundary: runtime.ProvisionBoundary,
 		InstallBoundary:   runtime.InstallBoundary,

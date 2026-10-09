@@ -25,22 +25,21 @@ type Placement struct {
 // Definition is the immutable input shared by commands, embedded stores, and
 // backend provisioners.
 type Definition struct {
-	Name                 string
-	Description          string
-	Placement            Placement
-	ExistedBeforeCatalog bool
+	Name        string
+	Description string
+	Placement   Placement
 }
 
 // Boundary is the event-rebuilt lifecycle representation.
 type Boundary struct {
-	Name                 string
-	Description          string
-	Placement            Placement
-	Status               Status
-	ExistedBeforeCatalog bool
-	LastError            string
-	DefinitionPosition   *eventstore.Position
-	StatusPosition       *eventstore.Position
+	Name        string
+	Description string
+	Placement   Placement
+	Status      Status
+
+	LastError          string
+	DefinitionPosition *eventstore.Position
+	StatusPosition     *eventstore.Position
 }
 
 // ValidateName applies the identifier contract shared by all storage

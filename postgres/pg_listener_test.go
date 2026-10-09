@@ -55,23 +55,42 @@ func TestPGNotifyChannelForBoundary(t *testing.T) {
 	assert.Contains(t, channel, "orisun_events_")
 }
 
+func TestPGNotifyReconnectWakeCoalescesForEveryRegisteredBoundary(t *testing.T) {
+	listener := newTestListener("orders", "sales")
+	listener.wakeRegisteredBoundaries()
+	listener.wakeRegisteredBoundaries()
+	for boundary, signal := range listener.signals {
+		select {
+		case <-signal:
+		default:
+			t.Fatalf("reconnect did not wake %s", boundary)
+		}
+		select {
+		case <-signal:
+			t.Fatalf("reconnect wakes did not coalesce for %s", boundary)
+		default:
+		}
+	}
+}
+
 func TestPGNotifySignal_Wait(t *testing.T) {
 	t.Run("wakes on notify channel", func(t *testing.T) {
 		ch := make(chan struct{}, 1)
-		s := &pgNotifySignal{notifyCh: ch, catchupTicker: time.NewTicker(time.Hour)}
+		s := &pgNotifySignal{notifyCh: ch}
 		defer s.Stop()
 		ch <- struct{}{}
 		require.NoError(t, s.Wait(context.Background()))
 	})
 
-	t.Run("wakes on catch-up tick", func(t *testing.T) {
-		s := &pgNotifySignal{notifyCh: make(chan struct{}, 1), catchupTicker: time.NewTicker(5 * time.Millisecond)}
-		defer s.Stop()
-		require.NoError(t, s.Wait(context.Background()))
+	t.Run("waits for a notification without periodic wake-ups", func(t *testing.T) {
+		s := &pgNotifySignal{notifyCh: make(chan struct{}, 1)}
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		defer cancel()
+		require.ErrorIs(t, s.Wait(ctx), context.DeadlineExceeded)
 	})
 
 	t.Run("returns on canceled context", func(t *testing.T) {
-		s := &pgNotifySignal{notifyCh: make(chan struct{}, 1), catchupTicker: time.NewTicker(time.Hour)}
+		s := &pgNotifySignal{notifyCh: make(chan struct{}, 1)}
 		defer s.Stop()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -133,19 +152,16 @@ func TestPGNotifyListener_Dispatch(t *testing.T) {
 func TestPGNotifyListener_Signal(t *testing.T) {
 	t.Run("known boundary wakes on dispatch", func(t *testing.T) {
 		l := newTestListener("b1")
-		sig := l.Signal("b1", time.Hour)
+		sig := l.Signal("b1")
 		defer sig.Stop()
 
 		l.dispatch(&pgconn.Notification{Channel: pgNotifyChannelForBoundary("b1")})
 		require.NoError(t, sig.Wait(context.Background()))
 	})
 
-	t.Run("unknown boundary falls back to polling", func(t *testing.T) {
+	t.Run("unknown boundary has no signal", func(t *testing.T) {
 		l := newTestListener("b1")
-		sig := l.Signal("nope", 5*time.Millisecond)
-		defer sig.Stop()
-		// Polling fallback fires purely on its own interval (no dispatch).
-		require.NoError(t, sig.Wait(context.Background()))
+		require.Nil(t, l.Signal("nope"))
 	})
 }
 
@@ -189,9 +205,9 @@ func TestPGNotifyListener_Integration(t *testing.T) {
 
 	go listener.Start(ctx)
 
-	sigB1 := listener.Signal("b1", time.Hour) // catch-up disabled so only NOTIFY can wake it
+	sigB1 := listener.Signal("b1")
 	defer sigB1.Stop()
-	sigB2 := listener.Signal("b2", time.Hour)
+	sigB2 := listener.Signal("b2")
 	defer sigB2.Stop()
 
 	// Separate connection emits the NOTIFY, mirroring the pg_notify in the
@@ -230,7 +246,7 @@ func TestPGNotifyListener_Integration(t *testing.T) {
 	for range 8 {
 		require.NoError(t, <-registrationErrors, "dynamic registration must be idempotent")
 	}
-	sigDynamic := listener.Signal("dynamic", time.Hour)
+	sigDynamic := listener.Signal("dynamic")
 	defer sigDynamic.Stop()
 
 	_, err = notifier.Exec(ctx, "SELECT pg_notify('orisun_events_' || md5($1), '8')", "dynamic")

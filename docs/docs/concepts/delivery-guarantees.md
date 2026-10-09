@@ -1,62 +1,91 @@
 ---
 title: Delivery Guarantees
-description: Understand publishing order, catch-up, and duplicate delivery.
+description: Understand ordered backend delivery, notification recovery, and replay.
 ---
 
-PostgreSQL, SQLite, or FoundationDB is the durable source of truth. Embedded
-NATS JetStream is the real-time delivery layer.
-
-Wake-up signals are hints. Correctness comes from durable checkpoints and ordered catch-up reads.
+PostgreSQL, SQLite, or FoundationDB is the durable source of truth. Every
+subscription event comes from a backend read. Core NATS carries
+empty boundary wake-up hints; it carries no application event data or metadata.
 
 ## Per-Boundary Guarantees
 
 | Guarantee | How Orisun enforces it |
 | --- | --- |
-| No skipped committed events | After each fully acknowledged batch, the publisher stores its final position in the selected backend and resumes from the next position. |
-| Sequential publishing | The publisher drains events in ascending event-log position and rejects non-advancing batches. |
-| Stable committed prefix | PostgreSQL avoids exposing in-flight transactions; SQLite serializes commits through one writer per boundary; FoundationDB reads from ordered committed versionstamps. |
-| Single active publisher | PostgreSQL nodes acquire a boundary lock; FoundationDB nodes acquire a token-fenced FDB lease lock; SQLite runs exactly one active node. |
+| Recovery from missed hints | Each subscription publishes a NATS hint after its idle threshold; receiving that hint resumes backend reads after the last successfully delivered position. Healthy NATS is required. |
+| Ordered delivery | One reader per subscription delivers matching events in ascending `(commit_position, prepare_position)` order and validates each complete batch before delivery. |
+| Stable committed prefix | PostgreSQL preserves its ascending visibility barrier; SQLite serializes commits through one writer per boundary; FoundationDB reads ordered committed versionstamps. |
+| Bounded memory | One pending wake-up and one bounded backend batch per subscription; handlers run sequentially and provide backpressure. |
+| Relay ownership | A boundary lease coordinates signal forwarding. Duplicate hints are harmless and never advance an event cursor. |
 
 ## Notifications are not the guarantee
 
-PostgreSQL `LISTEN/NOTIFY`, SQLite wake-ups, FoundationDB watch signals, and polling only tell the publisher that there may be work to do. If a signal is missed, periodic polling still drains the committed event log from the persisted checkpoint.
+PostgreSQL `LISTEN/NOTIFY`, SQLite post-commit wake-ups, FoundationDB watches,
+tell a relay that a boundary may have new events. The relay forwards
+an empty hint on `ORISUN_NOTIFICATIONS___<boundary>.changed.v1`.
 
-This design is why no committed event is skipped even when a wake-up signal is delayed or lost.
+Subscriptions establish a Core NATS listener and flush its registration before
+their initial read. Failed registration is retried with bounded backoff. NATS
+automatically restores listeners after reconnecting. Startup and reconnect each
+publish an empty boundary hint; its receipt triggers the backend drain. Hints require no acknowledgements and carry no delivery progress.
+
+`ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` defaults to `10s` and must be positive.
+Each subscription tracks its last received hint, even when its query matches no
+events. Once that silence reaches the threshold, its watchdog publishes an empty
+boundary hint through NATS. Receiving the hint triggers the normal backend drain;
+publishing it does not directly read storage. Receipt resets the idle deadline.
+
+There is no periodic backend polling. Healthy embedded NATS is a requirement for
+live subscription delivery and missed-hint recovery. While NATS is unavailable,
+new delivery waits for listener recovery. Initial catch-up also waits for receipt of the startup ping.
+Backend query latency and handler speed also affect delivery latency.
 
 ## At-least-once delivery
 
-Publishing is at least once at the boundary between publishing a batch to NATS and updating its final checkpoint.
+The cursor advances after a handler returns successfully. Failed delivery leaves
+the event eligible for replay. A successful gRPC send is not acknowledgement of
+an application's transaction or side effects.
 
-If NATS accepts part or all of a batch and the checkpoint is not persisted, events from that batch can be republished. Consumers should deduplicate by:
-
-- `event_id`
-- NATS message ID
-- idempotent projector writes
+Consumers must persist their own checkpoint after durable side effects and
+resume with that position after reconnecting. A crash between delivery and that
+checkpoint can replay events. Deduplicate by `event_id` or use idempotent
+projector writes; notification message IDs are not event identities.
 
 ## Ordering Scope
 
-Sequential publishing is per boundary. Different boundaries can publish independently.
+Ordering is per subscription within a boundary. Different boundaries and
+subscriptions progress independently. The backend evaluates the complete query
+for both historical and newly committed events; subscriptions do not evaluate
+criteria against payloads locally.
 
-Within a boundary, consumers should process positions monotonically and persist their own projector checkpoint after side effects are durable.
+## Transient notification transport
 
-## JetStream retention is in memory
+Core NATS retains no notification history and creates no per-boundary streams
+or consumers. Listeners use the NATS client’s default bounded pending queue. Their callbacks
+record one coalesced pending wake-up in the drain channel. Lost or dropped hints
+are recovered through idle watchdog hints while NATS is healthy. JetStream remains in
+use for PostgreSQL/SQLite leases and admin messaging.
 
-The embedded JetStream stream uses memory storage. It is the live-delivery
-buffer, not the source of truth. The durable event log in PostgreSQL, SQLite,
-or FoundationDB is the source of truth. Two consequences follow:
-
-- Live retention is bounded by `ORISUN_NATS_EVENT_STREAM_MAX_BYTES` (default 512 MB), `ORISUN_NATS_EVENT_STREAM_MAX_MSGS`, and `ORISUN_NATS_EVENT_STREAM_MAX_AGE` (default 5m), per boundary. Events older than the window or beyond the size cap are dropped from the live buffer.
-- A subscriber that falls behind the retention window does not lose events. It falls out of live delivery and is served from the durable store by the catch-up phase instead.
-
-The age window must comfortably exceed the catch-up handover grace (about 10 seconds) so a subscriber transitioning from catch-up to live does not land in a gap. Keep `ORISUN_NATS_EVENT_STREAM_MAX_AGE` well above that grace.
-
-Because the stream is in memory, JetStream state does not survive a restart. After a restart, subscribers re-establish from their persisted position through catch-up. Size the retention window for your slowest expected subscriber, not for durability; durability already lives in the backend.
+Notification outages and server restarts do not supply delivery progress.
+The old event-stream retention and polling-publisher batch settings have been
+removed. Configure the notification idle watchdog with
+`ORISUN_SUBSCRIPTION_IDLE_THRESHOLD`.
 
 ## Subscriber catch-up
 
-`CatchUpSubscribeToEvents` has two phases:
+`CatchUpSubscribeToEvents` uses one backend drain throughout its lifetime.
+An explicit `after_position` is exclusive. When omitted, the latest stored
+matching event is delivered once, followed by newer matches in ascending order.
+If no initial match exists, subsequent drains read future matches ascending.
 
-1. Read committed events after the requested position from the durable store.
-2. Subscribe to JetStream for live delivery.
+For filtered subscriptions, only the last successfully delivered matching event
+becomes the cursor. Empty reads and nonmatching events do not advance it.
+Publisher checkpoint APIs and provisioning have been removed. Application and
+projector checkpoints remain required.
 
-The catch-up phase is what lets a subscriber recover from downtime without depending on JetStream retention alone.
+## Breaking release deployment
+
+Stop older server nodes before deploying this release. Notification subjects
+carry empty Core NATS hints; event streams and publisher checkpoints are no
+longer provisioned or consumed. Existing storage must use the supported format.
+See the [deployment procedure](../operations/deployment#notification-transport)
+and [storage upgrade policy](../operations/upgrading-event-envelope).

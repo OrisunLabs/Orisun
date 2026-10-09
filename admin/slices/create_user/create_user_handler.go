@@ -3,10 +3,11 @@ package create_user
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	ev "github.com/OrisunLabs/Orisun/admin/events"
 	l "github.com/OrisunLabs/Orisun/logging"
 	"github.com/OrisunLabs/Orisun/orisun"
-	"strings"
 
 	"github.com/goccy/go-json"
 
@@ -166,28 +167,24 @@ func CreateUser(
 	}
 
 	position := orisun.NotExistsPosition()
-	if _, err := saveEvents(ctx, &orisun.SaveEventsRequest{
+	if _, err := saveEvents(ctx, &orisun.SaveEventsV2Request{
 		Boundary: boundary,
-		Events:   eventsToSave,
-		Query: &orisun.SaveQuery{
-			ExpectedPosition: &position,
-			SubsetQuery: &orisun.Query{
-				Criteria: []*orisun.Criterion{
-					{
-						Tags: []*orisun.Tag{
-							{Key: "username", Value: username},
-							{Key: "__eventType", Value: ev.EventTypeUserCreated},
-						},
+		Events:   eventsToSave, Consistency: []*orisun.ConsistencyObservation{{Position: &position, Query: &orisun.Query{
+			Criteria: []*orisun.Criterion{
+				{
+					Tags: []*orisun.Tag{
+						{Key: "username", Value: username},
+						{Key: "__eventType", Value: ev.EventTypeUserCreated},
 					},
-					{
-						Tags: []*orisun.Tag{
-							{Key: "__eventType", Value: ev.EventTypeUserDeleted},
-							{Key: "userId", Value: userId.String()},
-						},
+				},
+				{
+					Tags: []*orisun.Tag{
+						{Key: "__eventType", Value: ev.EventTypeUserDeleted},
+						{Key: "userId", Value: userId.String()},
 					},
 				},
 			},
-		},
+		}}},
 	}); err != nil {
 		return nil, err
 	}

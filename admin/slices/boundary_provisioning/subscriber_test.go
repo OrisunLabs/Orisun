@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 )
 
 func TestBoundaryRuntimeSubscriberReplaysIntoLocalRuntime(t *testing.T) {
 	event := coreeventstore.ReadEvent{
-		EventID: "event-1", EventType: adminevents.EventTypeBoundaryActivated,
+		EventID: "event-1", EventType: boundaryevents.EventTypeBoundaryActivated,
 		Data:     `{"boundary":"sales"}`,
 		Position: coreeventstore.Position{CommitPosition: 8, PreparePosition: 9},
 	}
@@ -48,8 +48,8 @@ func TestBoundaryRuntimeSubscriberReplaysIntoLocalRuntime(t *testing.T) {
 
 func TestBoundaryProvisioningSubscriberRetriesFailureWithoutBlockingLaterDefinitions(t *testing.T) {
 	events := coreeventstore.ReadEventBatch{
-		{EventID: "failed", EventType: adminevents.EventTypeBoundaryCreated, Position: coreeventstore.Position{CommitPosition: 1, PreparePosition: 1}},
-		{EventID: "later", EventType: adminevents.EventTypeBoundaryCreated, Position: coreeventstore.Position{CommitPosition: 2, PreparePosition: 1}},
+		{EventID: "failed", EventType: boundaryevents.EventTypeBoundaryCreated, Position: coreeventstore.Position{CommitPosition: 1, PreparePosition: 1}},
+		{EventID: "later", EventType: boundaryevents.EventTypeBoundaryCreated, Position: coreeventstore.Position{CommitPosition: 2, PreparePosition: 1}},
 	}
 	var failedCalls atomic.Int32
 	laterHandled := make(chan struct{}, 1)
@@ -115,7 +115,7 @@ func TestBoundaryProvisioningSubscribersCompeteForOneClusterController(t *testin
 		held:     make(map[string]struct{}),
 		acquired: make(chan struct{}, 1),
 		event: coreeventstore.ReadEvent{
-			EventID: "created", EventType: adminevents.EventTypeBoundaryCreated,
+			EventID: "created", EventType: boundaryevents.EventTypeBoundaryCreated,
 			Position: coreeventstore.Position{CommitPosition: 1, PreparePosition: 1},
 		},
 	}
@@ -155,7 +155,7 @@ func TestBoundaryRuntimeSubscribersInstallOnEveryNode(t *testing.T) {
 		held:     make(map[string]struct{}),
 		acquired: make(chan struct{}, 2),
 		event: coreeventstore.ReadEvent{
-			EventID: "activated", EventType: adminevents.EventTypeBoundaryActivated,
+			EventID: "activated", EventType: boundaryevents.EventTypeBoundaryActivated,
 			Position: coreeventstore.Position{CommitPosition: 2, PreparePosition: 1},
 		},
 	}
@@ -204,7 +204,7 @@ func TestBoundaryProvisioningRetrySurvivesLiveSubscriptionRestart(t *testing.T) 
 		&definitionBatchRetriever{},
 		func(ctx context.Context, _ coreeventstore.SubscribeRequest, handle func(context.Context, coreeventstore.ReadEvent) error) error {
 			if err := handle(ctx, coreeventstore.ReadEvent{
-				EventID: "live-failure", EventType: adminevents.EventTypeBoundaryCreated,
+				EventID: "live-failure", EventType: boundaryevents.EventTypeBoundaryCreated,
 				Position: coreeventstore.Position{CommitPosition: 4, PreparePosition: 2},
 			}); err != nil {
 				return err

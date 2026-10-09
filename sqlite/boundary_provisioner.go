@@ -42,7 +42,7 @@ func (p *SqliteBoundaryProvisioner) ProvisionBoundary(ctx context.Context, defin
 		return nil
 	}
 
-	eventPool, err := OpenBoundaryPoolsWithConfig(ctx, p.config, definition.Name, p.admin.Boundary)
+	eventPool, err := OpenBoundaryPoolsWithConfig(ctx, p.config, definition.Name)
 	if err != nil {
 		return fmt.Errorf("provision SQLite boundary %s: %w", definition.Name, err)
 	}
@@ -69,7 +69,7 @@ func (p *SqliteBoundaryProvisioner) InstallBoundary(ctx context.Context, definit
 		return nil
 	}
 
-	eventPool, err := OpenBoundaryPoolsWithConfig(ctx, p.config, definition.Name, p.admin.Boundary)
+	eventPool, err := OpenBoundaryPoolsWithConfig(ctx, p.config, definition.Name)
 	if err != nil {
 		return fmt.Errorf("open SQLite boundary %s: %w", definition.Name, err)
 	}

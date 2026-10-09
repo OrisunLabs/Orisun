@@ -1,3 +1,0 @@
--- NOTE: The users_count table creation has been consolidated into initialize_admin_tables()
--- in 000002_create_users_table.sql. This file is kept for backward compatibility with
--- the migration script that processes all SQL files in order.

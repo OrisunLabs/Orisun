@@ -46,14 +46,6 @@ func AdaptEventStoreWithServerInfo(eventStore *orisun.EventStore, info ServerRun
 	}
 }
 
-func (a *EventStoreAdapter) SaveEvents(ctx context.Context, req *SaveEventsRequest) (*WriteResult, error) {
-	response, err := a.eventStore.SaveEvents(ctx, saveEventsRequestFromProto(req))
-	if err != nil {
-		return nil, grpcstatus.FromError(err)
-	}
-	return writeResultToProto(response), nil
-}
-
 func (a *EventStoreAdapter) SaveEventsV2(ctx context.Context, req *SaveEventsV2Request) (*WriteResult, error) {
 	response, err := a.eventStore.SaveEventsV2(ctx, saveEventsV2RequestFromProto(req))
 	if err != nil {
@@ -155,23 +147,6 @@ func (a *EventStoreAdapter) GetIndex(ctx context.Context, req *GetIndexRequest) 
 		return nil, grpcstatus.FromError(err)
 	}
 	return &GetIndexResponse{Index: indexDefinitionToProto(response.Index)}, nil
-}
-
-func saveEventsRequestFromProto(req *SaveEventsRequest) *orisun.SaveEventsRequest {
-	if req == nil {
-		return nil
-	}
-	result := &orisun.SaveEventsRequest{
-		Boundary: req.Boundary,
-		Events:   eventsToSaveFromProto(req.Events),
-	}
-	if req.Query != nil {
-		result.Query = &orisun.SaveQuery{
-			ExpectedPosition: domainPositionFromProto(req.Query.ExpectedPosition),
-			SubsetQuery:      domainQueryFromProto(req.Query.SubsetQuery),
-		}
-	}
-	return result
 }
 
 func saveEventsV2RequestFromProto(req *SaveEventsV2Request) *orisun.SaveEventsV2Request {

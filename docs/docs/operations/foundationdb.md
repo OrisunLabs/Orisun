@@ -36,9 +36,9 @@ The Go binding API defaults to `730`, matching FoundationDB 7.3.x. Keep the inst
 
 ## Boundary Provisioning
 
-For the current event-envelope storage migration, follow the
-[event-envelope upgrade guide](./upgrading-event-envelope). It requires stopping
-all Orisun nodes and covers resumable migrations and incompatible indexes.
+Fresh stores initialize the current format. Existing key ranges must have the
+supported storage version; older unversioned ranges are rejected. See the
+[storage upgrade policy](./upgrading-event-envelope).
 
 FoundationDB boundaries are defined through `Admin/CreateBoundary`. Use
 placement backend `foundationdb` and set the placement namespace to the
@@ -61,14 +61,14 @@ Treat `fdb.cluster` as live configuration. FoundationDB changes coordinator addr
 
 ## Publisher Ownership
 
-The FDB backend stores publisher locks in FoundationDB, not in NATS. Each lock acquisition has a unique token and a renewable lease. The publisher checks ownership before publishing to JetStream and before writing the checkpoint.
+The FDB backend stores notification relay locks in FoundationDB, not in NATS. Each lock acquisition has a unique token and a renewable lease. The relay checks ownership before publishing an empty boundary hint to Core NATS. Each subscription reads FoundationDB when a hint arrives; its idle watchdog publishes a hint after the configured silence threshold.
 
 Expected behavior:
 
-- Exactly one Orisun node owns a boundary publisher at a time.
-- If the owner exits, pauses past the lease, or loses the lease to another node, protected publisher work is canceled.
+- Exactly one Orisun node owns a boundary notification relay at a time.
+- If the owner exits, pauses past the lease, or loses the lease to another node, protected relay work is canceled.
 - A stale owner cannot release a newer owner's lock token.
-- A replacement publisher resumes from the durable FDB checkpoint.
+- A replacement relay emits an initial hint; subscriptions retain their own backend delivery cursors.
 
 The release gate for this behavior is the FDB lock failover test plus the gRPC ledger workload:
 
@@ -129,7 +129,7 @@ Use FoundationDB-native backups, not filesystem snapshots of Orisun nodes.
 - Practice point-in-time restore into a separate FoundationDB cluster.
 - Restore Orisun by pointing nodes at the restored cluster file and the same `ORISUN_FDB_ROOT`.
 
-NATS is not the durable source of truth. After restore or restart, subscribers and publishers catch up from FoundationDB.
+NATS is not the durable source of truth. After restore or restart, subscribers catch up from FoundationDB and relays emit initial boundary hints.
 
 ## Monitoring
 
@@ -140,7 +140,7 @@ Export `fdbcli status json` or an equivalent FoundationDB exporter. Alert on:
 - storage lag and data movement backlog,
 - transaction conflict rate,
 - unavailable or degraded cluster status,
-- Orisun publish/checkpoint errors and publisher lock churn.
+- Notification publish errors, subscription read errors, and relay lock churn.
 
 High conflict rate on a small set of criteria usually means application
 commands are contending on the same consistency context. That is expected for

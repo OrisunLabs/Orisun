@@ -19,7 +19,6 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EventStore_SaveEvents_FullMethodName               = "/orisun.EventStore/SaveEvents"
 	EventStore_SaveEventsV2_FullMethodName             = "/orisun.EventStore/SaveEventsV2"
 	EventStore_GetWriteContext_FullMethodName          = "/orisun.EventStore/GetWriteContext"
 	EventStore_GetEvents_FullMethodName                = "/orisun.EventStore/GetEvents"
@@ -37,10 +36,6 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type EventStoreClient interface {
-	// Deprecated: Do not use.
-	// Deprecated compatibility RPC. The server translates this request into one
-	// SaveEventsV2 operation.
-	SaveEvents(ctx context.Context, in *SaveEventsRequest, opts ...grpc.CallOption) (*WriteResult, error)
 	// Atomically validate every query-level observation and append the event
 	// batch. An empty consistency list is an unconditional append.
 	SaveEventsV2(ctx context.Context, in *SaveEventsV2Request, opts ...grpc.CallOption) (*WriteResult, error)
@@ -62,17 +57,6 @@ type eventStoreClient struct {
 
 func NewEventStoreClient(cc grpc.ClientConnInterface) EventStoreClient {
 	return &eventStoreClient{cc}
-}
-
-// Deprecated: Do not use.
-func (c *eventStoreClient) SaveEvents(ctx context.Context, in *SaveEventsRequest, opts ...grpc.CallOption) (*WriteResult, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(WriteResult)
-	err := c.cc.Invoke(ctx, EventStore_SaveEvents_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *eventStoreClient) SaveEventsV2(ctx context.Context, in *SaveEventsV2Request, opts ...grpc.CallOption) (*WriteResult, error) {
@@ -198,10 +182,6 @@ func (c *eventStoreClient) GetIndex(ctx context.Context, in *GetIndexRequest, op
 // All implementations must embed UnimplementedEventStoreServer
 // for forward compatibility.
 type EventStoreServer interface {
-	// Deprecated: Do not use.
-	// Deprecated compatibility RPC. The server translates this request into one
-	// SaveEventsV2 operation.
-	SaveEvents(context.Context, *SaveEventsRequest) (*WriteResult, error)
 	// Atomically validate every query-level observation and append the event
 	// batch. An empty consistency list is an unconditional append.
 	SaveEventsV2(context.Context, *SaveEventsV2Request) (*WriteResult, error)
@@ -225,9 +205,6 @@ type EventStoreServer interface {
 // pointer dereference when methods are called.
 type UnimplementedEventStoreServer struct{}
 
-func (UnimplementedEventStoreServer) SaveEvents(context.Context, *SaveEventsRequest) (*WriteResult, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SaveEvents not implemented")
-}
 func (UnimplementedEventStoreServer) SaveEventsV2(context.Context, *SaveEventsV2Request) (*WriteResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SaveEventsV2 not implemented")
 }
@@ -280,24 +257,6 @@ func RegisterEventStoreServer(s grpc.ServiceRegistrar, srv EventStoreServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&EventStore_ServiceDesc, srv)
-}
-
-func _EventStore_SaveEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SaveEventsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EventStoreServer).SaveEvents(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EventStore_SaveEvents_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EventStoreServer).SaveEvents(ctx, req.(*SaveEventsRequest))
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 func _EventStore_SaveEventsV2_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -498,10 +457,6 @@ var EventStore_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "orisun.EventStore",
 	HandlerType: (*EventStoreServer)(nil),
 	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "SaveEvents",
-			Handler:    _EventStore_SaveEvents_Handler,
-		},
 		{
 			MethodName: "SaveEventsV2",
 			Handler:    _EventStore_SaveEventsV2_Handler,

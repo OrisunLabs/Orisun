@@ -8,13 +8,11 @@ const (
 	EventTypeBoundaryFailed    = "$BoundaryProvisioningFailed"
 )
 
-// BoundaryCreated records a boundary definition. ExistedBeforeCatalog marks
-// storage discovered or attached before its definition entered the catalog.
+// BoundaryCreated records the immutable boundary definition.
 type BoundaryCreated struct {
-	Boundary             string                  `json:"boundary"`
-	Description          string                  `json:"description,omitempty"`
-	Placement            boundarymodel.Placement `json:"placement"`
-	ExistedBeforeCatalog bool                    `json:"existedBeforeCatalog,omitempty"`
+	Boundary    string                  `json:"boundary"`
+	Description string                  `json:"description,omitempty"`
+	Placement   boundarymodel.Placement `json:"placement"`
 }
 
 // BoundaryActivated records successful physical and runtime provisioning.

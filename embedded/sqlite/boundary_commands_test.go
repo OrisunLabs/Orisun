@@ -67,7 +67,7 @@ func testEmbeddedSQLiteCreatesBoundaryThroughCatalog(t *testing.T, inMemory bool
 		EventId: uuid.NewString(), EventType: "SaleOpened", Data: map[string]any{"sale_id": "1"},
 	}}
 	for {
-		_, err = store.SaveEvents(ctx, events, "sales", nil, nil)
+		_, err = store.SaveEventsV2(ctx, events, "sales", nil)
 		if err == nil {
 			break
 		}

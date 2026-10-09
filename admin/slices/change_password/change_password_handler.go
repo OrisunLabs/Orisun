@@ -163,13 +163,8 @@ func ChangePassword(
 	if expectedPosition == nil {
 		expectedPosition = userCreated.Events[0].Position
 	}
-	_, err = saveEvents(ctx, &orisun.SaveEventsRequest{
-		Boundary: boundary,
-		Query: &orisun.SaveQuery{
-			ExpectedPosition: expectedPosition,
-			SubsetQuery:      &orisun.Query{Criteria: []*orisun.Criterion{{Tags: tags}}},
-		},
-		Events: []*orisun.EventToSave{{
+	_, err = saveEvents(ctx, &orisun.SaveEventsV2Request{
+		Boundary: boundary, Consistency: []*orisun.ConsistencyObservation{{Position: expectedPosition, Query: &orisun.Query{Criteria: []*orisun.Criterion{{Tags: tags}}}}}, Events: []*orisun.EventToSave{{
 			EventId:   uuid.NewString(),
 			EventType: admin_events.EventTypeUserPasswordChanged,
 			Data:      string(payload),

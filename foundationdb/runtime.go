@@ -13,7 +13,6 @@ type DatabaseRuntime struct {
 	GetEvents         orisun.EventsRetriever
 	LockProvider      orisun.LockProvider
 	AdminDB           common.DB
-	EventPublishing   orisun.EventPublishingTracker
 	SignalProvider    func(string) orisun.EventSignal
 	ProvisionBoundary func(context.Context, boundarymodel.Definition) error
 	InstallBoundary   func(context.Context, boundarymodel.Definition) error

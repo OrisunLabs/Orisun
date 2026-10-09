@@ -29,20 +29,17 @@ type BoundaryPools struct {
 
 // OpenBoundaryPools opens write+read pools for one boundary at {dir}/{boundary}.db.
 // Migrations are applied on the first connection drawn from the write pool.
-// adminBoundary is retained for API compatibility; admin metadata now lives in
-// the admin boundary's metadata DB opened by OpenMetadataPoolsWithConfig.
-func OpenBoundaryPools(ctx context.Context, dir, boundary, adminBoundary string) (*BoundaryPools, error) {
-	return OpenBoundaryPoolsWithConfig(ctx, config.SqliteConfig{Dir: dir}, boundary, adminBoundary)
+func OpenBoundaryPools(ctx context.Context, dir, boundary string) (*BoundaryPools, error) {
+	return OpenBoundaryPoolsWithConfig(ctx, config.SqliteConfig{Dir: dir}, boundary)
 }
 
-func OpenBoundaryPoolsWithConfig(ctx context.Context, sqliteCfg config.SqliteConfig, boundary, adminBoundary string) (*BoundaryPools, error) {
-	_ = adminBoundary
+func OpenBoundaryPoolsWithConfig(ctx context.Context, sqliteCfg config.SqliteConfig, boundary string) (*BoundaryPools, error) {
 	poolCfg, err := normalizeSqlitePoolConfig(sqliteCfg)
 	if err != nil {
 		return nil, err
 	}
 	dbPath := filepath.Join(poolCfg.dir, boundary+".db")
-	return openSQLitePools(ctx, poolCfg, dbPath, boundary, boundary, applyMigrations, true)
+	return openSQLitePools(ctx, poolCfg, dbPath, boundary, boundary, applyMigrations)
 }
 
 func metadataDBNameForBoundary(boundary string) string {
@@ -56,7 +53,7 @@ func OpenMetadataPoolsWithConfig(ctx context.Context, sqliteCfg config.SqliteCon
 	}
 	dbName := metadataDBNameForBoundary(boundary)
 	dbPath := filepath.Join(poolCfg.dir, dbName+".db")
-	return openSQLitePools(ctx, poolCfg, dbPath, dbName, boundary, applyMetadataMigrations, false)
+	return openSQLitePools(ctx, poolCfg, dbPath, dbName, boundary, applyMetadataMigrations)
 }
 
 func openSQLitePools(
@@ -66,7 +63,6 @@ func openSQLitePools(
 	name string,
 	boundary string,
 	apply func(*sqlite.Conn) error,
-	loadIndexes bool,
 ) (_ *BoundaryPools, err error) {
 	uri := sqliteURI(dbPath, poolCfg)
 
@@ -121,12 +117,6 @@ func openSQLitePools(
 	defer writePool.Put(conn)
 	if err := apply(conn); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", name, err)
-	}
-	if loadIndexes {
-		err = ensureBoundaryIndexesOrderByPosition(conn)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("prepare index metadata %s: %w", name, err)
 	}
 	return pools, nil
 }

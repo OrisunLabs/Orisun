@@ -608,7 +608,7 @@ type Event struct {
 	Metadata    string                 `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	Position    *Position              `protobuf:"bytes,6,opt,name=position,proto3" json:"position,omitempty"`
 	DateCreated *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=date_created,json=dateCreated,proto3" json:"date_created,omitempty"`
-	// Empty for historical events whose write context was not recorded.
+	// Identifies the atomic save that recorded this event.
 	WriteId       string `protobuf:"bytes,8,opt,name=write_id,json=writeId,proto3" json:"write_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -746,61 +746,6 @@ func (x *WriteResult) GetWriteId() string {
 	return ""
 }
 
-// SaveQuery is the consistency shape used by the deprecated SaveEvents RPC.
-//
-// Deprecated: Marked as deprecated in eventstore.proto.
-type SaveQuery struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	ExpectedPosition *Position              `protobuf:"bytes,1,opt,name=expected_position,json=expectedPosition,proto3" json:"expected_position,omitempty"`
-	SubsetQuery      *Query                 `protobuf:"bytes,2,opt,name=subsetQuery,proto3" json:"subsetQuery,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *SaveQuery) Reset() {
-	*x = SaveQuery{}
-	mi := &file_eventstore_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SaveQuery) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SaveQuery) ProtoMessage() {}
-
-func (x *SaveQuery) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SaveQuery.ProtoReflect.Descriptor instead.
-func (*SaveQuery) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *SaveQuery) GetExpectedPosition() *Position {
-	if x != nil {
-		return x.ExpectedPosition
-	}
-	return nil
-}
-
-func (x *SaveQuery) GetSubsetQuery() *Query {
-	if x != nil {
-		return x.SubsetQuery
-	}
-	return nil
-}
-
 // ConsistencyObservation records the latest position observed for one complete
 // query. SaveEventsV2 requires every supplied observation to remain current.
 type ConsistencyObservation struct {
@@ -817,7 +762,7 @@ type ConsistencyObservation struct {
 
 func (x *ConsistencyObservation) Reset() {
 	*x = ConsistencyObservation{}
-	mi := &file_eventstore_proto_msgTypes[8]
+	mi := &file_eventstore_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -829,7 +774,7 @@ func (x *ConsistencyObservation) String() string {
 func (*ConsistencyObservation) ProtoMessage() {}
 
 func (x *ConsistencyObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_eventstore_proto_msgTypes[8]
+	mi := &file_eventstore_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -842,7 +787,7 @@ func (x *ConsistencyObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsistencyObservation.ProtoReflect.Descriptor instead.
 func (*ConsistencyObservation) Descriptor() ([]byte, []int) {
-	return file_eventstore_proto_rawDescGZIP(), []int{8}
+	return file_eventstore_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ConsistencyObservation) GetQuery() *Query {
@@ -859,7 +804,60 @@ func (x *ConsistencyObservation) GetPosition() *Position {
 	return nil
 }
 
-// Deprecated: Marked as deprecated in eventstore.proto.
+// Client convenience shape for a save guarded by one complete query.
+// SDKs translate this request to SaveEventsV2; it has no separate RPC.
+type SaveQuery struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ExpectedPosition *Position              `protobuf:"bytes,1,opt,name=expected_position,json=expectedPosition,proto3" json:"expected_position,omitempty"`
+	SubsetQuery      *Query                 `protobuf:"bytes,2,opt,name=subsetQuery,proto3" json:"subsetQuery,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *SaveQuery) Reset() {
+	*x = SaveQuery{}
+	mi := &file_eventstore_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SaveQuery) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SaveQuery) ProtoMessage() {}
+
+func (x *SaveQuery) ProtoReflect() protoreflect.Message {
+	mi := &file_eventstore_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SaveQuery.ProtoReflect.Descriptor instead.
+func (*SaveQuery) Descriptor() ([]byte, []int) {
+	return file_eventstore_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SaveQuery) GetExpectedPosition() *Position {
+	if x != nil {
+		return x.ExpectedPosition
+	}
+	return nil
+}
+
+func (x *SaveQuery) GetSubsetQuery() *Query {
+	if x != nil {
+		return x.SubsetQuery
+	}
+	return nil
+}
+
 type SaveEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Boundary      string                 `protobuf:"bytes,2,opt,name=boundary,proto3" json:"boundary,omitempty"`
@@ -1040,7 +1038,7 @@ func (x *GetWriteContextRequest) GetWriteId() string {
 type WriteContext struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	WriteId string                 `protobuf:"bytes,1,opt,name=write_id,json=writeId,proto3" json:"write_id,omitempty"`
-	// Empty means an unconditional append. Historical events have no record.
+	// Empty means an unconditional append.
 	Consistency   []*ConsistencyObservation `protobuf:"bytes,2,rep,name=consistency,proto3" json:"consistency,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2243,17 +2241,17 @@ const file_eventstore_proto_rawDesc = "" +
 	"\bwrite_id\x18\b \x01(\tR\awriteId\"]\n" +
 	"\vWriteResult\x123\n" +
 	"\flog_position\x18\x01 \x01(\v2\x10.orisun.PositionR\vlogPosition\x12\x19\n" +
-	"\bwrite_id\x18\x02 \x01(\tR\awriteId\"\x7f\n" +
-	"\tSaveQuery\x12=\n" +
-	"\x11expected_position\x18\x01 \x01(\v2\x10.orisun.PositionR\x10expectedPosition\x12/\n" +
-	"\vsubsetQuery\x18\x02 \x01(\v2\r.orisun.QueryR\vsubsetQuery:\x02\x18\x01\"k\n" +
+	"\bwrite_id\x18\x02 \x01(\tR\awriteId\"k\n" +
 	"\x16ConsistencyObservation\x12#\n" +
 	"\x05query\x18\x01 \x01(\v2\r.orisun.QueryR\x05query\x12,\n" +
-	"\bposition\x18\x02 \x01(\v2\x10.orisun.PositionR\bposition\"\x89\x01\n" +
+	"\bposition\x18\x02 \x01(\v2\x10.orisun.PositionR\bposition\"{\n" +
+	"\tSaveQuery\x12=\n" +
+	"\x11expected_position\x18\x01 \x01(\v2\x10.orisun.PositionR\x10expectedPosition\x12/\n" +
+	"\vsubsetQuery\x18\x02 \x01(\v2\r.orisun.QueryR\vsubsetQuery\"\x85\x01\n" +
 	"\x11SaveEventsRequest\x12\x1a\n" +
 	"\bboundary\x18\x02 \x01(\tR\bboundary\x12'\n" +
 	"\x05query\x18\x03 \x01(\v2\x11.orisun.SaveQueryR\x05query\x12+\n" +
-	"\x06events\x18\x04 \x03(\v2\x13.orisun.EventToSaveR\x06events:\x02\x18\x01\"\xa0\x01\n" +
+	"\x06events\x18\x04 \x03(\v2\x13.orisun.EventToSaveR\x06events\"\xa0\x01\n" +
 	"\x13SaveEventsV2Request\x12\x1a\n" +
 	"\bboundary\x18\x01 \x01(\tR\bboundary\x12+\n" +
 	"\x06events\x18\x02 \x03(\v2\x13.orisun.EventToSaveR\x06events\x12@\n" +
@@ -2364,11 +2362,9 @@ const file_eventstore_proto_rawDesc = "" +
 	"IndexState\x12\x1b\n" +
 	"\x17INDEX_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14INDEX_STATE_BUILDING\x10\x01\x12\x15\n" +
-	"\x11INDEX_STATE_READY\x10\x022\xfe\x06\n" +
+	"\x11INDEX_STATE_READY\x10\x022\xbb\x06\n" +
 	"\n" +
-	"EventStore\x12A\n" +
-	"\n" +
-	"SaveEvents\x12\x19.orisun.SaveEventsRequest\x1a\x13.orisun.WriteResult\"\x03\x88\x02\x01\x12B\n" +
+	"EventStore\x12B\n" +
 	"\fSaveEventsV2\x12\x1b.orisun.SaveEventsV2Request\x1a\x13.orisun.WriteResult\"\x00\x12I\n" +
 	"\x0fGetWriteContext\x12\x1e.orisun.GetWriteContextRequest\x1a\x14.orisun.WriteContext\"\x00\x12B\n" +
 	"\tGetEvents\x12\x18.orisun.GetEventsRequest\x1a\x19.orisun.GetEventsResponse\"\x00\x12`\n" +
@@ -2410,8 +2406,8 @@ var file_eventstore_proto_goTypes = []any{
 	(*EventToSave)(nil),                         // 10: orisun.EventToSave
 	(*Event)(nil),                               // 11: orisun.Event
 	(*WriteResult)(nil),                         // 12: orisun.WriteResult
-	(*SaveQuery)(nil),                           // 13: orisun.SaveQuery
-	(*ConsistencyObservation)(nil),              // 14: orisun.ConsistencyObservation
+	(*ConsistencyObservation)(nil),              // 13: orisun.ConsistencyObservation
+	(*SaveQuery)(nil),                           // 14: orisun.SaveQuery
 	(*SaveEventsRequest)(nil),                   // 15: orisun.SaveEventsRequest
 	(*SaveEventsV2Request)(nil),                 // 16: orisun.SaveEventsV2Request
 	(*GetWriteContextRequest)(nil),              // 17: orisun.GetWriteContextRequest
@@ -2445,15 +2441,15 @@ var file_eventstore_proto_depIdxs = []int32{
 	6,  // 2: orisun.Event.position:type_name -> orisun.Position
 	40, // 3: orisun.Event.date_created:type_name -> google.protobuf.Timestamp
 	6,  // 4: orisun.WriteResult.log_position:type_name -> orisun.Position
-	6,  // 5: orisun.SaveQuery.expected_position:type_name -> orisun.Position
-	9,  // 6: orisun.SaveQuery.subsetQuery:type_name -> orisun.Query
-	9,  // 7: orisun.ConsistencyObservation.query:type_name -> orisun.Query
-	6,  // 8: orisun.ConsistencyObservation.position:type_name -> orisun.Position
-	13, // 9: orisun.SaveEventsRequest.query:type_name -> orisun.SaveQuery
+	9,  // 5: orisun.ConsistencyObservation.query:type_name -> orisun.Query
+	6,  // 6: orisun.ConsistencyObservation.position:type_name -> orisun.Position
+	6,  // 7: orisun.SaveQuery.expected_position:type_name -> orisun.Position
+	9,  // 8: orisun.SaveQuery.subsetQuery:type_name -> orisun.Query
+	14, // 9: orisun.SaveEventsRequest.query:type_name -> orisun.SaveQuery
 	10, // 10: orisun.SaveEventsRequest.events:type_name -> orisun.EventToSave
 	10, // 11: orisun.SaveEventsV2Request.events:type_name -> orisun.EventToSave
-	14, // 12: orisun.SaveEventsV2Request.consistency:type_name -> orisun.ConsistencyObservation
-	14, // 13: orisun.WriteContext.consistency:type_name -> orisun.ConsistencyObservation
+	13, // 12: orisun.SaveEventsV2Request.consistency:type_name -> orisun.ConsistencyObservation
+	13, // 13: orisun.WriteContext.consistency:type_name -> orisun.ConsistencyObservation
 	9,  // 14: orisun.GetEventsRequest.query:type_name -> orisun.Query
 	6,  // 15: orisun.GetEventsRequest.from_position:type_name -> orisun.Position
 	0,  // 16: orisun.GetEventsRequest.direction:type_name -> orisun.Direction
@@ -2477,32 +2473,30 @@ var file_eventstore_proto_depIdxs = []int32{
 	5,  // 34: orisun.IndexDefinition.state:type_name -> orisun.IndexState
 	35, // 35: orisun.ListIndexesResponse.indexes:type_name -> orisun.IndexDefinition
 	35, // 36: orisun.GetIndexResponse.index:type_name -> orisun.IndexDefinition
-	15, // 37: orisun.EventStore.SaveEvents:input_type -> orisun.SaveEventsRequest
-	16, // 38: orisun.EventStore.SaveEventsV2:input_type -> orisun.SaveEventsV2Request
-	17, // 39: orisun.EventStore.GetWriteContext:input_type -> orisun.GetWriteContextRequest
-	19, // 40: orisun.EventStore.GetEvents:input_type -> orisun.GetEventsRequest
-	26, // 41: orisun.EventStore.GetLatestByCriteria:input_type -> orisun.GetLatestByCriteriaRequest
-	21, // 42: orisun.EventStore.CatchUpSubscribeToEvents:input_type -> orisun.CatchUpSubscribeToEventStoreRequest
-	22, // 43: orisun.EventStore.Ping:input_type -> orisun.PingRequest
-	24, // 44: orisun.EventStore.GetServerInfo:input_type -> orisun.GetServerInfoRequest
-	31, // 45: orisun.EventStore.CreateIndex:input_type -> orisun.CreateIndexRequest
-	33, // 46: orisun.EventStore.DropIndex:input_type -> orisun.DropIndexRequest
-	36, // 47: orisun.EventStore.ListIndexes:input_type -> orisun.ListIndexesRequest
-	38, // 48: orisun.EventStore.GetIndex:input_type -> orisun.GetIndexRequest
-	12, // 49: orisun.EventStore.SaveEvents:output_type -> orisun.WriteResult
-	12, // 50: orisun.EventStore.SaveEventsV2:output_type -> orisun.WriteResult
-	18, // 51: orisun.EventStore.GetWriteContext:output_type -> orisun.WriteContext
-	20, // 52: orisun.EventStore.GetEvents:output_type -> orisun.GetEventsResponse
-	28, // 53: orisun.EventStore.GetLatestByCriteria:output_type -> orisun.GetLatestByCriteriaResponse
-	11, // 54: orisun.EventStore.CatchUpSubscribeToEvents:output_type -> orisun.Event
-	23, // 55: orisun.EventStore.Ping:output_type -> orisun.PingResponse
-	25, // 56: orisun.EventStore.GetServerInfo:output_type -> orisun.GetServerInfoResponse
-	32, // 57: orisun.EventStore.CreateIndex:output_type -> orisun.CreateIndexResponse
-	34, // 58: orisun.EventStore.DropIndex:output_type -> orisun.DropIndexResponse
-	37, // 59: orisun.EventStore.ListIndexes:output_type -> orisun.ListIndexesResponse
-	39, // 60: orisun.EventStore.GetIndex:output_type -> orisun.GetIndexResponse
-	49, // [49:61] is the sub-list for method output_type
-	37, // [37:49] is the sub-list for method input_type
+	16, // 37: orisun.EventStore.SaveEventsV2:input_type -> orisun.SaveEventsV2Request
+	17, // 38: orisun.EventStore.GetWriteContext:input_type -> orisun.GetWriteContextRequest
+	19, // 39: orisun.EventStore.GetEvents:input_type -> orisun.GetEventsRequest
+	26, // 40: orisun.EventStore.GetLatestByCriteria:input_type -> orisun.GetLatestByCriteriaRequest
+	21, // 41: orisun.EventStore.CatchUpSubscribeToEvents:input_type -> orisun.CatchUpSubscribeToEventStoreRequest
+	22, // 42: orisun.EventStore.Ping:input_type -> orisun.PingRequest
+	24, // 43: orisun.EventStore.GetServerInfo:input_type -> orisun.GetServerInfoRequest
+	31, // 44: orisun.EventStore.CreateIndex:input_type -> orisun.CreateIndexRequest
+	33, // 45: orisun.EventStore.DropIndex:input_type -> orisun.DropIndexRequest
+	36, // 46: orisun.EventStore.ListIndexes:input_type -> orisun.ListIndexesRequest
+	38, // 47: orisun.EventStore.GetIndex:input_type -> orisun.GetIndexRequest
+	12, // 48: orisun.EventStore.SaveEventsV2:output_type -> orisun.WriteResult
+	18, // 49: orisun.EventStore.GetWriteContext:output_type -> orisun.WriteContext
+	20, // 50: orisun.EventStore.GetEvents:output_type -> orisun.GetEventsResponse
+	28, // 51: orisun.EventStore.GetLatestByCriteria:output_type -> orisun.GetLatestByCriteriaResponse
+	11, // 52: orisun.EventStore.CatchUpSubscribeToEvents:output_type -> orisun.Event
+	23, // 53: orisun.EventStore.Ping:output_type -> orisun.PingResponse
+	25, // 54: orisun.EventStore.GetServerInfo:output_type -> orisun.GetServerInfoResponse
+	32, // 55: orisun.EventStore.CreateIndex:output_type -> orisun.CreateIndexResponse
+	34, // 56: orisun.EventStore.DropIndex:output_type -> orisun.DropIndexResponse
+	37, // 57: orisun.EventStore.ListIndexes:output_type -> orisun.ListIndexesResponse
+	39, // 58: orisun.EventStore.GetIndex:output_type -> orisun.GetIndexResponse
+	48, // [48:59] is the sub-list for method output_type
+	37, // [37:48] is the sub-list for method input_type
 	37, // [37:37] is the sub-list for extension type_name
 	37, // [37:37] is the sub-list for extension extendee
 	0,  // [0:37] is the sub-list for field type_name

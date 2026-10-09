@@ -20,6 +20,7 @@ import (
 )
 
 type Store struct {
+	notifications *orisun.BoundaryNotificationManager
 	*orisun.OrisunServer
 
 	indexManager    orisun.BoundaryIndexManager
@@ -94,6 +95,11 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		natsRuntime.Close()
 		return nil, err
 	}
+	if err := store.ConfigureSubscriptions(config.SubscriptionIdleThreshold); err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
 	if err := store.EnsureBoundary(runCtx, config.Admin.Boundary); err != nil {
 		cancel()
 		natsRuntime.Close()
@@ -106,12 +112,12 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	}
 	boundaryEvents := eventstoreadapter.New(runtime.SaveEvents, runtime.GetEvents, store.SubscribeToEvents)
 
-	pollingManager := orisun.StartEventPolling(
-		runCtx, config, runtime.LockProvider, runtime.GetEvents, js,
-		runtime.EventPublishing, runtime.SignalProvider, logger,
+	notificationManager := orisun.StartNotificationRelays(
+		runCtx, runtime.LockProvider, js.Conn(), runtime.SignalProvider, logger,
 	)
-	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+	if err := notificationManager.StartBoundary(config.Admin.Boundary); err != nil {
 		cancel()
+		notificationManager.Stop()
 		natsRuntime.Close()
 		return nil, err
 	}
@@ -122,7 +128,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		if err := runtime.InstallBoundary(installCtx, definition); err != nil {
 			return err
 		}
-		return pollingManager.StartBoundary(definition.Name)
+		return notificationManager.StartBoundary(definition.Name)
 	}
 	provisioningHandler := boundaryprovisioning.NewBoundaryProvisioningEventHandler(
 		config.Admin.Boundary,
@@ -146,6 +152,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	)
 	if err != nil {
 		cancel()
+		notificationManager.Stop()
 		natsRuntime.Close()
 		return nil, fmt.Errorf("bootstrap admin boundary catalog: %w", err)
 	}
@@ -166,6 +173,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	)
 	if err := runtimeSubscriber.Replay(runCtx); err != nil {
 		cancel()
+		notificationManager.Stop()
 		natsRuntime.Close()
 		return nil, fmt.Errorf("replay boundary catalog into embedded SQLite runtime: %w", err)
 	}
@@ -185,6 +193,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		adminBoundary:   config.Admin.Boundary,
 		boundaryEvents:  boundaryEvents,
 		cancel:          cancel,
+		notifications:   notificationManager,
 		boundaryWorkers: boundaryWorkers,
 		natsRuntime:     natsRuntime,
 	}, nil
@@ -195,8 +204,8 @@ func (s *Store) CreateBoundary(ctx context.Context, definition boundarymodel.Def
 		ctx,
 		createboundary.CreateBoundaryCommand{
 			Name: definition.Name, Description: definition.Description, Placement: definition.Placement,
-			ExistedBeforeCatalog: definition.ExistedBeforeCatalog,
-			Metadata:             createboundary.CommandMetadata{"source": "embedded_sqlite", "operation": "create_boundary"},
+
+			Metadata: createboundary.CommandMetadata{"source": "embedded_sqlite", "operation": "create_boundary"},
 		},
 		s.adminBoundary,
 		s.boundaryEvents,
@@ -265,6 +274,9 @@ func (s *Store) Close() {
 	}
 	if s.cancel != nil {
 		s.cancel()
+		if s.notifications != nil {
+			s.notifications.Stop()
+		}
 	}
 	if s.boundaryWorkers != nil {
 		_ = s.boundaryWorkers.Wait()

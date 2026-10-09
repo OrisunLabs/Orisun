@@ -5,7 +5,7 @@ import (
 	"time"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
@@ -78,17 +78,16 @@ func (h *BoundaryProvisioningEventHandler) Handle(ctx context.Context, event cor
 }
 
 func definitionFromEvent(event coreeventstore.ReadEvent) (boundarymodel.Definition, error) {
-	if event.EventType != adminevents.EventTypeBoundaryCreated {
+	if event.EventType != boundaryevents.EventTypeBoundaryCreated {
 		return boundarymodel.Definition{}, statuscode.Errorf(statuscode.InvalidArgument, "unsupported boundary provisioning event %q", event.EventType)
 	}
-	var data adminevents.BoundaryCreated
+	var data boundaryevents.BoundaryCreated
 	if err := json.Unmarshal([]byte(event.Data), &data); err != nil {
 		return boundarymodel.Definition{}, statuscode.Errorf(statuscode.Internal, "decode %s: %v", event.EventType, err)
 	}
 	return boundarymodel.Definition{
-		Name:                 data.Boundary,
-		Description:          data.Description,
-		Placement:            data.Placement,
-		ExistedBeforeCatalog: data.ExistedBeforeCatalog,
+		Name:        data.Boundary,
+		Description: data.Description,
+		Placement:   data.Placement,
 	}, nil
 }

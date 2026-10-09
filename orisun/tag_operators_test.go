@@ -3,11 +3,11 @@ package orisun
 import (
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/require"
+	"strings"
 	"testing"
 )
 
-func TestTagOperatorLiveMatching(t *testing.T) {
-	store := &EventStore{}
+func TestStorageTagValueMatching(t *testing.T) {
 	for _, tc := range []struct {
 		name, data, op, value string
 		want                  bool
@@ -29,18 +29,13 @@ func TestTagOperatorLiveMatching(t *testing.T) {
 		{"unknown_operator", `{"n":10}`, "GE", "2", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			query := &Query{Criteria: []*Criterion{{Tags: []*Tag{{Key: "n", Value: tc.value, Operator: tc.op}}}}}
-			require.Equal(t, tc.want, store.eventMatchesQueryCriteria(&Event{Data: tc.data, Metadata: `{}`}, query))
+			var data map[string]any
+			decoder := json.NewDecoder(strings.NewReader(tc.data))
+			decoder.UseNumber()
+			require.NoError(t, decoder.Decode(&data))
+			require.Equal(t, tc.want, MatchTagValue(data["n"], tc.value, tc.op))
 		})
 	}
-	query := &Query{Criteria: []*Criterion{
-		{Tags: []*Tag{{Key: "n", Value: "2", Operator: "gte"}, {Key: "n", Value: "20", Operator: "lt"}}},
-		{Tags: []*Tag{{Key: "kind", Value: "override"}}},
-	}}
-	for _, data := range []string{`{"n":10}`, `{"n":20,"kind":"override"}`} {
-		require.True(t, store.eventMatchesQueryCriteria(&Event{Data: data, Metadata: `{}`}, query))
-	}
-	require.False(t, store.eventMatchesQueryCriteria(&Event{Data: `{"n":20}`, Metadata: `{}`}, query))
 }
 
 func TestOperatorQueryNormalizationAndWriteContext(t *testing.T) {
@@ -66,7 +61,7 @@ func TestOperatorQueryNormalizationAndWriteContext(t *testing.T) {
 	require.True(t, json.Valid(data))
 	decoded, err := DecodeWriteContext("1:0", data)
 	require.NoError(t, err)
-	restored, err := consistencyChecksFromObservations(decoded.Consistency)
+	restored, err := ConsistencyChecksFromObservations(decoded.Consistency)
 	require.NoError(t, err)
 	require.Equal(t, checks, restored)
 	query.Criteria[0].Tags[0].Operator = "GT"

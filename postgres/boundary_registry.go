@@ -13,8 +13,6 @@ type postgresBoundary struct {
 	insertEventRequests   string
 	selectEvents          string
 	selectLatest          string
-	getLastPublished      string
-	insertLastPublished   string
 	getEventCount         string
 	fallbackGetEventCount string
 	saveEventCount        string
@@ -86,8 +84,6 @@ func buildPostgresBoundary(mapping config.BoundaryToPostgresSchemaMapping) postg
 		insertEventRequests:   fmt.Sprintf(insertEventRequestsWithConsistency, schema),
 		selectEvents:          fmt.Sprintf(selectMatchingEvents, schema),
 		selectLatest:          fmt.Sprintf(selectLatestByCriteria, schema),
-		getLastPublished:      fmt.Sprintf(getLastPublishedEventQuery, schema, boundary),
-		insertLastPublished:   fmt.Sprintf(insertLastPublishedPosition, schema, boundary),
 		getEventCount:         fmt.Sprintf("SELECT event_count FROM %s.%s_events_count limit 1", schema, boundary),
 		fallbackGetEventCount: fmt.Sprintf("SELECT COUNT(*) FROM %s.%s_orisun_es_event", schema, boundary),
 		saveEventCount:        fmt.Sprintf("INSERT INTO %s.%s_events_count (id, event_count, created_at, updated_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET event_count = $2, updated_at = $4", schema, boundary),

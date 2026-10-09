@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -517,7 +518,7 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 	}
 
 	q := fmt.Sprintf(
-		"SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE CAST(transaction_id AS TEXT) || ':' || CAST(write_id AS TEXT) END "+
+		"SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, json_extract(data, '$.__writeId') "+
 			"FROM orisun_es_event WHERE %s ORDER BY transaction_id %s, global_id %s LIMIT %d",
 		whereSQL, dirSQL, dirSQL, count,
 	)
@@ -587,7 +588,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 		if buildErr != nil {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "invalid criteria: %v", buildErr)
 		}
-		q := "SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE CAST(transaction_id AS TEXT) || ':' || CAST(write_id AS TEXT) END " +
+		q := "SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, json_extract(data, '$.__writeId') " +
 			"FROM orisun_es_event WHERE " + where +
 			" ORDER BY transaction_id DESC, global_id DESC LIMIT 1"
 
@@ -1364,7 +1365,6 @@ type DatabaseRuntime struct {
 	GetEvents         eventstore.EventsRetriever
 	LockProvider      eventstore.LockProvider
 	AdminDB           common.DB
-	EventPublishing   eventstore.EventPublishingTracker
 	SignalProvider    func(string) eventstore.EventSignal
 	ProvisionBoundary func(context.Context, boundarymodel.Definition) error
 	InstallBoundary   func(context.Context, boundarymodel.Definition) error
@@ -1384,7 +1384,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 		return nil, errors.New("sqlite lock provider is nil")
 	}
 	if !sqliteCfg.InMemory {
-		if err := ensureDir(sqliteCfg.Dir); err != nil {
+		if err := os.MkdirAll(sqliteCfg.Dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create sqlite dir: %w", err)
 		}
 	}
@@ -1393,7 +1393,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	if err := validateIdentifier(adminBoundary); err != nil {
 		return nil, fmt.Errorf("invalid admin boundary %q: %w", adminBoundary, err)
 	}
-	bp, err := OpenBoundaryPoolsWithConfig(ctx, sqliteCfg, adminBoundary, adminBoundary)
+	bp, err := OpenBoundaryPoolsWithConfig(ctx, sqliteCfg, adminBoundary)
 	if err != nil {
 		return nil, err
 	}
@@ -1406,7 +1406,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	}
 	metadataPools := map[string]*BoundaryPools{adminBoundary: mp}
 	registry := NewBoundaryRegistry(pools, metadataPools)
-	notifier := NewSqliteEventNotifierWithWakeDelay(time.Second, sqliteCfg.PublisherWakeDelay)
+	notifier := NewSqliteEventNotifierWithWakeDelay(sqliteCfg.PublisherWakeDelay)
 	saver, err := newSqliteSaveEventsWithRegistry(registry, logger, sqliteCfg.GroupCommit)
 	if err != nil {
 		closeAll(pools)
@@ -1416,7 +1416,6 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	saver.notifier = notifier
 	getter := newSqliteGetEventsWithRegistry(registry, logger)
 	admin := newSqliteAdminDBWithRegistry(registry, adminCfg.Boundary, logger)
-	publishing := newSqliteEventPublishingWithRegistry(registry, logger)
 	provisioner := NewSqliteBoundaryProvisioner(sqliteCfg, adminCfg, registry, saver)
 
 	go func() {
@@ -1431,7 +1430,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 
 	return &DatabaseRuntime{
 		SaveEvents: saver, GetEvents: getter, LockProvider: lockProvider,
-		AdminDB: admin, EventPublishing: publishing, SignalProvider: notifier.Signal,
+		AdminDB: admin, SignalProvider: notifier.Signal,
 		ProvisionBoundary: provisioner.ProvisionBoundary,
 		InstallBoundary:   provisioner.InstallBoundary,
 	}, nil

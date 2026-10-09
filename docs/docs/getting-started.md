@@ -84,7 +84,7 @@ SQLite is single-node only. Keep `ORISUN_NATS_CLUSTER_ENABLED=false` for SQLite 
 
 ### When to choose SQLite
 
-Choose SQLite when one active Orisun node is enough and operational simplicity matters more than clustering. SQLite mode is complete: it stores the event log, admin state, index metadata, publisher checkpoints, projector checkpoints, and JSON criteria indexes. Event logs live in one `{boundary}.db` file per boundary; derived operational state lives in one `{boundary}_metadata.db` file per boundary.
+Choose SQLite when one active Orisun node is enough and operational simplicity matters more than clustering. SQLite mode is complete: it stores the event log, admin state, index metadata, projector checkpoints, and JSON criteria indexes. Event logs live in one `{boundary}.db` file per boundary; derived operational state lives in one `{boundary}_metadata.db` file per boundary.
 
 ### When to choose PostgreSQL
 
@@ -103,7 +103,7 @@ Download a release asset for your OS, architecture, and backend from [GitHub Rel
 For example, on Linux amd64:
 
 ```bash
-VERSION=0.10.0
+VERSION="<release-version>"
 
 curl -L \
   "https://github.com/OrisunLabs/Orisun/releases/download/v${VERSION}/orisun-sqlite-linux-amd64" \
@@ -112,10 +112,8 @@ curl -L \
 chmod +x ./orisun-sqlite
 ```
 
-The `v0.10.0` binary is the current stable server and predates
-`SaveEventsV2`. Use it only with the deprecated V1 write shape. To follow the
-V2 write examples on this page before the next release, build a current `main`
-checkout:
+Use a binary built from this release with the current client contract. To build
+the checked-out source locally:
 
 ```bash
 ./build.sh linux amd64 dev pg

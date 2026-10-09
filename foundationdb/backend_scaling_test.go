@@ -57,7 +57,7 @@ func BenchmarkFDBAppendParallel(b *testing.B) {
 				EventType: "Appended",
 				Data:      map[string]any{"k": "v"},
 				Metadata:  map[string]any{},
-			}}, "test", nil, nil)
+			}}, "test", nil)
 			if err != nil {
 				b.Fatalf("append save: %v", err)
 			}
@@ -87,7 +87,7 @@ func BenchmarkFDBIndependentAggregates(b *testing.B) {
 				EventType: "OrderEvent",
 				Data:      map[string]any{"order_id": agg},
 				Metadata:  map[string]any{},
-			}}, "test", expected, cond)
+			}}, "test", []*eventstore.ConsistencyObservation{{Query: cond, Position: expected}})
 			if err != nil {
 				b.Fatalf("independent save (sole writer should never conflict): %v", err)
 			}
@@ -135,7 +135,7 @@ func BenchmarkFDBSingleHotAggregate(b *testing.B) {
 					EventType: "OrderEvent",
 					Data:      map[string]any{"order_id": agg},
 					Metadata:  map[string]any{},
-				}}, "test", expected, cond)
+				}}, "test", []*eventstore.ConsistencyObservation{{Query: cond, Position: expected}})
 				if statuscode.CodeOf(err) == statuscode.AlreadyExists {
 					continue // lost the race; re-read head and retry
 				}
@@ -176,7 +176,7 @@ func BenchmarkFDBBurst10000(b *testing.B) {
 					EventType: "BurstAppended",
 					Data:      map[string]any{"burst": burst, "i": i},
 					Metadata:  map[string]any{},
-				}}, "test", nil, nil)
+				}}, "test", nil)
 				if err != nil {
 					errs <- err
 					return

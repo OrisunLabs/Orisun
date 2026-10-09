@@ -73,9 +73,7 @@ func TestPostgresGroupCommit_Unconditional(t *testing.T) {
 			transactionID, globalID, saveErr := saver.Save(
 				context.Background(),
 				[]orisun.EventWithMapTags{event},
-				"test_boundary",
-				nil,
-				nil,
+				"test_boundary", nil,
 			)
 			parsedTransactionID, parseErr := strconv.ParseInt(transactionID, 10, 64)
 			if saveErr == nil && parseErr != nil {
@@ -168,9 +166,7 @@ func TestPostgresGroupCommit_Unconditional(t *testing.T) {
 			transactionID, globalID, saveErr := validationSaver.Save(
 				context.Background(),
 				[]orisun.EventWithMapTags{event},
-				"test_boundary",
-				nil,
-				nil,
+				"test_boundary", nil,
 			)
 			parsedTransactionID, _ := strconv.ParseInt(transactionID, 10, 64)
 			validationResults <- saveResult{
@@ -334,9 +330,7 @@ func TestPostgresGroupCommit_InBatchWriteInvalidatesLaterCCCCheck(t *testing.T) 
 	seedTransactionID, seedGlobalID, err := seedSaver.Save(
 		t.Context(),
 		[]orisun.EventWithMapTags{postgresGroupCommitEvent(t, "Seed", "same-context")},
-		"test_boundary",
-		nil,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
 	seedSaver.close()
@@ -390,18 +384,14 @@ func TestPostgresGroupCommit_InBatchWriteInvalidatesLaterCCCCheck(t *testing.T) 
 		go func() {
 			defer wg.Done()
 			<-start
-			requestExpected := expected
-			requestQuery := query
+			observations := []*orisun.ConsistencyObservation{{Query: query, Position: expected}}
 			if event.EventType == "Independent" {
-				requestExpected = nil
-				requestQuery = nil
+				observations = nil
 			}
 			_, _, saveErr := saver.Save(
 				context.Background(),
 				[]orisun.EventWithMapTags{event},
-				"test_boundary",
-				requestExpected,
-				requestQuery,
+				"test_boundary", observations,
 			)
 			results <- outcome{eventType: event.EventType, err: saveErr}
 		}()
@@ -461,11 +451,11 @@ func TestPostgresSavePreparedValidatesEveryQueryObservation(t *testing.T) {
 
 	accountTx, accountGID, err := saver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "AccountOpened", "account-a"),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	customerTx, customerGID, err := saver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "CustomerOpened", "customer-a"),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	accountCommit, err := strconv.ParseInt(accountTx, 10, 64)
 	require.NoError(t, err)
@@ -505,7 +495,7 @@ func TestPostgresSavePreparedValidatesEveryQueryObservation(t *testing.T) {
 
 	accountTx, accountGID, err = saver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "AccountOpened", "account-a"),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	accountCommit, err = strconv.ParseInt(accountTx, 10, 64)
 	require.NoError(t, err)
@@ -526,7 +516,7 @@ func TestPostgresSavePreparedValidatesEveryQueryObservation(t *testing.T) {
 
 	_, _, err = saver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "CustomerUpdated", "customer-a"),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	rejectedSecond, err := orisun.PrepareEventsForSave([]orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "RejectedSecondFirst", "atomic-second-rejected"),
@@ -542,13 +532,13 @@ func TestPostgresSavePreparedValidatesEveryQueryObservation(t *testing.T) {
 
 	_, _, err = saver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "Appeared", "missing"),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	_, _, err = saver.SavePrepared(t.Context(), prepared, "test_boundary", []orisun.ConsistencyCheck{checks[2]})
 	require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(err))
 
 	api := grpcapi.AdaptEventStore(orisun.NewEventStoreServer(
-		nil, saver, nil, nil, nil, orisun.EventStreamConfig{}, logger,
+		nil, saver, nil, nil, nil, logger,
 	))
 	rpcConsistency := []*grpcapi.ConsistencyObservation{
 		{
@@ -608,7 +598,7 @@ func TestPostgresGroupCommit_CheckedBatchMatchesSequentialSemantics(t *testing.T
 	seed := func(boundary, aggregate string) orisun.Position {
 		tx, gid, saveErr := saver.Save(t.Context(), []orisun.EventWithMapTags{
 			postgresGroupCommitEvent(t, "Seed", aggregate),
-		}, boundary, nil, nil)
+		}, boundary, nil)
 		require.NoError(t, saveErr)
 		commit, parseErr := strconv.ParseInt(tx, 10, 64)
 		require.NoError(t, parseErr)
@@ -716,7 +706,7 @@ func TestPostgresGroupCommit_TwoSaversContendOnSameContexts(t *testing.T) {
 	defer secondSaver.close()
 	guardTx, guardGID, err := firstSaver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresIndependentCCCEvent(t, "Guard", "global-guard"),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	guardCommit, err := strconv.ParseInt(guardTx, 10, 64)
 	require.NoError(t, err)
@@ -868,9 +858,7 @@ func TestPostgresGroupCommit_CancellationAndFlushTimeout(t *testing.T) {
 		_, _, saveErr := saver.Save(
 			context.Background(),
 			[]orisun.EventWithMapTags{blockingEvent},
-			"test_boundary",
-			nil,
-			nil,
+			"test_boundary", nil,
 		)
 		firstResult <- saveErr
 	}()
@@ -883,9 +871,7 @@ func TestPostgresGroupCommit_CancellationAndFlushTimeout(t *testing.T) {
 		_, _, saveErr := saver.Save(
 			cancelledCtx,
 			[]orisun.EventWithMapTags{cancelledEvent},
-			"test_boundary",
-			nil,
-			nil,
+			"test_boundary", nil,
 		)
 		cancelledResult <- saveErr
 	}()
@@ -934,9 +920,7 @@ func TestPostgresGroupCommit_CancellationAndFlushTimeout(t *testing.T) {
 		_, _, saveErr := timeoutSaver.Save(
 			context.Background(),
 			[]orisun.EventWithMapTags{timedOutEvent},
-			"test_boundary",
-			nil,
-			nil,
+			"test_boundary", nil,
 		)
 		timeoutResult <- saveErr
 	}()
@@ -946,9 +930,7 @@ func TestPostgresGroupCommit_CancellationAndFlushTimeout(t *testing.T) {
 	_, followupGlobalID, err := timeoutSaver.Save(
 		t.Context(),
 		[]orisun.EventWithMapTags{postgresGroupCommitEvent(t, "AfterTimeout", "timeout-context")},
-		"test_boundary",
-		nil,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), followupGlobalID, "timed-out lock wait must not allocate a position")
@@ -984,9 +966,7 @@ func TestPostgresGroupCommit_ShutdownRejectsNewSaves(t *testing.T) {
 	_, _, err = saver.Save(
 		t.Context(),
 		[]orisun.EventWithMapTags{postgresGroupCommitEvent(t, "AfterClose", "closed")},
-		"test_boundary",
-		nil,
-		nil,
+		"test_boundary", nil,
 	)
 	require.Equal(t, statuscode.Unavailable, statuscode.CodeOf(err))
 }
@@ -1010,9 +990,7 @@ func TestPostgresGroupCommit_IndependentCCC(t *testing.T) {
 		transactionID, globalID, saveErr := seedSaver.Save(
 			t.Context(),
 			[]orisun.EventWithMapTags{postgresIndependentCCCEvent(t, "Seed", contextValue)},
-			"test_boundary",
-			nil,
-			nil,
+			"test_boundary", nil,
 		)
 		require.NoError(t, saveErr)
 		commitPosition, parseErr := strconv.ParseInt(transactionID, 10, 64)
@@ -1110,13 +1088,13 @@ func TestPostgresGroupCommit_TypedSnapshotHistory(t *testing.T) {
 	tx, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "Guard", key),
 		postgresGroupCommitEvent(t, "Guard", key),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	commit, err := strconv.ParseInt(tx, 10, 64)
 	require.NoError(t, err)
 	_, _, err = saver.Save(t.Context(), []orisun.EventWithMapTags{
 		postgresGroupCommitEvent(t, "Unrelated", key),
-	}, "test_boundary", nil, nil)
+	}, "test_boundary", nil)
 	require.NoError(t, err)
 	criterion := func(kind, value string) orisun.ReadCriterion {
 		return orisun.ReadCriterion{Tags: []orisun.ReadTag{{Key: "__eventType", Value: kind}, {Key: "aggregate", Value: value}}}
@@ -1228,36 +1206,6 @@ func TestPostgresGroupCommit_InvalidRequestsDoNotAffectNeighbors(t *testing.T) {
 	var writes int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM public.test_boundary_orisun_es_write`).Scan(&writes))
 	require.Equal(t, len(cases)*2, writes)
-}
-
-func TestPostgresGroupCommit_UpgradeRetiresAlternateFunctions(t *testing.T) {
-	container, err := setupTestContainer(t)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, container.container.Terminate(context.Background())) })
-	db, err := setupTestDatabase(t, container)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-	retired := []string{
-		"insert_events_v2(text,text,jsonb,jsonb)",
-		"insert_unconditional_event_requests_v1(text,text,jsonb)",
-		"insert_independent_event_requests_v2(text,text,text,jsonb)",
-		"insert_canonical_event_requests_v2(text,text,jsonb)",
-	}
-	for _, signature := range retired {
-		_, err := db.Exec("CREATE FUNCTION public." + signature + " RETURNS void LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$")
-		require.NoError(t, err)
-	}
-	for range 2 {
-		require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, t.Context()))
-		for _, signature := range retired {
-			var absent bool
-			require.NoError(t, db.QueryRow("SELECT to_regprocedure($1) IS NULL", "public."+signature).Scan(&absent))
-			require.True(t, absent, signature)
-		}
-		var available bool
-		require.NoError(t, db.QueryRow("SELECT to_regprocedure('public.insert_event_requests_v2(text,text,jsonb)') IS NOT NULL").Scan(&available))
-		require.True(t, available)
-	}
 }
 
 // In-batch matching must use the same JSONB text equality as persisted reads,

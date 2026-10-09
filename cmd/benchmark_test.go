@@ -906,7 +906,7 @@ func BenchmarkSaveEvents_DirectDatabase10K(b *testing.B) {
 					b.Errorf("failed to prepare event: %v", err)
 					return
 				}
-				consistency, err := orisun.LegacyConsistencyChecks(&p, consistencyCondition)
+				consistency, err := orisun.ConsistencyChecksFromObservations([]*orisun.ConsistencyObservation{{Position: &p, Query: consistencyCondition}})
 				if err != nil {
 					b.Errorf("invalid consistency: %v", err)
 					return

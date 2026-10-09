@@ -123,7 +123,6 @@ $$;
 -- Creates or maintains:
 --   <boundary>_orisun_es_event
 --   <boundary>_orisun_es_event_global_id_seq
---   <boundary>_orisun_last_published_event_position
 --   <boundary>_events_count
 --   <boundary>_projector_checkpoint
 --
@@ -149,23 +148,20 @@ BEGIN
 
     prefixed_seq_name := format('%I.%I', schema_name, boundary_name || '_orisun_es_event_global_id_seq');
 
-    -- Create the durable event table for this boundary.
-    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
-        transaction_id BIGINT NOT NULL,
-        pg_xact_id     BIGINT,
-        global_id      BIGINT PRIMARY KEY,
-        event_id       UUID NOT NULL,
-        data           JSONB NOT NULL,
-        metadata       JSONB,
-        date_created   TIMESTAMPTZ DEFAULT (NOW() AT TIME ZONE ''UTC'') NOT NULL
-    )', schema_name, boundary_name || '_orisun_es_event');
-
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         write_id BIGINT PRIMARY KEY,
         consistency JSONB NOT NULL CHECK (jsonb_typeof(consistency) = ''array'')
     )', schema_name, boundary_name || '_orisun_es_write');
-    EXECUTE format('ALTER TABLE %I.%I ADD COLUMN IF NOT EXISTS write_id BIGINT REFERENCES %I.%I(write_id)',
-        schema_name, boundary_name || '_orisun_es_event', schema_name, boundary_name || '_orisun_es_write');
+    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
+        data JSONB NOT NULL CHECK (jsonb_typeof(data) = ''object''),
+        pg_xact_id BIGINT,
+        transaction_id BIGINT GENERATED ALWAYS AS ((data->>''__commitPosition'')::BIGINT) STORED NOT NULL,
+        global_id BIGINT GENERATED ALWAYS AS ((data->>''__preparePosition'')::BIGINT) STORED NOT NULL PRIMARY KEY,
+        write_id BIGINT GENERATED ALWAYS AS (NULLIF(split_part(data->>''__writeId'', '':'', 2), '''')::BIGINT) STORED NOT NULL REFERENCES %I.%I(write_id),
+        metadata JSONB GENERATED ALWAYS AS (data->''__metadata'') STORED,
+        date_created TEXT GENERATED ALWAYS AS (data->>''__dateCreated'') STORED NOT NULL,
+        CHECK ((jsonb_typeof(data->''__dateCreated'') = ''string'' AND (data->>''__dateCreated'')::timestamptz IS NOT NULL) IS TRUE)
+    )', schema_name, boundary_name || '_orisun_es_event', schema_name, boundary_name || '_orisun_es_write');
 
     -- Create the boundary-local global_id sequence.
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I.%I
@@ -187,41 +183,7 @@ BEGIN
           AND pg_xact_id >= pg_current_xact_id()::TEXT::BIGINT',
                    schema_name, boundary_name || '_orisun_es_event');
 
-    EXECUTE format('SELECT setval(%L::regclass, (SELECT COALESCE(MAX(global_id) + 1, 0) FROM %I.%I), false)',
-                   prefixed_seq_name,
-                   schema_name,
-                   boundary_name || '_orisun_es_event');
 
-    -- Older releases included the unbounded JSONB data and metadata columns in
-    -- these B-tree indexes. PostgreSQL applies its index-tuple size limit to
-    -- INCLUDE columns too, so sufficiently large events could not be inserted.
-    -- Drop only those legacy managed definitions; the lean replacements below
-    -- keep ordered reads fast without copying event payloads into the index.
-    IF EXISTS (
-        SELECT 1
-        FROM pg_indexes
-        WHERE schemaname = schema_name
-          AND tablename = boundary_name || '_orisun_es_event'
-          AND indexname = boundary_name || '_idx_global_order_covering'
-          AND indexdef ILIKE '%INCLUDE%'
-          AND indexdef ILIKE '%data%'
-    ) THEN
-        EXECUTE format('DROP INDEX %I.%I',
-                       schema_name, boundary_name || '_idx_global_order_covering');
-    END IF;
-
-    IF EXISTS (
-        SELECT 1
-        FROM pg_indexes
-        WHERE schemaname = schema_name
-          AND tablename = boundary_name || '_orisun_es_event'
-          AND indexname = boundary_name || '_idx_event_order_visibility_covering'
-          AND indexdef ILIKE '%INCLUDE%'
-          AND indexdef ILIKE '%data%'
-    ) THEN
-        EXECUTE format('DROP INDEX %I.%I',
-                       schema_name, boundary_name || '_idx_event_order_visibility_covering');
-    END IF;
 
     -- Create indexes used by latest-position checks and ordered event reads.
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC)',
@@ -243,15 +205,6 @@ BEGIN
         date_updated TIMESTAMPTZ DEFAULT NOW() NOT NULL
     )', schema_name, boundary_name || '_orisun_boundary_index_metadata');
 
-    -- Create the per-boundary NATS publisher checkpoint table.
-    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
-        boundary       TEXT PRIMARY KEY,
-        transaction_id BIGINT NOT NULL DEFAULT 0,
-        global_id      BIGINT NOT NULL DEFAULT 0,
-        date_created   TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-        date_updated   TIMESTAMPTZ DEFAULT NOW() NOT NULL
-    )', schema_name, boundary_name || '_orisun_last_published_event_position');
-
     -- Create the admin event-count cache table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         id          VARCHAR(255) PRIMARY KEY,
@@ -259,18 +212,6 @@ BEGIN
         created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )', schema_name, boundary_name || '_events_count');
-
-    -- Legacy tables stored the count as VARCHAR; convert in place (one-row cache).
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = schema_name
-          AND table_name = boundary_name || '_events_count'
-          AND column_name = 'event_count'
-          AND data_type = 'character varying'
-    ) THEN
-        EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN event_count TYPE BIGINT USING event_count::BIGINT',
-                       schema_name, boundary_name || '_events_count');
-    END IF;
 
     -- Create the admin/projector checkpoint table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
@@ -285,10 +226,6 @@ $$ LANGUAGE plpgsql;
 
 
 -- Retire alternate write implementations when upgrading an existing schema.
-DROP FUNCTION IF EXISTS insert_events_v2(TEXT, TEXT, JSONB, JSONB);
-DROP FUNCTION IF EXISTS insert_unconditional_event_requests_v1(TEXT, TEXT, JSONB);
-DROP FUNCTION IF EXISTS insert_independent_event_requests_v2(TEXT, TEXT, TEXT, JSONB);
-DROP FUNCTION IF EXISTS insert_canonical_event_requests_v2(TEXT, TEXT, JSONB);
 
 -- Single group-commit entry point for prepared event-batch requests. Initial
 -- positions are resolved with literal latest-match lookups per criterion.
@@ -652,72 +589,8 @@ $$;
 -- Position filtering is inclusive: ASC reads from >= after_position and DESC
 -- reads from <= after_position. ASC reads also apply a stable-prefix visibility
 -- barrier, hiding rows from transactions that are still in flight according to
--- pg_xact_id. Rows with NULL pg_xact_id are legacy/restored rows and are treated
+-- pg_xact_id. Rows with NULL pg_xact_id were restored into this cluster and are treated
 -- as visible.
-
-CREATE OR REPLACE FUNCTION get_matching_events_v3(
-    boundary_name TEXT,
-    schema TEXT,
-    criteria JSONB DEFAULT NULL,
-    after_position JSONB DEFAULT NULL,
-    sort_dir TEXT DEFAULT 'ASC',
-    max_count INT DEFAULT 1000
-)
-    RETURNS TABLE
-            (
-                transaction_id BIGINT,
-                global_id      BIGINT,
-                event_id       UUID,
-                event_type     TEXT,
-                data           JSONB,
-                metadata       JSONB,
-                date_created   TIMESTAMPTZ
-            )
-    LANGUAGE plpgsql
-    STABLE
-AS
-$$
-BEGIN
-    RETURN QUERY EXECUTE format(
-        'SELECT transaction_id, global_id, event_id, event_type, data, metadata, date_created FROM %I.get_matching_events_v4($1, $2, $3, $4, $5, $6)', schema
-    ) USING boundary_name, schema, criteria, after_position, sort_dir, max_count;
-END;
-$$;
-
--- get_latest_by_criteria_v1 returns the newest event matching each requested
--- criterion, all from ONE statement and therefore one PostgreSQL snapshot. The
--- Go caller computes the complete OR query's position as the maximum returned
--- event position and returns that query-level observation to the caller.
---
--- This function returns one row per matching criterion only. Criteria with no
--- matching event are omitted; the Go caller maps missing indexes back to empty
--- LatestCriterionResult entries.
-CREATE OR REPLACE FUNCTION get_latest_by_criteria_v1(
-    boundary_name TEXT,
-    schema TEXT,
-    criteria JSONB
-)
-    RETURNS TABLE
-            (
-                criterion_idx  INT,
-                transaction_id BIGINT,
-                global_id      BIGINT,
-                event_id       UUID,
-                event_type     TEXT,
-                data           JSONB,
-                metadata       JSONB,
-                date_created   TIMESTAMPTZ
-            )
-    LANGUAGE plpgsql
-    STABLE
-AS
-$$
-BEGIN
-    RETURN QUERY EXECUTE format(
-        'SELECT criterion_idx, transaction_id, global_id, event_id, event_type, data, metadata, date_created FROM %I.get_latest_by_criteria_v2($1, $2, $3)', schema
-    ) USING boundary_name, schema, criteria;
-END;
-$$;
 
 CREATE OR REPLACE FUNCTION get_matching_events_v4(
     boundary_name TEXT,
@@ -785,7 +658,7 @@ BEGIN
     -- Use dynamic SQL because the boundary table name and criteria predicate are dynamic.
     RETURN QUERY EXECUTE format(
             $q$
-        SELECT transaction_id, global_id, (data->>'__eventId')::UUID AS event_id, data->>'__eventType' AS event_type, data - ARRAY(SELECT key FROM jsonb_object_keys(data) AS key WHERE left(key, 2) = '__') AS data, metadata, date_created::timestamptz, CASE WHEN write_id IS NULL THEN '' ELSE transaction_id::TEXT || ':' || write_id::TEXT END
+        SELECT transaction_id, global_id, (data->>'__eventId')::UUID AS event_id, data->>'__eventType' AS event_type, data - ARRAY(SELECT key FROM jsonb_object_keys(data) AS key WHERE left(key, 2) = '__') AS data, metadata, date_created::timestamptz, data->>'__writeId'
         FROM %s
         WHERE
             %2$s AND
@@ -865,7 +738,7 @@ BEGIN
                 RAISE EXCEPTION 'criterion % has no tags', idx;
             END IF;
             selects := selects || format(
-                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created::timestamptz, CASE WHEN e.write_id IS NULL THEN '''' ELSE e.transaction_id::TEXT || '':'' || e.write_id::TEXT END FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
+                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created::timestamptz, e.data->>''__writeId'' FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
                     idx, qualified_table_name, orisun_criterion_sql(crit, 'e.data'));
             idx := idx + 1;
         END LOOP;

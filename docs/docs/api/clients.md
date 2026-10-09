@@ -11,9 +11,9 @@ Orisun exposes gRPC services. You can use the official typed clients, `grpcurl`,
 :::note
 The examples on this page target client builds that include `SaveEventsV2`,
 write IDs, and `GetWriteContext`.
-Older client releases continue to work through the deprecated `SaveEvents` RPC,
-but they cannot send more than one query-level observation. Upgrade the client
-before migrating a command that depends on multiple independent reads.
+Clients retain `SaveEvents` as a single-query convenience API and `SaveEventsV2`
+for multiple complete observations. Both use the canonical `SaveEventsV2` RPC.
+The server does not expose a separate single-query write RPC.
 
 Use the client repository revisions referenced by the current Orisun source
 checkout for these features. The package-manager commands below may install
@@ -107,8 +107,7 @@ Use the typed clients when you want request/response objects and subscription he
 
 Client event operations target an active boundary; a boundary name is not
 created implicitly by the first write. Before starting an application, define
-the storage with `Admin/CreateBoundary`—setting `existed_before_catalog` when
-adopting existing physical storage—then wait for `Admin/GetBoundary` to report
+the storage with `Admin/CreateBoundary`, then wait for `Admin/GetBoundary` to report
 `BOUNDARY_LIFECYCLE_STATUS_ACTIVE`. See the
 [Admin boundary API](./admin#boundary-lifecycle) for placements, lifecycle
 states, and errors.
@@ -517,7 +516,7 @@ use the ordinary event-type property on save, use `__eventType` in criteria and
 index definitions, and do not add reserved top-level `__*` fields to application
 data. Returned data has already been stripped by the backend. See the
 [upgrade guide](../operations/upgrading-event-envelope) before upgrading an
-existing deployment. The deprecated save methods remain available.
+existing deployment. Both client save methods are supported.
 
 ## Authenticating from a client
 

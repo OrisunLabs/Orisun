@@ -179,14 +179,15 @@ func initializeBoundaryTables(db *sql.DB, boundary string, schema string, isAdmi
 		return fmt.Errorf("failed to set search path: %w", err)
 	}
 
+	if err := requireBoundaryStorage(ctx, tx, schema, boundary); err != nil {
+		return fmt.Errorf("boundary storage: %w", err)
+	}
+
 	// Call the PostgreSQL function to create prefixed tables
 	// This function validates the boundary name and creates all tables
 	_, err = tx.ExecContext(ctx, "SELECT initialize_boundary_tables($1, $2)", boundary, schema)
 	if err != nil {
 		return fmt.Errorf("failed to initialize boundary tables: %w", err)
-	}
-	if err := migrateBoundaryStorage(ctx, tx, schema, boundary); err != nil {
-		return fmt.Errorf("migrate boundary storage: %w", err)
 	}
 
 	// If admin boundary, also initialize admin tables

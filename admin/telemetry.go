@@ -44,18 +44,6 @@ type rpcServerMetrics struct {
 	duration otelmetric.Float64Histogram
 }
 
-// InitTracer initializes OpenTelemetry traces and metrics. The name is kept
-// for source compatibility with existing embedding code.
-func InitTracer(serviceName, otelEndpoint string, logger l.Logger) (func(context.Context) error, error) {
-	return InitTelemetryWithContext(context.Background(), serviceName, otelEndpoint, logger)
-}
-
-// InitTracerWithContext initializes OpenTelemetry traces and metrics using the
-// caller's lifecycle. The name is kept for source compatibility.
-func InitTracerWithContext(ctx context.Context, serviceName, otelEndpoint string, logger l.Logger) (func(context.Context) error, error) {
-	return InitTelemetryWithContext(ctx, serviceName, otelEndpoint, logger)
-}
-
 // InitTelemetryWithContext initializes OTLP trace and metric exporters using a
 // shared resource and endpoint.
 func InitTelemetryWithContext(ctx context.Context, serviceName, otelEndpoint string, logger l.Logger) (func(context.Context) error, error) {

@@ -18,6 +18,7 @@ func TestValidateConfigAcceptsFoundationDB(t *testing.T) {
 		Admin: AdminConfig{Boundary: "orisun_admin"},
 	}
 	cfg.Auth.SessionTTL = 24 * time.Hour
+	cfg.SubscriptionIdleThreshold = time.Second
 
 	if err := validateConfig(cfg); err != nil {
 		t.Fatalf("validateConfig returned error: %v", err)
@@ -31,6 +32,7 @@ func TestValidateConfigRejectsFoundationDBWithoutRoot(t *testing.T) {
 		Admin:        AdminConfig{Boundary: "orisun_admin"},
 	}
 	cfg.Auth.SessionTTL = 24 * time.Hour
+	cfg.SubscriptionIdleThreshold = time.Second
 
 	err := validateConfig(cfg)
 	if err == nil {

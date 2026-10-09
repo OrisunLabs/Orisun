@@ -14,8 +14,8 @@ Two properties define Orisun's position:
 1. **Consistency is scoped by event content, not by a fixed stream.** A command preserves every complete event query it depended on together with that query's latest matching position, then saves only if all of those observations are still current. This is Orisun's [Command Context Consistency](./concepts/command-context-consistency) model.
 2. **The event store and the delivery layer are one system.** The durable log
    in PostgreSQL, SQLite, or FoundationDB is the source of truth; embedded NATS
-   JetStream is the live-delivery buffer; durable publisher checkpoints
-   guarantee no committed event is skipped. See
+   Core NATS carries boundary hints; subscriptions deliver events from ordered
+   backend reads and recover missed hints through NATS idle watchdog messages. See
    [Delivery Guarantees](./concepts/delivery-guarantees).
 
 Most adjacent tools optimize one of consistency, throughput, simplicity, or decoupling and trade the rest. Orisun optimizes for the closed loop: read the relevant event history, make a decision, commit only if that context is still valid, then deliver the committed result from one deployable server.
@@ -24,7 +24,7 @@ Most adjacent tools optimize one of consistency, throughput, simplicity, or deco
 
 | Tool | Consistency model | Source of truth | Delivery | Ops model |
 | --- | --- | --- | --- | --- |
-| Orisun | Content-scoped optimistic (CCC) | PostgreSQL, SQLite, or FoundationDB | Catch-up replay + live JetStream, per-boundary order, no skips | One deployable server |
+| Orisun | Content-scoped optimistic (CCC) | PostgreSQL, SQLite, or FoundationDB | Ordered backend replay and subscriptions, hints plus idle watchdog | One deployable server |
 | Kafka | Partition order; no command consistency check | Kafka log (retention-bounded) | Log tailing by offset | Broker cluster (KRaft or ZooKeeper) |
 | EventStoreDB | Stream / aggregate optimistic (expected revision) | EventStoreDB store | Subscriptions + projections | Dedicated server |
 | PostgreSQL `LISTEN/NOTIFY` | None | Your tables | Best-effort notifications (≤ 8 KB, not durable, no replay) | Existing Postgres |
@@ -36,7 +36,7 @@ Most adjacent tools optimize one of consistency, throughput, simplicity, or deco
 
 Choose Kafka when you need a general-purpose streaming backbone across many services, maximum ingest throughput, and producers/consumers that are fully decoupled.
 
-Choose Orisun when commands must read event history, make a consistency-checked decision, and commit and publish in one ordered loop, without assembling a broker, publisher, and store yourself. Kafka and Orisun are not mutually exclusive: Orisun can front Kafka-free delivery with embedded JetStream, or sit beside an existing Kafka deployment.
+Choose Orisun when commands must read event history, make a consistency-checked decision, and commit and deliver through ordered backend subscriptions, without assembling a broker, publisher, and store yourself. Kafka and Orisun are not mutually exclusive: Orisun can front Kafka-free delivery with embedded JetStream, or sit beside an existing Kafka deployment.
 
 ## Orisun vs EventStoreDB
 
@@ -54,11 +54,11 @@ Choose Orisun when consistency spans a subset of events that does not map to one
 
 Choose `LISTEN/NOTIFY` when you only need to tell listeners that data in tables you already own has changed, and durability, ordering, and replay are not required.
 
-Choose Orisun when you need a durable, ordered, replayable event log with consistency checks rather than a signal. Orisun itself uses `LISTEN/NOTIFY` internally as a publisher wake-up, but correctness comes from the persisted log and durable checkpoints, never from the signal. See [Delivery Guarantees](./concepts/delivery-guarantees#notifications-are-not-the-guarantee).
+Choose Orisun when you need a durable, ordered, replayable event log with consistency checks rather than a signal. Orisun itself uses `LISTEN/NOTIFY` internally as a notification relay wake-up, but recovery comes from ordered backend reads and subscription idle watchdog hints while NATS is healthy. See [Delivery Guarantees](./concepts/delivery-guarantees#notifications-are-not-the-guarantee).
 
 ## Orisun vs NATS JetStream
 
-[JetStream](https://docs.nats.io/nats-concepts/jetstream) is NATS's durable streaming layer: persistent subjects, retention policies, consumer acknowledgements, and work queues. It is an excellent delivery layer, which is why Orisun embeds it for live delivery. JetStream alone is not an event store: it has no content-based consistency check or command-context optimistic locking.
+[JetStream](https://docs.nats.io/nats-concepts/jetstream) is NATS's durable streaming layer: persistent subjects, retention policies, consumer acknowledgements, and work queues. Orisun retains JetStream for leases and admin messaging; boundary notifications use Core NATS transient hints. JetStream alone is not an event store: it has no content-based consistency check or command-context optimistic locking.
 
 Choose JetStream directly when you need durable messaging and streaming across services, and the consistency model lives in your application or another system.
 

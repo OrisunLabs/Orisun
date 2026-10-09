@@ -130,10 +130,9 @@ type EventToAppend struct {
 
 // AppendRequest describes one atomic append and its consistency condition.
 type AppendRequest struct {
-	Boundary         string          `json:"boundary"`
-	Events           []EventToAppend `json:"events"`
-	ExpectedPosition *Position       `json:"expected_position,omitempty"`
-	Subset           Query           `json:"subset"`
+	Boundary    string                   `json:"boundary"`
+	Events      []EventToAppend          `json:"events"`
+	Consistency []ConsistencyObservation `json:"consistency,omitempty"`
 }
 
 // AppendResult identifies the final position committed by an append.
@@ -152,3 +151,9 @@ type SubscribeRequest struct {
 // EventHandler receives one event at a time in subscription order. Returning
 // an error stops the subscription.
 type EventHandler = func(context.Context, ReadEvent) error
+
+// ConsistencyObservation pairs a complete content query with its latest observed position.
+type ConsistencyObservation struct {
+	Query    Query    `json:"query"`
+	Position Position `json:"position"`
+}

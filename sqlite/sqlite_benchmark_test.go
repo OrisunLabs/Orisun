@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	natsgo "github.com/nats-io/nats.go"
 	"net"
 	"strconv"
 	"sync"
@@ -50,7 +51,7 @@ func setupBenchmarkPoolsWithSynchronous(b *testing.B, synchronous string) (*Sqli
 	bp, err := OpenBoundaryPoolsWithConfig(context.Background(), config.SqliteConfig{
 		Dir:         dir,
 		Synchronous: synchronous,
-	}, benchBoundary, benchBoundary)
+	}, benchBoundary)
 	require.NoError(b, err, "open pools")
 	pools := map[string]*BoundaryPools{benchBoundary: bp}
 
@@ -78,20 +79,10 @@ func (benchFakeJetStream) Publish(context.Context, string, []byte, ...jetstream.
 
 type benchNoopLockProvider struct{}
 
-func (benchNoopLockProvider) Lock(context.Context, string) error { return nil }
-
-type benchNoopPublishingTracker struct{}
-
-func (benchNoopPublishingTracker) GetLastPublishedEventPosition(context.Context, string) (orisun.Position, error) {
-	return orisun.NotExistsPosition(), nil
+func (benchNoopLockProvider) AcquireLock(ctx context.Context, _ string) (orisun.LockLease, error) {
+	return testContextLease{ctx: ctx}, nil
 }
 
-func (benchNoopPublishingTracker) InsertLastPublishedEvent(context.Context, string, int64, int64) error {
-	return nil
-}
-
-// BenchmarkSqlite_GroupCommitBatchSize compares flush sizes using the same
-// save implementation under FULL synchronous durability.
 func BenchmarkSqlite_GroupCommitBatchSize(b *testing.B) {
 	for _, batchSize := range []int{1, 128, 512, 1024} {
 		for _, conc := range []int{1, 16, 100, 1024} {
@@ -124,7 +115,7 @@ func BenchmarkSqlite_GroupCommitBatchSize(b *testing.B) {
 								EventType: "Bench",
 								Data:      `{"k":"v"}`,
 								Metadata:  `{}`,
-							}}, benchBoundary, nil, nil)
+							}}, benchBoundary, nil)
 							if err != nil {
 								b.Errorf("save failed: %v", err)
 								return
@@ -175,7 +166,7 @@ func BenchmarkSqlite_GroupCommitDelay(b *testing.B) {
 								EventType: "Bench",
 								Data:      `{"k":"v"}`,
 								Metadata:  `{}`,
-							}}, benchBoundary, nil, nil)
+							}}, benchBoundary, nil)
 							if err != nil {
 								b.Errorf("save failed: %v", err)
 								return
@@ -251,7 +242,7 @@ func benchmarkSqliteGroupCommitCCC(b *testing.B, general bool) {
 								EventType: "OrderPlaced",
 								Data:      data,
 								Metadata:  `{}`,
-							}}, benchBoundary, pos, query)
+							}}, benchBoundary, []*orisun.ConsistencyObservation{{Query: query, Position: pos}})
 							if err != nil {
 								b.Errorf("save failed: %v", err)
 								return
@@ -287,7 +278,6 @@ func BenchmarkSqlite_EventStoreBurst10000(b *testing.B) {
 			getter,
 			nil,
 			nil,
-			orisun.EventStreamConfig{},
 			logger,
 		)
 
@@ -358,7 +348,6 @@ func BenchmarkSqlite_GRPCEventStoreBurst10000(b *testing.B) {
 			getter,
 			nil,
 			nil,
-			orisun.EventStreamConfig{},
 			logger,
 		)
 
@@ -467,7 +456,6 @@ func newBenchmarkEventStoreServer(b *testing.B, saver *SqliteSaveEvents, getter 
 		getter,
 		nil,
 		nil,
-		orisun.EventStreamConfig{},
 		logger,
 	)
 	return &benchmarkEventStoreServer{
@@ -658,91 +646,37 @@ func BenchmarkSqlite_GRPCTransportBurst10000(b *testing.B) {
 	}
 }
 
-func setupBenchmarkPoolsWithMetadata(b *testing.B) (*SqliteSaveEvents, *SqliteGetEvents, map[string]*BoundaryPools, func()) {
-	b.Helper()
-	dir := b.TempDir()
-	logger, err := logging.ZapLogger("warn")
-	require.NoError(b, err)
-
-	bp, err := OpenBoundaryPoolsWithConfig(context.Background(), config.SqliteConfig{
-		Dir:         dir,
-		Synchronous: "FULL",
-	}, benchBoundary, benchBoundary)
-	require.NoError(b, err)
-	metadataPool, err := OpenMetadataPoolsWithConfig(context.Background(), config.SqliteConfig{
-		Dir:         dir,
-		Synchronous: "FULL",
-	}, benchBoundary)
-	require.NoError(b, err)
-	pools := map[string]*BoundaryPools{benchBoundary: bp}
-	metadataPools := map[string]*BoundaryPools{benchBoundary: metadataPool}
-
-	saver := NewSqliteSaveEvents(pools, logger)
-	getter := NewSqliteGetEvents(pools, logger)
-
-	return saver, getter, metadataPools, func() {
-		saver.close()
-		_ = metadataPool.Close()
-		_ = bp.Close()
-	}
-}
-
-func startBenchmarkPollingPublisher(
-	b *testing.B,
-	ctx context.Context,
-	getter *SqliteGetEvents,
-	tracker orisun.EventPublishingTracker,
-	signalProvider func(string) orisun.EventSignal,
-) {
+func startBenchmarkNotificationRelay(b *testing.B, ctx context.Context, signalProvider func(string) orisun.EventSignal) *orisun.BoundaryNotificationManager {
 	b.Helper()
 	logger, err := logging.ZapLogger("warn")
 	require.NoError(b, err)
-	cfg := config.AppConfig{}
-	cfg.PollingPublisher.BatchSize = 1000
-	manager := orisun.StartEventPolling(
-		ctx,
-		cfg,
-		benchNoopLockProvider{},
-		getter,
-		benchFakeJetStream{},
-		tracker,
-		signalProvider,
-		logger,
-	)
+	manager := orisun.StartNotificationRelays(ctx, benchNoopLockProvider{}, benchNotificationPublisher{}, signalProvider, logger)
 	require.NoError(b, manager.StartBoundary(benchBoundary))
+	return manager
 }
 
-func BenchmarkSqlite_GRPCTransportWithPublisherBurst10000(b *testing.B) {
-	for _, trackerMode := range []string{"none", "metadata"} {
-		for _, authMode := range []string{"none", "token"} {
-			for _, wakeDelay := range []time.Duration{0, 5 * time.Millisecond} {
-				b.Run(fmt.Sprintf("transport=tcp/options=cmd_like/auth=%s/client_conns=1/publisher=fake_js/tracker=%s/wake_delay=%s", authMode, trackerMode, wakeDelay), func(b *testing.B) {
-					for i := 0; i < b.N; i++ {
-						b.StopTimer()
-						saver, getter, metadataPools, teardown := setupBenchmarkPoolsWithMetadata(b)
-						notifier := NewSqliteEventNotifierWithWakeDelay(time.Second, wakeDelay)
-						saver.notifier = notifier
-						var tracker orisun.EventPublishingTracker = benchNoopPublishingTracker{}
-						if trackerMode == "metadata" {
-							logger, err := logging.ZapLogger("warn")
-							require.NoError(b, err)
-							tracker = NewSqliteEventPublishingWithMetadata(metadataPools, logger)
-						}
-						pubCtx, cancelPublisher := context.WithCancel(context.Background())
-						startBenchmarkPollingPublisher(b, pubCtx, getter, tracker, notifier.Signal)
-						eventStore := newBenchmarkEventStoreServer(b, saver, getter)
-						addr, stopServer := startTCPEventStoreServer(b, eventStore, "cmd_like", authMode)
-						clients := createTCPBenchClients(b, addr, 1, authMode)
-
-						runGRPCSaveBurst10000(b, clients)
-
-						closeTCPBenchClients(clients)
-						stopServer()
-						cancelPublisher()
-						teardown()
-					}
-				})
-			}
+func BenchmarkSqlite_GRPCTransportWithNotificationRelayBurst10000(b *testing.B) {
+	for _, authMode := range []string{"none", "token"} {
+		for _, wakeDelay := range []time.Duration{0, 5 * time.Millisecond} {
+			b.Run(fmt.Sprintf("transport=tcp/options=cmd_like/auth=%s/client_conns=1/relay=fake_js/wake_delay=%s", authMode, wakeDelay), func(b *testing.B) {
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					saver, getter, _, teardown := setupBenchmarkPools(b)
+					notifier := NewSqliteEventNotifierWithWakeDelay(wakeDelay)
+					saver.notifier = notifier
+					pubCtx, cancelRelay := context.WithCancel(context.Background())
+					manager := startBenchmarkNotificationRelay(b, pubCtx, notifier.Signal)
+					eventStore := newBenchmarkEventStoreServer(b, saver, getter)
+					addr, stopServer := startTCPEventStoreServer(b, eventStore, "cmd_like", authMode)
+					clients := createTCPBenchClients(b, addr, 1, authMode)
+					runGRPCSaveBurst10000(b, clients)
+					closeTCPBenchClients(clients)
+					stopServer()
+					cancelRelay()
+					manager.Stop()
+					teardown()
+				}
+			})
 		}
 	}
 }
@@ -785,7 +719,7 @@ func prepopulateStreams(
 				EventType: "OrderPlaced",
 				Data:      data,
 				Metadata:  meta,
-			}}, benchBoundary, &pos, nil)
+			}}, benchBoundary, nil)
 			require.NoError(b, err, "prepopulate stream=%d event=%d", sIdx, e)
 
 			pos = orisun.Position{
@@ -835,7 +769,7 @@ func BenchmarkSqlite_ConsistencyCheck_NoIndex(b *testing.B) {
 			EventType: "OrderPlaced",
 			Data:      data,
 			Metadata:  meta,
-		}}, benchBoundary, pos, query)
+		}}, benchBoundary, []*orisun.ConsistencyObservation{{Query: query, Position: pos}})
 		require.NoError(b, err, "iteration %d", i)
 
 		newPos := orisun.Position{CommitPosition: parseTxID(tranID), PreparePosition: gid}
@@ -879,7 +813,7 @@ func BenchmarkSqlite_ConsistencyCheck_WithIndex(b *testing.B) {
 			EventType: "OrderPlaced",
 			Data:      data,
 			Metadata:  meta,
-		}}, benchBoundary, pos, query)
+		}}, benchBoundary, []*orisun.ConsistencyObservation{{Query: query, Position: pos}})
 		require.NoError(b, err, "iteration %d", i)
 
 		positions[sIdx] = &orisun.Position{CommitPosition: parseTxID(tranID), PreparePosition: gid}
@@ -902,7 +836,7 @@ func BenchmarkSqlite_SerialSave_NoCriteria(b *testing.B) {
 			EventType: "Bench",
 			Data:      `{"k":"v"}`,
 			Metadata:  `{}`,
-		}}, benchBoundary, nil, nil)
+		}}, benchBoundary, nil)
 		require.NoError(b, err)
 	}
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "saves/sec")
@@ -928,7 +862,7 @@ func BenchmarkSqlite_BatchSave(b *testing.B) {
 						Metadata:  `{}`,
 					}
 				}
-				_, _, err := saver.Save(ctx, events, benchBoundary, nil, nil)
+				_, _, err := saver.Save(ctx, events, benchBoundary, nil)
 				require.NoError(b, err)
 			}
 			b.ReportMetric(float64(b.N*batchSize)/b.Elapsed().Seconds(), "events/sec")
@@ -968,7 +902,7 @@ func BenchmarkSqlite_ConcurrentSave(b *testing.B) {
 							EventType: "Bench",
 							Data:      `{"k":"v"}`,
 							Metadata:  `{}`,
-						}}, benchBoundary, nil, nil)
+						}}, benchBoundary, nil)
 						if err != nil {
 							b.Errorf("save failed: %v", err)
 							return
@@ -1027,7 +961,7 @@ func BenchmarkSqlite_Burst10000(b *testing.B) {
 					go func() {
 						defer wg.Done()
 						<-startCh
-						if _, _, err := saver.Save(ctx, []orisun.EventWithMapTags{ev}, benchBoundary, nil, nil); err != nil {
+						if _, _, err := saver.Save(ctx, []orisun.EventWithMapTags{ev}, benchBoundary, nil); err != nil {
 							atomic.AddInt64(&fail, 1)
 							return
 						}
@@ -1111,3 +1045,9 @@ func BenchmarkSqlite_GetEventsPacked(b *testing.B) {
 	}
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "gets/sec")
 }
+
+type benchNotificationPublisher struct{}
+
+func (benchNotificationPublisher) Publish(string, []byte) error { return nil }
+
+func (benchFakeJetStream) Conn() *natsgo.Conn { return nil }

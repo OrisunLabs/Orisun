@@ -5,6 +5,7 @@ package foundationdb
 import (
 	"context"
 	"fmt"
+	eventstore "github.com/OrisunLabs/Orisun/orisun"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,18 +73,9 @@ func (p *fdbLockProvider) lockKey(name string) fdb.Key {
 	return fdb.Key(tuple.Tuple{p.root, "lock", name}.Pack())
 }
 
-// Lock acquires the named lock for the lifetime of ctx. A lock already held by a
-// different live owner returns an error so the caller backs off and retries; an
-// expired or self-owned lease is taken over. On success a heartbeat renews the
-// lease until ctx is done, then the lock is released.
-func (p *fdbLockProvider) Lock(ctx context.Context, lockName string) error {
-	_, err := p.AcquireLock(ctx, lockName)
-	return err
-}
-
 // AcquireLock returns a token-fenced lease. The caller should use the lease
 // context for protected work and call Check before externally visible effects.
-func (p *fdbLockProvider) AcquireLock(ctx context.Context, lockName string) (*fdbLockLease, error) {
+func (p *fdbLockProvider) acquireLock(ctx context.Context, lockName string) (*fdbLockLease, error) {
 	if err := contextStatusErr(ctx); err != nil {
 		return nil, err
 	}
@@ -314,4 +306,8 @@ func (p *fdbLockProvider) stillOwns(h *fdbLockLease) (bool, error) {
 		return false, err
 	}
 	return res.(bool), nil
+}
+
+func (p *fdbLockProvider) AcquireLock(ctx context.Context, lockName string) (eventstore.LockLease, error) {
+	return p.acquireLock(ctx, lockName)
 }

@@ -8,8 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 type subscriptionReadFunc func(context.Context, *GetEventsRequest) (ReadEventBatch, error)
@@ -20,36 +18,6 @@ func (f subscriptionReadFunc) GetBatch(ctx context.Context, req *GetEventsReques
 
 func (subscriptionReadFunc) GetLatestByCriteria(context.Context, LatestByCriteriaQuery) (LatestByCriteriaBatch, error) {
 	return LatestByCriteriaBatch{}, errors.New("unexpected latest-by-criteria read")
-}
-
-type subscriptionStreamError struct {
-	jetstream.JetStream
-	err error
-}
-
-func (s subscriptionStreamError) Stream(context.Context, string) (jetstream.Stream, error) {
-	return nil, s.err
-}
-
-func TestSubscriptionOmittedPositionWithNoMatchEntersLiveDelivery(t *testing.T) {
-	stop := errors.New("live setup reached")
-	calls := 0
-	retriever := subscriptionReadFunc(func(_ context.Context, req *GetEventsRequest) (ReadEventBatch, error) {
-		calls++
-		if calls != 1 || req.Direction != Direction_DESC || req.Count != 1 || req.FromPosition != nil {
-			t.Fatalf("unexpected empty-boundary read: %#v", req)
-		}
-		return nil, nil
-	})
-	store := &EventStore{getEventsFn: retriever, lockProvider: newContextOnlyLockProvider(), logger: noopLogger{}, js: subscriptionStreamError{err: stop}}
-	err := store.SubscribeToAllEvents(t.Context(), coreeventstore.SubscribeRequest{Boundary: "orders", SubscriberName: "empty"},
-		func(context.Context, coreeventstore.ReadEvent) error {
-			t.Fatal("empty result must not deliver an event")
-			return nil
-		})
-	if err == nil || !strings.Contains(err.Error(), stop.Error()) {
-		t.Fatalf("subscription error = %v, want live setup", err)
-	}
 }
 
 func TestSubscriptionOmittedPositionStartsAtLatestMatchAndContinuesForward(t *testing.T) {
@@ -81,7 +49,7 @@ func TestSubscriptionOmittedPositionStartsAtLatestMatchAndContinuesForward(t *te
 			return nil, stop
 		}
 	})
-	store := &EventStore{getEventsFn: retriever, lockProvider: newContextOnlyLockProvider(), logger: noopLogger{}}
+	store := &EventStore{js: dynamicBoundaryTestNATS(t, false), getEventsFn: retriever, lockProvider: newContextOnlyLockProvider(), logger: noopLogger{}}
 	err := store.SubscribeToAllEvents(t.Context(), coreeventstore.SubscribeRequest{Boundary: "orders", SubscriberName: "latest"},
 		func(_ context.Context, event coreeventstore.ReadEvent) error {
 			delivered = append(delivered, event.Position.PreparePosition)
@@ -113,7 +81,7 @@ func newContextOnlyLockProvider() *contextOnlyLockProvider {
 	}
 }
 
-func (p *contextOnlyLockProvider) Lock(ctx context.Context, _ string) error {
+func (p *contextOnlyLockProvider) AcquireLock(ctx context.Context, _ string) (LockLease, error) {
 	p.once.Do(func() {
 		close(p.acquired)
 		go func() {
@@ -121,13 +89,14 @@ func (p *contextOnlyLockProvider) Lock(ctx context.Context, _ string) error {
 			close(p.released)
 		}()
 	})
-	return nil
+	return contextLockLease{ctx: ctx}, nil
 }
 
 func TestSubscribeToAllEventsCancelsLockContextOnEarlyError(t *testing.T) {
 	lockProvider := newContextOnlyLockProvider()
 	retriever := &fakeRetriever{errOnce: true}
 	store := &EventStore{
+		js:           dynamicBoundaryTestNATS(t, false),
 		getEventsFn:  retriever,
 		lockProvider: lockProvider,
 		logger:       noopLogger{},
@@ -166,6 +135,7 @@ func TestSubscribeToAllEventsDeliversNeutralEventAndPropagatesHandlerError(t *te
 		DateCreated:     time.Date(2026, time.July, 23, 10, 0, 0, 0, time.UTC),
 	})
 	store := &EventStore{
+		js:           dynamicBoundaryTestNATS(t, false),
 		getEventsFn:  retriever,
 		lockProvider: newContextOnlyLockProvider(),
 		logger:       noopLogger{},
@@ -197,16 +167,15 @@ func TestSubscribeToAllEventsDeliversNeutralEventAndPropagatesHandlerError(t *te
 	}
 }
 
-func TestNeutralPublishedEventExcludesStorageEventTypeFromData(t *testing.T) {
-	event := Event{
-		EventId:   "event-1",
-		EventType: "OrderPlaced",
-		Data:      `{"orderId":"o-1"}`,
-	}
-
-	got := neutralPublishedEvent(event)
-
-	if got.EventType != "OrderPlaced" || got.Data != `{"orderId":"o-1"}` {
-		t.Fatalf("neutralPublishedEvent() = %#v", got)
-	}
+type contextLockLease struct {
+	ctx context.Context
 }
+
+func (l contextLockLease) Context() context.Context { return l.ctx }
+func (l contextLockLease) Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return l.ctx.Err()
+}
+func (l contextLockLease) Release() {}

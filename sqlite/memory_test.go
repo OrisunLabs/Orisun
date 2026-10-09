@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -22,7 +23,7 @@ func TestMemoryDatabaseLifetimeAndIsolation(t *testing.T) {
 	defer cancel()
 	cfg := config.SqliteConfig{InMemory: true, Dir: filepath.Join(t.TempDir(), "unused"), ReadPoolSize: 8, TempStore: "FILE"}
 	open := func(name string) *BoundaryPools {
-		p, err := OpenBoundaryPoolsWithConfig(ctx, cfg, name, "admin")
+		p, err := OpenBoundaryPoolsWithConfig(ctx, cfg, name)
 		require.NoError(t, err)
 		return p
 	}
@@ -80,27 +81,29 @@ func TestMemoryRuntimeConsistencyOrderingAndCheckpoints(t *testing.T) {
 		return r
 	}
 	r := start()
-	definition := eventstore.BoundaryDefinition{Name: "sales", Placement: eventstore.BoundaryPlacement{Backend: "sqlite", Namespace: "sales"}}
+	definition := boundarymodel.Definition{Name: "sales", Placement: boundarymodel.Placement{Backend: "sqlite", Namespace: "sales"}}
 	require.NoError(t, r.ProvisionBoundary(ctx, definition))
 	_, err = r.GetEvents.GetBatch(ctx, &eventstore.GetEventsRequest{Boundary: "sales"})
 	require.Error(t, err, "provisioning must not expose an uninstalled boundary")
 	require.NoError(t, r.InstallBoundary(ctx, definition))
 	saver := r.SaveEvents.(*SqliteSaveEvents)
 	query := &eventstore.Query{Criteria: []*eventstore.Criterion{{Tags: []*eventstore.Tag{{Key: "sale_id", Value: "1"}}}}}
-	save := func(id string, expected *eventstore.Position, query *eventstore.Query) error {
-		_, _, err := saver.Save(ctx, []eventstore.EventWithMapTags{mustEvent(t, "SaleUpdated", map[string]any{"sale_id": id}, nil)}, "sales", expected, query)
+	save := func(id string, observations []*eventstore.ConsistencyObservation) error {
+		_, _, err := saver.Save(ctx, []eventstore.EventWithMapTags{mustEvent(t, "SaleUpdated", map[string]any{"sale_id": id}, nil)}, "sales", observations)
 		return err
 	}
-	require.NoError(t, save("1", nil, query))
-	require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(save("1", nil, query)))
-	require.NoError(t, save("1", &eventstore.Position{CommitPosition: 1, PreparePosition: 1}, query))
+	emptyPosition := eventstore.NotExistsPosition()
+
+	require.NoError(t, save("1", []*eventstore.ConsistencyObservation{{Query: query, Position: &emptyPosition}}))
+	require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(save("1", []*eventstore.ConsistencyObservation{{Query: query, Position: &emptyPosition}})))
+	require.NoError(t, save("1", []*eventstore.ConsistencyObservation{{Query: query, Position: &eventstore.Position{CommitPosition: 1, PreparePosition: 1}}}))
 	require.NoError(t, r.InstallBoundary(ctx, definition)) // Reinstallation preserves data.
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 40)
 	for i := range 20 {
 		wg.Add(2)
-		go func() { defer wg.Done(); errs <- save(fmt.Sprint(i+2), nil, nil) }()
+		go func() { defer wg.Done(); errs <- save(fmt.Sprint(i+2), nil) }()
 		go func() {
 			defer wg.Done()
 			_, err := r.GetEvents.GetBatch(ctx, &eventstore.GetEventsRequest{Boundary: "sales", Direction: eventstore.Direction_ASC, Count: 100})
@@ -121,16 +124,7 @@ func TestMemoryRuntimeConsistencyOrderingAndCheckpoints(t *testing.T) {
 			require.GreaterOrEqual(t, event.CommitPosition, events[i-1].CommitPosition)
 		}
 	}
-	last := events[len(events)-1]
-	require.NoError(t, r.EventPublishing.InsertLastPublishedEvent(ctx, "sales", last.CommitPosition, last.PreparePosition))
-	pos, err := r.EventPublishing.GetLastPublishedEventPosition(ctx, "sales")
-	require.NoError(t, err)
-	require.Equal(t, last.PreparePosition, pos.PreparePosition)
-	adminPos, err := r.EventPublishing.GetLastPublishedEventPosition(ctx, "admin")
-	require.NoError(t, err)
-	require.Equal(t, eventstore.NotExistsPosition(), adminPos)
-
-	// A fresh runtime has neither the previous boundary installation nor its data/checkpoint.
+	// A fresh runtime has neither the previous boundary installation nor its data.
 	fresh := start()
 	_, err = fresh.GetEvents.GetBatch(ctx, &eventstore.GetEventsRequest{Boundary: "sales"})
 	require.Error(t, err)
@@ -139,8 +133,5 @@ func TestMemoryRuntimeConsistencyOrderingAndCheckpoints(t *testing.T) {
 	empty, err := fresh.GetEvents.GetBatch(ctx, &eventstore.GetEventsRequest{Boundary: "sales"})
 	require.NoError(t, err)
 	require.Empty(t, empty)
-	pos, err = fresh.EventPublishing.GetLastPublishedEventPosition(ctx, "sales")
-	require.NoError(t, err)
-	require.Equal(t, eventstore.NotExistsPosition(), pos)
 	require.NoDirExists(t, cfg.Dir)
 }

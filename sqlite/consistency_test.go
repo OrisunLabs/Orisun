@@ -19,7 +19,7 @@ func TestLatestCriteriaPositionMatchesOrderedReads(t *testing.T) {
 		mustEvent(t, "Fact", map[string]any{"reference": "b", "value": true, "quoted'key": "it's"}, nil),
 		mustEvent(t, "Other", map[string]any{"value": nil}, nil),
 	}
-	_, _, err := saver.Save(t.Context(), events, gcBoundary, nil, nil)
+	_, _, err := saver.Save(t.Context(), events, gcBoundary, nil)
 	require.NoError(t, err)
 	criterion := func(key, value string) orisun.ReadCriterion {
 		return gcReadCriterion(orisun.ReadTag{Key: key, Value: value})

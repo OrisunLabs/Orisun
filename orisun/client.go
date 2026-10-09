@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/OrisunLabs/Orisun/logging"
@@ -48,7 +47,6 @@ func NewOrisunServer(
 		getEvents,
 		lockProvider,
 		nil,
-		EventStreamConfig{},
 		logger,
 	)
 
@@ -62,12 +60,18 @@ func NewOrisunServer(
 	}, nil
 }
 
-// SaveEvents saves a batch through the legacy single-query shape.
-//
-// Deprecated: use SaveEventsV2.
+// SaveEvents saves a batch with an optional single-query consistency condition.
 func (c *OrisunServer) SaveEvents(ctx context.Context, events []EventWithMapTags, boundary string,
-	expectedPosition *Position, streamSubSet *Query) (*Position, error) {
-	return c.SaveEventsV2(ctx, events, boundary, legacyConsistencyObservations(expectedPosition, streamSubSet))
+	expectedPosition *Position, query *Query) (*Position, error) {
+	var observations []*ConsistencyObservation
+	if query != nil && len(query.Criteria) > 0 {
+		position := NotExistsPosition()
+		if expectedPosition != nil {
+			position = *expectedPosition
+		}
+		observations = []*ConsistencyObservation{{Query: query, Position: &position}}
+	}
+	return c.SaveEventsV2(ctx, events, boundary, observations)
 }
 
 // SaveEventsV2 saves events after atomically validating every supplied query
@@ -78,7 +82,7 @@ func (c *OrisunServer) SaveEventsV2(
 	boundary string,
 	consistency []*ConsistencyObservation,
 ) (*Position, error) {
-	checks, err := consistencyChecksFromObservations(consistency)
+	checks, err := ConsistencyChecksFromObservations(consistency)
 	if err != nil {
 		return nil, err
 	}

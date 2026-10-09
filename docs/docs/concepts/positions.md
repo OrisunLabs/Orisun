@@ -24,12 +24,9 @@ In Orisun `0.3.1` and later, PostgreSQL `transaction_id` is an Orisun logical co
 
 This matters during PostgreSQL major upgrades and restore workflows. PostgreSQL internal transaction IDs are assigned by a cluster-local counter. A `pg_upgrade` path may preserve enough cluster state for continuity, but dump/restore, logical replication moves, and some managed-service migrations can create a fresh cluster with lower internal transaction IDs. Orisun positions must remain valid across those workflows, so public positions use logical event-store ordering instead.
 
-The `0.8.0` bridge release includes the migrations that remap older
-`transaction_id` values to logical commit positions and update publisher and
-projector checkpoints that point at stored events. Installations older than
-`0.8.0` must run that release before upgrading further. Current releases still
-treat `pg_xact_id` values from a previous cluster as disposable visibility
-metadata and clear them when detected as stale.
+Older storage formats are unsupported. Current storage preserves logical positions
+when restored into another PostgreSQL cluster; initialization clears stale
+cluster-local visibility markers when necessary.
 
 ## Empty and beginning positions
 
@@ -84,4 +81,4 @@ Reads return a stable committed prefix, so a page never contains events that a l
 
 ## Subscriptions
 
-`CatchUpSubscribeToEvents` takes an `after_position`. It replays stored events ordered by position, then transitions to live delivery. A projector should persist the position of the last event it durably processed and resume from that position on restart. See [Delivery Guarantees](./delivery-guarantees).
+`CatchUpSubscribeToEvents` takes an `after_position`. An explicit position is exclusive. If omitted, the latest stored matching event is delivered once, followed by newer matches. Every subscription event is read from the backend in position order; notifications and subscription-owned idle watchdog hints trigger those reads. A projector should persist the position of the last event it durably processed and resume from that position on restart. See [Delivery Guarantees](./delivery-guarantees).

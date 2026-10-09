@@ -1,6 +1,7 @@
 package orisun
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -8,8 +9,8 @@ import (
 	"github.com/goccy/go-json"
 )
 
-// MatchTagValue supplies the same scalar comparison semantics for live
-// subscriptions and storage engines that evaluate predicates in Go. A missing
+// MatchTagValue supplies scalar comparison semantics for storage engines
+// that evaluate predicates in Go. A missing
 // field must be rejected by the caller; JSON null never matches any operator.
 func MatchTagValue(value any, target, operator string) bool {
 	op, err := CanonicalTagOperator(operator)
@@ -50,4 +51,26 @@ func MatchTagValue(value any, target, operator string) bool {
 		return cmp <= 0
 	}
 	return false
+}
+
+// eventTagEquals compares a JSON-decoded value against the criteria's string form.
+// Avoids fmt.Sprintf reflection on the hot path for the common scalar cases.
+func eventTagEquals(v any, target string) bool {
+	switch x := v.(type) {
+	case string:
+		return x == target
+	case bool:
+		if x {
+			return target == "true"
+		}
+		return target == "false"
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64) == target
+	case json.Number:
+		return string(x) == target
+	case nil:
+		return target == "" || target == "null"
+	default:
+		return fmt.Sprintf("%v", v) == target
+	}
 }

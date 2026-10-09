@@ -101,28 +101,23 @@ func DeleteUser(
 		}
 		lastExpectedVersion := evts.Events[len(evts.Events)-1].Position
 
-		_, err = saveEvents(ctx, &eventstore.SaveEventsRequest{
-			Boundary: boundary,
-			Query: &eventstore.SaveQuery{
-				ExpectedPosition: lastExpectedVersion,
-				SubsetQuery: &eventstore.Query{
-					Criteria: []*eventstore.Criterion{
-						{
-							Tags: []*eventstore.Tag{
-								{Key: "user_id", Value: userId},
-								{Key: "__eventType", Value: events.EventTypeUserCreated},
-							},
+		_, err = saveEvents(ctx, &eventstore.SaveEventsV2Request{
+			Boundary: boundary, Consistency: []*eventstore.ConsistencyObservation{{Position: lastExpectedVersion, Query: &eventstore.Query{
+				Criteria: []*eventstore.Criterion{
+					{
+						Tags: []*eventstore.Tag{
+							{Key: "user_id", Value: userId},
+							{Key: "__eventType", Value: events.EventTypeUserCreated},
 						},
-						{
-							Tags: []*eventstore.Tag{
-								{Key: "user_id", Value: userId},
-								{Key: "__eventType", Value: events.EventTypeUserDeleted},
-							},
+					},
+					{
+						Tags: []*eventstore.Tag{
+							{Key: "user_id", Value: userId},
+							{Key: "__eventType", Value: events.EventTypeUserDeleted},
 						},
 					},
 				},
-			},
-			Events: []*eventstore.EventToSave{{
+			}}}, Events: []*eventstore.EventToSave{{
 				EventId:   id.String(),
 				EventType: events.EventTypeUserDeleted,
 				Data:      string(eventData),

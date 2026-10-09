@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -34,27 +33,14 @@ func TestWriteContextContract(t *testing.T) {
 	}}))
 }
 
-func TestWriteContextMigrationPreservesUnknownHistory(t *testing.T) {
-	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "legacy.db"))
-	require.NoError(t, sqlitex.ExecuteScript(conn, eventDDL, nil))
-	require.NoError(t, sqlitex.Execute(conn, `INSERT INTO orisun_es_event(transaction_id, global_id, event_id, data) VALUES(1, 1, 'legacy', '{}')`, nil))
-	require.NoError(t, applyMigrations(conn))
-	require.NoError(t, applyMigrations(conn))
-	require.NoError(t, sqlitex.Execute(conn, "SELECT write_id, (SELECT COUNT(*) FROM orisun_es_write) FROM orisun_es_event", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
-		require.Equal(t, sqlite.TypeNull, stmt.ColumnType(0))
-		require.Zero(t, stmt.ColumnInt64(1))
-		return nil
-	}}))
-}
-
 func TestWriteContextRPCAndRestart(t *testing.T) {
 	dir := t.TempDir()
-	pool, err := OpenBoundaryPools(t.Context(), dir, "test", "test")
+	pool, err := OpenBoundaryPools(t.Context(), dir, "test")
 	require.NoError(t, err)
 	logger, _ := logging.ZapLogger("error")
 	saver := NewSqliteSaveEvents(map[string]*BoundaryPools{"test": pool}, logger)
 	getter := NewSqliteGetEvents(map[string]*BoundaryPools{"test": pool}, logger)
-	api := grpcapi.AdaptEventStore(orisun.NewEventStoreServer(nil, saver, getter, nil, nil, orisun.EventStreamConfig{}, logger))
+	api := grpcapi.AdaptEventStore(orisun.NewEventStoreServer(nil, saver, getter, nil, nil, logger))
 	observation := &grpcapi.ConsistencyObservation{
 		Query:    &grpcapi.Query{Criteria: []*grpcapi.Criterion{{Tags: []*grpcapi.Tag{{Key: "key", Value: "value"}}}}},
 		Position: &grpcapi.Position{CommitPosition: -1, PreparePosition: -1},
@@ -70,7 +56,7 @@ func TestWriteContextRPCAndRestart(t *testing.T) {
 	require.Equal(t, saved.WriteId, rows.Events[0].WriteId)
 	saver.close()
 	require.NoError(t, pool.Close())
-	reopened, err := OpenBoundaryPools(t.Context(), dir, "test", "test")
+	reopened, err := OpenBoundaryPools(t.Context(), dir, "test")
 	require.NoError(t, err)
 	defer reopened.Close()
 	reader := NewSqliteGetEvents(map[string]*BoundaryPools{"test": reopened}, logger)

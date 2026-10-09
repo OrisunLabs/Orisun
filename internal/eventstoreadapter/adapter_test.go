@@ -12,8 +12,8 @@ import (
 )
 
 func TestAdapterConvertsNeutralAppend(t *testing.T) {
-	legacy := &captureLegacyStore{}
-	adapter := New(legacy, legacy, nil)
+	storage := &captureStorageStore{}
+	adapter := New(storage, storage, nil)
 	result, err := adapter.Append(t.Context(), coreeventstore.AppendRequest{
 		Boundary: "admin",
 		Events: []coreeventstore.EventToAppend{{
@@ -22,10 +22,10 @@ func TestAdapterConvertsNeutralAppend(t *testing.T) {
 			Data:      `{"boundary":"orders"}`,
 			Metadata:  `{"source":"test"}`,
 		}},
-		ExpectedPosition: &coreeventstore.Position{CommitPosition: 3, PreparePosition: 4},
-		Subset: coreeventstore.Query{Criteria: []coreeventstore.Criterion{{
-			Tags: []coreeventstore.Tag{{Key: "boundary", Value: "orders"}},
-		}}},
+		Consistency: []coreeventstore.ConsistencyObservation{{Position: coreeventstore.Position{CommitPosition: 3, PreparePosition: 4},
+			Query: coreeventstore.Query{Criteria: []coreeventstore.Criterion{{
+				Tags: []coreeventstore.Tag{{Key: "boundary", Value: "orders"}},
+			}}}}},
 	})
 	if err != nil {
 		t.Fatalf("Append() error = %v", err)
@@ -33,12 +33,12 @@ func TestAdapterConvertsNeutralAppend(t *testing.T) {
 	if result.Position != (coreeventstore.Position{CommitPosition: 17, PreparePosition: 9}) {
 		t.Fatalf("Append() position = %#v", result.Position)
 	}
-	if legacy.boundary != "admin" || legacy.consistency[0].Position.CommitPosition != 3 ||
-		legacy.consistency[0].Criteria[0].Tags[0].Value != "orders" {
-		t.Fatalf("legacy append request = %#v %#v", legacy.boundary, legacy.consistency)
+	if storage.boundary != "admin" || storage.consistency[0].Position.CommitPosition != 3 ||
+		storage.consistency[0].Criteria[0].Tags[0].Value != "orders" {
+		t.Fatalf("storage append request = %#v %#v", storage.boundary, storage.consistency)
 	}
 	var data map[string]any
-	if err := json.Unmarshal([]byte(legacy.events[0].DataJSON), &data); err != nil {
+	if err := json.Unmarshal([]byte(storage.events[0].DataJSON), &data); err != nil {
 		t.Fatal(err)
 	}
 	if data["__eventType"] != nil || data["boundary"] != "orders" {
@@ -48,7 +48,7 @@ func TestAdapterConvertsNeutralAppend(t *testing.T) {
 
 func TestAdapterConvertsNeutralReads(t *testing.T) {
 	created := time.Date(2026, time.July, 23, 10, 0, 0, 0, time.UTC)
-	legacy := &captureLegacyStore{
+	storage := &captureStorageStore{
 		readBatch: orisun.ReadEventBatch{{
 			EventId: "event-1", EventType: "$BoundaryCreated", Data: `{"boundary":"orders"}`,
 			CommitPosition: 5, PreparePosition: 6, DateCreated: created,
@@ -62,7 +62,7 @@ func TestAdapterConvertsNeutralReads(t *testing.T) {
 			ContextPreparePosition: 8,
 		},
 	}
-	adapter := New(nil, legacy, nil)
+	adapter := New(nil, storage, nil)
 	read, err := adapter.Read(t.Context(), coreeventstore.ReadRequest{
 		Boundary:     "admin",
 		FromPosition: &coreeventstore.Position{CommitPosition: 1, PreparePosition: 2},
@@ -81,8 +81,8 @@ func TestAdapterConvertsNeutralReads(t *testing.T) {
 	if read[0].Data != `{"boundary":"orders"}` {
 		t.Fatalf("Read() leaked storage eventType: %s", read[0].Data)
 	}
-	if legacy.readRequest.Direction != orisun.Direction_DESC || legacy.readRequest.FromPosition.PreparePosition != 2 {
-		t.Fatalf("legacy read request = %#v", legacy.readRequest)
+	if storage.readRequest.Direction != orisun.Direction_DESC || storage.readRequest.FromPosition.PreparePosition != 2 {
+		t.Fatalf("storage read request = %#v", storage.readRequest)
 	}
 
 	latest, err := adapter.LatestByCriteria(t.Context(), coreeventstore.LatestByCriteriaRequest{
@@ -139,7 +139,7 @@ func TestAdapterForwardsNeutralSubscriptionEvents(t *testing.T) {
 	}
 }
 
-type captureLegacyStore struct {
+type captureStorageStore struct {
 	events      orisun.PreparedEventBatch
 	boundary    string
 	consistency []orisun.ConsistencyCheck
@@ -148,7 +148,7 @@ type captureLegacyStore struct {
 	latestBatch orisun.LatestByCriteriaBatch
 }
 
-func (s *captureLegacyStore) SavePrepared(
+func (s *captureStorageStore) SavePrepared(
 	_ context.Context,
 	events orisun.PreparedEventBatch,
 	boundary string,
@@ -158,12 +158,12 @@ func (s *captureLegacyStore) SavePrepared(
 	return "17", 9, nil
 }
 
-func (s *captureLegacyStore) GetBatch(_ context.Context, request *orisun.GetEventsRequest) (orisun.ReadEventBatch, error) {
+func (s *captureStorageStore) GetBatch(_ context.Context, request *orisun.GetEventsRequest) (orisun.ReadEventBatch, error) {
 	s.readRequest = request
 	return s.readBatch, nil
 }
 
-func (s *captureLegacyStore) GetLatestByCriteria(
+func (s *captureStorageStore) GetLatestByCriteria(
 	_ context.Context,
 	_ orisun.LatestByCriteriaQuery,
 ) (orisun.LatestByCriteriaBatch, error) {

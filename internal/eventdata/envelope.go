@@ -45,7 +45,7 @@ func MetadataValue(metadata string) json.RawMessage {
 	return json.RawMessage(metadata)
 }
 
-// EnvelopeFields supplies live filters with the same logical document as the
+// EnvelopeFields supplies storage evaluators with the same logical document as the
 // backend, while the delivered event retains its public envelope shape.
 func EnvelopeFields(data string, envelope Envelope) (map[string]any, error) {
 	var fields map[string]any

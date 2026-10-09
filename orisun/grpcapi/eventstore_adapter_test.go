@@ -115,10 +115,10 @@ func TestEventStoreAdapterTranslatesStatusAtGRPCBoundary(t *testing.T) {
 	}
 	eventStore := orisun.NewEventStoreServer(
 		nil, codedErrorSaver{}, nil, nil, nil,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
 
-	_, err = AdaptEventStore(eventStore).SaveEvents(context.Background(), &SaveEventsRequest{
+	_, err = AdaptEventStore(eventStore).SaveEventsV2(context.Background(), &SaveEventsV2Request{
 		Boundary: "test",
 		Events: []*EventToSave{{
 			EventId:   "event-1",
@@ -140,17 +140,12 @@ func TestEventStoreAdapterMapsSaveRequestAndResponse(t *testing.T) {
 	saver := &mappingSaver{}
 	store := orisun.NewEventStoreServer(
 		nil, saver, nil, nil, nil,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
-	response, err := AdaptEventStore(store).SaveEvents(t.Context(), &SaveEventsRequest{
-		Boundary: "orders",
-		Query: &SaveQuery{
-			ExpectedPosition: &Position{CommitPosition: 3, PreparePosition: 4},
-			SubsetQuery: &Query{Criteria: []*Criterion{{
-				Tags: []*Tag{{Key: "order_id", Value: "o-1"}},
-			}}},
-		},
-		Events: []*EventToSave{{
+	response, err := AdaptEventStore(store).SaveEventsV2(t.Context(), &SaveEventsV2Request{
+		Boundary: "orders", Consistency: []*ConsistencyObservation{{Position: &Position{CommitPosition: 3, PreparePosition: 4}, Query: &Query{Criteria: []*Criterion{{
+			Tags: []*Tag{{Key: "order_id", Value: "o-1"}},
+		}}}}}, Events: []*EventToSave{{
 			EventId: "event-1", EventType: "Opened", Data: `{"order_id":"o-1"}`, Metadata: `{}`,
 		}},
 	})
@@ -174,7 +169,7 @@ func TestEventStoreAdapterMapsSaveEventsV2Observations(t *testing.T) {
 	}
 	saver := &mappingSaver{}
 	adapter := AdaptEventStore(orisun.NewEventStoreServer(
-		nil, saver, nil, nil, nil, orisun.EventStreamConfig{}, logger,
+		nil, saver, nil, nil, nil, logger,
 	))
 
 	response, err := adapter.SaveEventsV2(t.Context(), &SaveEventsV2Request{
@@ -212,7 +207,7 @@ func TestEventStoreAdapterMapsReadAndLatestResponses(t *testing.T) {
 	retriever := &mappingRetriever{created: created}
 	store := orisun.NewEventStoreServer(
 		nil, nil, retriever, nil, nil,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
 	adapter := AdaptEventStore(store)
 
@@ -317,7 +312,7 @@ func TestEventStoreAdapterMapsIndexInventory(t *testing.T) {
 	}}}
 	store := orisun.NewEventStoreServer(
 		nil, nil, nil, nil, manager,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
 	adapter := AdaptEventStore(store)
 

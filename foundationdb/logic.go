@@ -32,7 +32,7 @@ type eventRecord struct {
 
 type indexDefinition struct {
 	Name       string                              `json:"name"`
-	Generation string                              `json:"generation,omitempty"`
+	Generation string                              `json:"generation"`
 	Fields     []eventstore.BoundaryIndexField     `json:"fields"`
 	Conditions []eventstore.BoundaryIndexCondition `json:"conditions"`
 	Combinator string                              `json:"combinator"`
@@ -141,10 +141,10 @@ func readEventFromRecord(value []byte, tx, gid int64) (eventstore.ReadEvent, err
 	if err != nil {
 		return eventstore.ReadEvent{}, fmt.Errorf("invalid stored event timestamp: %w", err)
 	}
-	writeID := ""
-	if fields.WriteLastOffset != nil {
-		writeID = eventstore.WriteID(tx, (gid & ^int64(65535))|int64(*fields.WriteLastOffset))
+	if fields.WriteLastOffset == nil {
+		return eventstore.ReadEvent{}, fmt.Errorf("stored event is missing its write context offset")
 	}
+	writeID := eventstore.WriteID(tx, (gid & ^int64(65535))|int64(*fields.WriteLastOffset))
 	return eventstore.ReadEvent{
 		WriteId:         writeID,
 		EventId:         fields.EventID,

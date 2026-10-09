@@ -16,7 +16,7 @@ func TestSaveEndpointsAuthorizeBeforeValidatingRequests(t *testing.T) {
 	store := &EventStore{logger: logger}
 	ctx := context.WithValue(t.Context(), UserContextKey, User{Roles: nil})
 
-	if _, err = store.SaveEvents(ctx, nil); statuscode.CodeOf(err) != statuscode.PermissionDenied {
+	if _, err = store.SaveEventsV2(ctx, nil); statuscode.CodeOf(err) != statuscode.PermissionDenied {
 		t.Fatalf("SaveEvents() error = %v, want permission denied", err)
 	}
 	if _, err := store.SaveEventsV2(ctx, nil); statuscode.CodeOf(err) != statuscode.PermissionDenied {
@@ -31,11 +31,11 @@ func TestConsistencyChecksKeepOnePositionPerCompleteQuery(t *testing.T) {
 		{Tags: []*Tag{{Key: "__eventType", Value: "StockCounted"}, {Key: "product_id", Value: "p-1"}}},
 	}}
 
-	checks, err := consistencyChecksFromObservations([]*ConsistencyObservation{{
+	checks, err := ConsistencyChecksFromObservations([]*ConsistencyObservation{{
 		Query: query, Position: position,
 	}})
 	if err != nil {
-		t.Fatalf("consistencyChecksFromObservations() error = %v", err)
+		t.Fatalf("ConsistencyChecksFromObservations() error = %v", err)
 	}
 	if len(checks) != 1 || len(checks[0].Criteria) != 2 || checks[0].Position != *position {
 		t.Fatalf("checks = %#v", checks)
@@ -62,7 +62,7 @@ func TestConsistencyChecksDeduplicateEquivalentQueriesAndRejectContradictions(t 
 	}}
 	position := &Position{CommitPosition: 4, PreparePosition: 3}
 
-	checks, err := consistencyChecksFromObservations([]*ConsistencyObservation{
+	checks, err := ConsistencyChecksFromObservations([]*ConsistencyObservation{
 		{Query: first, Position: position},
 		{Query: second, Position: &Position{CommitPosition: 4, PreparePosition: 3}},
 	})
@@ -70,7 +70,7 @@ func TestConsistencyChecksDeduplicateEquivalentQueriesAndRejectContradictions(t 
 		t.Fatalf("equivalent observations = %#v, %v", checks, err)
 	}
 
-	_, err = consistencyChecksFromObservations([]*ConsistencyObservation{
+	_, err = ConsistencyChecksFromObservations([]*ConsistencyObservation{
 		{Query: first, Position: position},
 		{Query: second, Position: &Position{CommitPosition: 5, PreparePosition: 4}},
 	})
@@ -96,7 +96,7 @@ func TestConsistencyChecksRejectInvalidObservations(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := consistencyChecksFromObservations([]*ConsistencyObservation{test.observation})
+			_, err := ConsistencyChecksFromObservations([]*ConsistencyObservation{test.observation})
 			if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 				t.Fatalf("error = %v", err)
 			}
@@ -104,7 +104,7 @@ func TestConsistencyChecksRejectInvalidObservations(t *testing.T) {
 	}
 
 	tooMany := make([]*ConsistencyObservation, maxConsistencyObservations+1)
-	_, err := consistencyChecksFromObservations(tooMany)
+	_, err := ConsistencyChecksFromObservations(tooMany)
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 		t.Fatalf("excessive observations error = %v", err)
 	}
@@ -113,7 +113,7 @@ func TestConsistencyChecksRejectInvalidObservations(t *testing.T) {
 	for i := range criteria {
 		criteria[i] = &Criterion{Tags: []*Tag{{Key: "id", Value: "1"}}}
 	}
-	_, err = consistencyChecksFromObservations([]*ConsistencyObservation{{
+	_, err = ConsistencyChecksFromObservations([]*ConsistencyObservation{{
 		Query: &Query{Criteria: criteria}, Position: &Position{},
 	}})
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
@@ -124,29 +124,10 @@ func TestConsistencyChecksRejectInvalidObservations(t *testing.T) {
 	for i := range tags {
 		tags[i] = &Tag{Key: "id", Value: "1"}
 	}
-	_, err = consistencyChecksFromObservations([]*ConsistencyObservation{{
+	_, err = ConsistencyChecksFromObservations([]*ConsistencyObservation{{
 		Query: &Query{Criteria: []*Criterion{{Tags: tags}}}, Position: &Position{},
 	}})
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 		t.Fatalf("excessive tags error = %v", err)
-	}
-}
-
-func TestLegacyConsistencyChecksProduceOneQueryObservation(t *testing.T) {
-	query := &Query{Criteria: []*Criterion{{Tags: []*Tag{{Key: "order_id", Value: "o-1"}}}}}
-	checks, err := LegacyConsistencyChecks(nil, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(checks) != 1 || checks[0].Position != NotExistsPosition() {
-		t.Fatalf("checks = %#v", checks)
-	}
-	checks, err = LegacyConsistencyChecks(&Position{CommitPosition: 7, PreparePosition: 6}, query)
-	if err != nil || checks[0].Position != (Position{CommitPosition: 7, PreparePosition: 6}) {
-		t.Fatalf("checks = %#v, %v", checks, err)
-	}
-	checks, err = LegacyConsistencyChecks(&Position{}, nil)
-	if err != nil || len(checks) != 0 {
-		t.Fatalf("unscoped legacy check = %#v, %v", checks, err)
 	}
 }

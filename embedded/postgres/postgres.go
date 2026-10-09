@@ -21,6 +21,7 @@ import (
 )
 
 type Store struct {
+	notifications *orisun.BoundaryNotificationManager
 	*orisun.OrisunServer
 
 	indexManager    orisun.BoundaryIndexManager
@@ -76,11 +77,15 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	getEvents := database.GetEvents
 	lockProvider := database.LockProvider
 	adminDB := database.AdminDB
-	eventPublishing := database.EventPublishing
 	pgListener := database.Listener
 
 	store, err := orisun.NewOrisunServer(runCtx, saveEvents, getEvents, lockProvider, js, logger)
 	if err != nil {
+		cancel()
+		natsRuntime.Close()
+		return nil, err
+	}
+	if err := store.ConfigureSubscriptions(config.SubscriptionIdleThreshold); err != nil {
 		cancel()
 		natsRuntime.Close()
 		return nil, err
@@ -96,16 +101,6 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		return nil, err
 	}
 	boundaryEvents := eventstoreadapter.New(saveEvents, getEvents, store.SubscribeToEvents)
-	if err := createboundary.RequireMigratedCatalog(
-		runCtx,
-		database.PreexistingAdminStore,
-		config.Admin.Boundary,
-		boundaryEvents,
-	); err != nil {
-		cancel()
-		natsRuntime.Close()
-		return nil, fmt.Errorf("PostgreSQL catalog upgrade check failed: %w", err)
-	}
 
 	var signalProvider func(string) orisun.EventSignal
 	var stopListener context.CancelFunc
@@ -115,7 +110,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		stopListener = stop
 		go pgListener.Start(listenerCtx)
 		signalProvider = func(boundary string) orisun.EventSignal {
-			return pgListener.Signal(boundary, 30*time.Second)
+			return pgListener.Signal(boundary)
 		}
 		closePG = func(ctx context.Context) {
 			if stopListener != nil {
@@ -125,15 +120,12 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 			defer waitCancel()
 			pgListener.Close(waitCtx)
 		}
-	} else {
-		signalProvider = func(boundary string) orisun.EventSignal {
-			return orisun.NewPollingSignal(time.Second)
-		}
 	}
 
-	pollingManager := orisun.StartEventPolling(runCtx, config, lockProvider, getEvents, js, eventPublishing, signalProvider, logger)
-	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
+	notificationManager := orisun.StartNotificationRelays(runCtx, lockProvider, js.Conn(), signalProvider, logger)
+	if err := notificationManager.StartBoundary(config.Admin.Boundary); err != nil {
 		cancel()
+		notificationManager.Stop()
 		natsRuntime.Close()
 		return nil, err
 	}
@@ -144,7 +136,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		if err := database.InstallBoundary(installCtx, definition); err != nil {
 			return err
 		}
-		return pollingManager.StartBoundary(definition.Name)
+		return notificationManager.StartBoundary(definition.Name)
 	}
 	provisioningHandler := boundaryprovisioning.NewBoundaryProvisioningEventHandler(
 		config.Admin.Boundary,
@@ -168,6 +160,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	)
 	if err != nil {
 		cancel()
+		notificationManager.Stop()
 		natsRuntime.Close()
 		if closePG != nil {
 			closePG(context.WithoutCancel(ctx))
@@ -191,6 +184,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 	)
 	if err := runtimeSubscriber.Replay(runCtx); err != nil {
 		cancel()
+		notificationManager.Stop()
 		natsRuntime.Close()
 		if closePG != nil {
 			closePG(context.WithoutCancel(ctx))
@@ -213,6 +207,7 @@ func Start(ctx context.Context, config c.AppConfig, logger l.Logger, opts ...Sta
 		adminBoundary:   config.Admin.Boundary,
 		boundaryEvents:  boundaryEvents,
 		cancel:          cancel,
+		notifications:   notificationManager,
 		boundaryWorkers: boundaryWorkers,
 		natsRuntime:     natsRuntime,
 		closePG:         closePG,
@@ -225,11 +220,11 @@ func (s *Store) CreateBoundary(ctx context.Context, definition boundarymodel.Def
 	result, err := createboundary.CreateBoundaryCommandHandler(
 		ctx,
 		createboundary.CreateBoundaryCommand{
-			Name:                 definition.Name,
-			Description:          definition.Description,
-			Placement:            definition.Placement,
-			ExistedBeforeCatalog: definition.ExistedBeforeCatalog,
-			Metadata:             createboundary.CommandMetadata{"source": "embedded_postgres", "operation": "create_boundary"},
+			Name:        definition.Name,
+			Description: definition.Description,
+			Placement:   definition.Placement,
+
+			Metadata: createboundary.CommandMetadata{"source": "embedded_postgres", "operation": "create_boundary"},
 		},
 		s.adminBoundary,
 		s.boundaryEvents,
@@ -304,6 +299,9 @@ func (s *Store) Close(ctx context.Context) {
 	}
 	if s.cancel != nil {
 		s.cancel()
+		if s.notifications != nil {
+			s.notifications.Stop()
+		}
 	}
 	if s.boundaryWorkers != nil {
 		_ = s.boundaryWorkers.Wait()

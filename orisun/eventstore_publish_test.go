@@ -2,16 +2,12 @@ package orisun
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
-	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // --- test doubles ---------------------------------------------------------
@@ -57,18 +53,22 @@ func (r *fakeRetriever) GetBatch(ctx context.Context, req *GetEventsRequest) (Re
 		r.errOnce = false
 		return nil, errors.New("transient get error")
 	}
-	from := int64(-1)
-	if req.FromPosition != nil {
-		from = req.FromPosition.PreparePosition
-	}
 	out := make(ReadEventBatch, 0, req.Count)
-	for i := range r.events {
+	for step := range r.events {
+		i := step
+		if req.Direction == Direction_DESC {
+			i = len(r.events) - 1 - step
+		}
 		e := r.events[i]
-		if e.PreparePosition >= from {
-			out = append(out, e)
-			if uint32(len(out)) >= req.Count {
-				break
+		if req.FromPosition != nil {
+			cmp := ComparePositions(&Position{CommitPosition: e.CommitPosition, PreparePosition: e.PreparePosition}, req.FromPosition)
+			if (req.Direction == Direction_ASC && cmp == IsLessThan) || (req.Direction == Direction_DESC && cmp == IsGreaterThan) {
+				continue
 			}
+		}
+		out = append(out, e)
+		if uint32(len(out)) >= req.Count {
+			break
 		}
 	}
 	return out, nil
@@ -78,11 +78,13 @@ func (r *fakeRetriever) GetBatch(ctx context.Context, req *GetEventsRequest) (Re
 // any other method call would nil-panic, which is fine — the loop only Publishes.
 type fakeJS struct {
 	jetstream.JetStream
-	mu        sync.Mutex
-	published [][]byte
-	attempts  int
-	failFirst int
-	failAfter int
+	mu           sync.Mutex
+	published    [][]byte
+	subjects     []string
+	optionCounts []int
+	attempts     int
+	failFirst    int
+	failAfter    int
 }
 
 func (f *fakeJS) Publish(ctx context.Context, subject string, payload []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
@@ -99,69 +101,15 @@ func (f *fakeJS) Publish(ctx context.Context, subject string, payload []byte, op
 	cp := make([]byte, len(payload))
 	copy(cp, payload)
 	f.published = append(f.published, cp)
+	f.subjects = append(f.subjects, subject)
+	f.optionCounts = append(f.optionCounts, len(opts))
 	return &jetstream.PubAck{}, nil
-}
-
-func (f *fakeJS) publishedIDs() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	ids := make([]string, 0, len(f.published))
-	for _, p := range f.published {
-		var e struct {
-			EventID string `json:"event_id"`
-		}
-		_ = json.Unmarshal(p, &e)
-		ids = append(ids, e.EventID)
-	}
-	return ids
 }
 
 func (f *fakeJS) publishedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.published)
-}
-
-type fakeTracker struct {
-	mu             sync.Mutex
-	startTx        int64
-	startPrep      int64
-	insertAttempts int
-	insertErr      error
-	inserts        []Position
-}
-
-func (t *fakeTracker) GetLastPublishedEventPosition(ctx context.Context, boundary string) (Position, error) {
-	return Position{CommitPosition: t.startTx, PreparePosition: t.startPrep}, nil
-}
-
-func (t *fakeTracker) InsertLastPublishedEvent(ctx context.Context, boundary string, transactionId int64, globalId int64) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.insertAttempts++
-	if t.insertErr != nil {
-		return t.insertErr
-	}
-	t.inserts = append(t.inserts, Position{CommitPosition: transactionId, PreparePosition: globalId})
-	return nil
-}
-
-func (t *fakeTracker) insertCount() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.inserts)
-}
-
-func (t *fakeTracker) insertAttemptCount() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.insertAttempts
-}
-
-func (t *fakeTracker) insertedPositions() []Position {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return append([]Position(nil), t.inserts...)
 }
 
 // pulseSignal wakes the loop repeatedly, simulating polling/NOTIFY ticks.
@@ -193,232 +141,3 @@ func makeEvent(i int) ReadEvent {
 }
 
 // --- tests ----------------------------------------------------------------
-
-func TestPublishEventsLoop_DrainsInOrder(t *testing.T) {
-	retriever := &fakeRetriever{}
-	for i := 1; i <= 3; i++ {
-		retriever.add(makeEvent(i))
-	}
-	js := &fakeJS{}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- publishEventsLoop(ctx, js, retriever, 10, &Position{}, "b", tracker, signal, noopLogger{})
-	}()
-
-	require.Eventually(t, func() bool {
-		return js.publishedCount() == 3 && tracker.insertCount() == 1
-	}, 2*time.Second, 5*time.Millisecond)
-	cancel()
-	assert.ErrorIs(t, <-errCh, context.Canceled)
-
-	assert.Equal(t, []string{"e1", "e2", "e3"}, js.publishedIDs(), "events must publish in position order")
-	assert.Equal(t, []Position{{CommitPosition: 3, PreparePosition: 3}}, tracker.insertedPositions(),
-		"the batch records only its final contiguous position")
-	assert.True(t, signal.stopped.Load(), "signal.Stop must be called on exit")
-}
-
-func TestPublishEventsLoop_Paginates(t *testing.T) {
-	retriever := &fakeRetriever{}
-	for i := 1; i <= 5; i++ {
-		retriever.add(makeEvent(i))
-	}
-	js := &fakeJS{}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- publishEventsLoop(ctx, js, retriever, 2, &Position{}, "b", tracker, signal, noopLogger{})
-	}()
-
-	require.Eventually(t, func() bool {
-		return js.publishedCount() == 5 && tracker.insertCount() == 3
-	}, 2*time.Second, 5*time.Millisecond)
-	cancel()
-	<-errCh
-
-	assert.Equal(t, []string{"e1", "e2", "e3", "e4", "e5"}, js.publishedIDs())
-	assert.Equal(t, []Position{
-		{CommitPosition: 2, PreparePosition: 2},
-		{CommitPosition: 4, PreparePosition: 4},
-		{CommitPosition: 5, PreparePosition: 5},
-	}, tracker.insertedPositions(), "one checkpoint should be written per retrieved batch")
-	retriever.mu.Lock()
-	calls := retriever.calls
-	retriever.mu.Unlock()
-	assert.GreaterOrEqual(t, calls, 3, "batchSize=2 over 5 events needs multiple paginated Gets")
-}
-
-func TestPublishEventsLoop_RetriesFailedPublish(t *testing.T) {
-	retriever := &fakeRetriever{}
-	retriever.add(makeEvent(1))
-	js := &fakeJS{failFirst: 2}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- publishEventsLoop(ctx, js, retriever, 10, &Position{}, "b", tracker, signal, noopLogger{})
-	}()
-
-	require.Eventually(t, func() bool {
-		return js.publishedCount() == 1 && tracker.insertCount() == 1
-	}, 3*time.Second, 10*time.Millisecond)
-	cancel()
-	<-errCh
-
-	js.mu.Lock()
-	attempts := js.attempts
-	js.mu.Unlock()
-	assert.GreaterOrEqual(t, attempts, 3, "2 failures then success = >=3 publish attempts")
-	assert.Equal(t, 1, tracker.insertCount(), "position recorded only after successful publish")
-}
-
-func TestPublishEventsLoop_DoesNotCheckpointPartialBatch(t *testing.T) {
-	retriever := &fakeRetriever{}
-	retriever.add(makeEvent(1), makeEvent(2), makeEvent(3))
-	js := &fakeJS{failAfter: 2}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- publishEventsLoop(ctx, js, retriever, 10, &Position{}, "b", tracker, signal, noopLogger{})
-	}()
-
-	require.Eventually(t, func() bool { return js.publishedCount() == 2 }, 2*time.Second, 5*time.Millisecond)
-	cancel()
-	require.Error(t, <-errCh)
-
-	assert.Equal(t, []string{"e1", "e2"}, js.publishedIDs())
-	assert.Equal(t, 0, tracker.insertCount(), "a published prefix is replayed unless the full batch completes")
-	assert.Equal(t, 0, tracker.insertAttemptCount(), "the checkpoint store is untouched for a partial batch")
-}
-
-func TestPublishEventsLoop_CheckpointFailureReplaysWholeBatch(t *testing.T) {
-	retriever := &fakeRetriever{}
-	retriever.add(makeEvent(1), makeEvent(2), makeEvent(3))
-	js := &fakeJS{}
-	tracker := &fakeTracker{insertErr: errors.New("checkpoint unavailable")}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	err := publishEventsLoop(context.Background(), js, retriever, 10, &Position{}, "b", tracker, signal, noopLogger{})
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "batch checkpoint")
-	assert.Equal(t, []string{"e1", "e2", "e3"}, js.publishedIDs(), "the complete batch publishes before checkpointing")
-	assert.Equal(t, 1, tracker.insertAttemptCount(), "only the final batch position is attempted")
-	assert.Equal(t, 0, tracker.insertCount(), "the durable cursor remains at the previous checkpoint")
-	assert.True(t, signal.stopped.Load())
-}
-
-func TestPublishEventsLoop_RecoversFromGetError(t *testing.T) {
-	retriever := &fakeRetriever{errOnce: true}
-	retriever.add(makeEvent(1), makeEvent(2))
-	js := &fakeJS{}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- publishEventsLoop(ctx, js, retriever, 10, &Position{}, "b", tracker, signal, noopLogger{})
-	}()
-
-	require.Eventually(t, func() bool { return js.publishedCount() == 2 }, 2*time.Second, 5*time.Millisecond)
-	cancel()
-	<-errCh
-
-	assert.Equal(t, []string{"e1", "e2"}, js.publishedIDs(), "loop continues after a transient Get error")
-}
-
-func TestPublishEventsLoop_ResumesFromLastPosition(t *testing.T) {
-	retriever := &fakeRetriever{}
-	for i := 1; i <= 3; i++ {
-		retriever.add(makeEvent(i))
-	}
-	js := &fakeJS{}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	// Already published up to position 2 — only event 3 should publish.
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- publishEventsLoop(ctx, js, retriever, 10, &Position{CommitPosition: 2, PreparePosition: 2}, "b", tracker, signal, noopLogger{})
-	}()
-
-	require.Eventually(t, func() bool { return js.publishedCount() == 1 }, 2*time.Second, 5*time.Millisecond)
-	cancel()
-	<-errCh
-
-	assert.Equal(t, []string{"e3"}, js.publishedIDs(), "must resume after the last published position")
-}
-
-func TestPublishEventsLoop_RejectsOutOfOrderBatchBeforePublishing(t *testing.T) {
-	retriever := &fakeRetriever{}
-	retriever.add(makeEvent(2), makeEvent(1))
-	js := &fakeJS{}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	err := publishEventsLoop(context.Background(), js, retriever, 10, &Position{}, "b", tracker, signal, noopLogger{})
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "is not after cursor")
-	assert.Equal(t, 0, js.publishedCount(), "invalid batches must not publish a partial prefix")
-	assert.Equal(t, 0, tracker.insertCount(), "invalid batches must not advance the checkpoint")
-	assert.True(t, signal.stopped.Load())
-}
-
-func TestPublishEventsLoop_RejectsNonAdvancingPositionBeforePublishing(t *testing.T) {
-	retriever := &fakeRetriever{}
-	event := makeEvent(1)
-	event.CommitPosition = -1
-	retriever.add(event)
-	js := &fakeJS{}
-	tracker := &fakeTracker{}
-	signal := &pulseSignal{interval: time.Millisecond}
-
-	err := publishEventsLoop(context.Background(), js, retriever, 10, &Position{}, "b", tracker, signal, noopLogger{})
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "is not after cursor")
-	assert.Equal(t, 0, js.publishedCount())
-	assert.Equal(t, 0, tracker.insertCount())
-	assert.True(t, signal.stopped.Load())
-}
-
-func TestPublishEventsLoop_ExitsOnCanceledContext(t *testing.T) {
-	js := &fakeJS{}
-	signal := &pulseSignal{interval: time.Millisecond}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := publishEventsLoop(ctx, js, &fakeRetriever{}, 10, &Position{}, "b", &fakeTracker{}, signal, noopLogger{})
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.True(t, signal.stopped.Load())
-}
-
-func TestPollingSignal(t *testing.T) {
-	t.Run("fires on tick", func(t *testing.T) {
-		s := NewPollingSignal(5 * time.Millisecond)
-		defer s.Stop()
-		require.NoError(t, s.Wait(context.Background()))
-	})
-
-	t.Run("returns on canceled context", func(t *testing.T) {
-		s := NewPollingSignal(time.Hour)
-		defer s.Stop()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		assert.ErrorIs(t, s.Wait(ctx), context.Canceled)
-	})
-}

@@ -6,7 +6,7 @@ import (
 	"sort"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/goccy/go-json"
 )
@@ -31,8 +31,8 @@ func (c *Catalog) Apply(event coreeventstore.ReadEvent) (bool, error) {
 	}
 
 	switch event.EventType {
-	case adminevents.EventTypeBoundaryCreated:
-		var data adminevents.BoundaryCreated
+	case boundaryevents.EventTypeBoundaryCreated:
+		var data boundaryevents.BoundaryCreated
 		if err := decode(event, &data); err != nil {
 			return true, err
 		}
@@ -40,12 +40,11 @@ func (c *Catalog) Apply(event coreeventstore.ReadEvent) (bool, error) {
 			data.Boundary,
 			data.Description,
 			data.Placement,
-			data.ExistedBeforeCatalog,
 			&event.Position,
 		)
 
-	case adminevents.EventTypeBoundaryActivated:
-		var data adminevents.BoundaryActivated
+	case boundaryevents.EventTypeBoundaryActivated:
+		var data boundaryevents.BoundaryActivated
 		if err := decode(event, &data); err != nil {
 			return true, err
 		}
@@ -62,8 +61,8 @@ func (c *Catalog) Apply(event coreeventstore.ReadEvent) (bool, error) {
 		c.boundaries[data.Boundary] = boundary
 		return true, nil
 
-	case adminevents.EventTypeBoundaryFailed:
-		var data adminevents.BoundaryProvisioningFailed
+	case boundaryevents.EventTypeBoundaryFailed:
+		var data boundaryevents.BoundaryProvisioningFailed
 		if err := decode(event, &data); err != nil {
 			return true, err
 		}
@@ -118,7 +117,6 @@ func (c *Catalog) define(
 	name string,
 	description string,
 	placement boundarymodel.Placement,
-	existedBeforeCatalog bool,
 	position *coreeventstore.Position,
 ) error {
 	if name == "" {
@@ -134,13 +132,13 @@ func (c *Catalog) define(
 		return fmt.Errorf("boundary catalog: boundary %q is already defined", name)
 	}
 	c.boundaries[name] = boundarymodel.Boundary{
-		Name:                 name,
-		Description:          description,
-		Placement:            placement,
-		Status:               boundarymodel.StatusProvisioning,
-		ExistedBeforeCatalog: existedBeforeCatalog,
-		DefinitionPosition:   clonePosition(position),
-		StatusPosition:       clonePosition(position),
+		Name:        name,
+		Description: description,
+		Placement:   placement,
+		Status:      boundarymodel.StatusProvisioning,
+
+		DefinitionPosition: clonePosition(position),
+		StatusPosition:     clonePosition(position),
 	}
 	return nil
 }

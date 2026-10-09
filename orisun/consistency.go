@@ -14,7 +14,8 @@ const (
 	maxConsistencyTags         = 16384
 )
 
-func consistencyChecksFromObservations(observations []*ConsistencyObservation) ([]ConsistencyCheck, error) {
+// ConsistencyChecksFromObservations validates query observations for native storage.
+func ConsistencyChecksFromObservations(observations []*ConsistencyObservation) ([]ConsistencyCheck, error) {
 	if len(observations) > maxConsistencyObservations {
 		return nil, statuscode.Errorf(
 			statuscode.InvalidArgument,
@@ -71,25 +72,6 @@ func consistencyChecksFromObservations(observations []*ConsistencyObservation) (
 		checks = append(checks, ConsistencyCheck{Criteria: criteria, Position: position})
 	}
 	return checks, nil
-}
-
-// LegacyConsistencyChecks translates the deprecated single-query save shape
-// into the canonical backend representation.
-func LegacyConsistencyChecks(expected *Position, query *Query) ([]ConsistencyCheck, error) {
-	return consistencyChecksFromObservations(legacyConsistencyObservations(expected, query))
-}
-
-func legacyConsistencyObservations(expected *Position, query *Query) []*ConsistencyObservation {
-	if query == nil || len(query.Criteria) == 0 {
-		return nil
-	}
-	position := NotExistsPosition()
-	if expected != nil {
-		position = *expected
-	}
-	return []*ConsistencyObservation{{
-		Query: query, Position: &position,
-	}}
 }
 
 func validateConsistencyPosition(position Position) error {

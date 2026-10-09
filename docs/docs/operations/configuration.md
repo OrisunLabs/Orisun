@@ -69,20 +69,12 @@ the configured `ORISUN_FDB_ROOT` as the namespace.
 
 Boundary names must be valid PostgreSQL identifiers even when using SQLite: 1-63 characters, starting with a letter or underscore, then letters, digits, or underscores. This keeps boundary names portable across backends.
 
-### Upgrading existing boundaries into the catalog
+### Existing storage
 
-Existing installations older than 0.8.0 must first complete the dedicated
-[0.7.0 to 0.8.0 upgrade](./upgrading-0.7-to-0.8). Do not skip 0.8.0:
-it is the bridge release that imports `ORISUN_PG_SCHEMAS` and other legacy
-boundary discovery sources into the durable catalog. Current PostgreSQL
-releases reject a pre-existing admin event store when that catalog marker is
-missing.
-
-After the 0.8.0 catalog is verified, replace `ORISUN_PG_SCHEMAS` with
-`ORISUN_PG_ADMIN_SCHEMA`. `ORISUN_BOUNDARIES` remains removed.
-
-For storage restored or attached after the upgrade, call `CreateBoundary`
-with `existed_before_catalog: true`.
+Fresh boundaries initialize the current schema directly. Existing storage must
+already use the supported format; startup rejects older and unversioned event
+stores. No automatic conversion or historical boundary discovery runs. To attach
+restored storage in the current format, call `CreateBoundary` with its placement.
 
 ## Server settings
 
@@ -107,13 +99,13 @@ with `existed_before_catalog: true`.
 | `ORISUN_ADMIN_PASSWORD` | `changeit` | Bootstrap admin password. |
 | `ORISUN_AUTH_SESSION_TTL` | `24h` | Inactivity timeout for `x-auth-token` sessions. Successful token use renews the deadline. Must be greater than zero. |
 | `ORISUN_LOGGING_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
-| `ORISUN_POLLING_PUBLISHER_BATCH_SIZE` | `1000` | Max events drained per publisher read batch. |
+| `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` | `1s` | Positive silence threshold since a subscription last received a hint; its watchdog publishes a NATS hint at expiry. No periodic backend reads. |
 
 ## SQLite settings
 
 Set `ORISUN_BACKEND=sqlite` and `ORISUN_SQLITE_IN_MEMORY=true` to keep all SQLite
 boundary databases in RAM, including the admin catalog, users, event data,
-publisher checkpoints, and projector state. Embedded Go applications can set
+and projector state. Embedded Go applications can set
 `cfg.Sqlite.InMemory = true` before calling `embedded/sqlite.Start`.
 
 This mode is ephemeral: closing the store or restarting the process discards all
@@ -133,7 +125,7 @@ configured `ORISUN_NATS_STORE_DIR`.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `ORISUN_SQLITE_IN_MEMORY` | `false` | Keep all SQLite databases in RAM for the store lifetime; ignore the database directory. |
-| `ORISUN_SQLITE_DIR` | `./data/orisun/sqlite` | Directory containing one `{boundary}.db` event-log file and one `{boundary}_metadata.db` file per boundary. Metadata files hold publisher checkpoints, projector checkpoints, admin users, and count caches. |
+| `ORISUN_SQLITE_DIR` | `./data/orisun/sqlite` | Directory containing one `{boundary}.db` event-log file and one `{boundary}_metadata.db` file per boundary. Metadata files hold projector checkpoints, admin users, count caches. |
 | `ORISUN_SQLITE_SYNCHRONOUS` | `FULL` | Recommended SQLite synchronous mode. `FULL` makes acknowledged WAL commits durable across OS crashes and power loss. `NORMAL` can improve write throughput, but acknowledged commits may be lost until a checkpoint reaches durable storage; use it only as an explicit, measured opt-out. |
 | `ORISUN_SQLITE_BUSY_TIMEOUT_MS` | `5000` | Busy timeout for contended SQLite operations. |
 | `ORISUN_SQLITE_READ_POOL_SIZE` | `0` | Read pool size. `0` lets Orisun choose a CPU-based default. |
@@ -141,7 +133,7 @@ configured `ORISUN_NATS_STORE_DIR`.
 | `ORISUN_SQLITE_MMAP_SIZE` | `0` | SQLite mmap size override. |
 | `ORISUN_SQLITE_WAL_AUTO_CHECKPOINT` | `0` | SQLite WAL auto-checkpoint override. |
 | `ORISUN_SQLITE_TEMP_STORE` | `MEMORY` | SQLite temp-store mode. |
-| `ORISUN_SQLITE_PUBLISHER_WAKE_DELAY` | `5ms` | Coalesce publisher wake-ups after SQLite commits so write bursts can drain before publisher read/checkpoint work starts. Set `0s` for immediate wake-ups; polling still protects delivery correctness. |
+| `ORISUN_SQLITE_PUBLISHER_WAKE_DELAY` | `5ms` | Coalesce notification relay wake-ups after SQLite commits. Set `0s` for immediate wake-ups; idle watchdog hints recover missed signals while NATS is healthy. |
 | `ORISUN_SQLITE_GC_MAX_BATCH_REQUESTS` | `128` | Maximum save requests flushed by one SQLite group-commit batch. Applies to both V2 calls and translated legacy requests. |
 | `ORISUN_SQLITE_GC_MAX_BATCH_EVENTS` | `1024` | Maximum events flushed by one SQLite group-commit batch. A request that would exceed the cap is carried to the next flush. |
 | `ORISUN_SQLITE_GC_MAX_DELAY` | `0s` | Optional wait to fill a SQLite group-commit batch. `0s` keeps batching opportunistic. |
@@ -154,7 +146,7 @@ Orisun uses per-boundary group commit plus separate PostgreSQL-compatible pools 
 
 | Variable | Default | Description |
 | --- |---------| --- |
-| `ORISUN_PG_LISTEN_ENABLED` | `true`  | Use PostgreSQL `LISTEN/NOTIFY` wake-ups. Polling still protects correctness when notifications are delayed or missed. |
+| `ORISUN_PG_LISTEN_ENABLED` | `true`  | Use PostgreSQL `LISTEN/NOTIFY` wake-ups. When disabled, subscriptions rely on their idle watchdogs. Subscription idle watchdogs also publish hints after notification silence; healthy NATS is required. |
 | `ORISUN_PG_WRITE_MAX_OPEN_CONNS` | `25`    | Write pool open-connection cap. |
 | `ORISUN_PG_WRITE_MAX_IDLE_CONNS` | `10`    | Write pool idle-connection cap. |
 | `ORISUN_PG_WRITE_CONN_MAX_IDLE_TIME` | `5m`    | Write pool idle lifetime. |
@@ -182,10 +174,14 @@ Orisun uses per-boundary group commit plus separate PostgreSQL-compatible pools 
 | `ORISUN_NATS_PORT` | `4224` | Embedded NATS client port. |
 | `ORISUN_NATS_MAX_PAYLOAD` | `1048576` | NATS max payload. |
 | `ORISUN_NATS_STORE_DIR` | `./data/orisun/nats` | NATS data directory. |
-| `ORISUN_NATS_EVENT_STREAM_MAX_BYTES` | `536870912` | Per-boundary event stream memory cap. |
-| `ORISUN_NATS_EVENT_STREAM_MAX_MSGS` | `-1` | Per-boundary event stream message cap. |
-| `ORISUN_NATS_EVENT_STREAM_MAX_AGE` | `5m` | Retention overlap for catch-up subscribers. |
 | `ORISUN_NATS_PUBLISH_ASYNC_MAX_PENDING` | `8192` | In-flight async publish acknowledgements. |
+
+Core NATS carries empty transient hints without stream retention or replicas.
+NATS listeners use the client’s default bounded pending queue; each drain keeps
+one coalesced pending wake-up.
+JetStream remains required for leases and admin messaging. Idle watchdog hints
+trigger ordinary backend drains, so tune the threshold against notification and
+backend read load. Healthy NATS is required for ongoing subscription delivery.
 
 ## TLS settings
 

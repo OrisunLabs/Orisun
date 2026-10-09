@@ -9,7 +9,6 @@ import TabItem from '@theme/TabItem';
 The EventStore service owns event operations:
 
 - `SaveEventsV2`
-- `SaveEvents` (deprecated)
 - `GetEvents`
 - `GetWriteContext`
 - `GetLatestByCriteria`
@@ -635,32 +634,6 @@ Orisun returns `ALREADY_EXISTS`. Treat that as a CCC conflict: re-read every
 context used by the command, decide again, and retry only if the command is
 still valid.
 
-## SaveEvents (deprecated)
-
-`SaveEvents` and `SaveQuery` remain wire-compatible for existing clients, but
-new code should use `SaveEventsV2`. The server translates a legacy request with
-a non-empty `subsetQuery` into one V2 observation and executes the same save
-implementation.
-
-| Deprecated V1 field | V2 replacement |
-| --- | --- |
-| `SaveEventsRequest.boundary` | `SaveEventsV2Request.boundary` |
-| `SaveEventsRequest.events` | `SaveEventsV2Request.events` |
-| `query.subsetQuery` | `consistency[0].query` |
-| `query.expected_position` | `consistency[0].position` |
-
-:::warning
-In the compatibility API, `expected_position` without a non-empty
-`subsetQuery` does not protect anything and is translated as an unconditional
-append. Do not use an expected position as a stream revision. To assert that a
-query is still empty, send that query in a V2 observation with position
-`{-1, -1}`.
-:::
-
-V1 can represent at most one observed query. If a command read more than one
-independent context, migrate it to V2 and preserve every complete query as a
-separate observation. `GetLatestByCriteria` itself is unchanged.
-
 ## GetWriteContext
 
 Every accepted save records the complete consistency observations checked for
@@ -685,12 +658,9 @@ Call `GetWriteContext` with:
 
 The response contains `write_id` and `consistency`, an array of the same
 `ConsistencyObservation` shape accepted by `SaveEventsV2`. An existing record with
-an empty array means the save was unconditional. The deprecated `SaveEvents` RPC
-also records its effective consistency observation.
+an empty array means the save was unconditional.
 
-Events saved before this feature have an empty `write_id` and no recorded context.
-Their conditions are unknown; the server does not label them unconditional or
-attempt to reconstruct historical queries. Missing records return `NOT_FOUND`;
+Missing records return `NOT_FOUND`;
 malformed IDs return `INVALID_ARGUMENT`. The boundary must be active.
 
 The context is store-owned and commits atomically with its events. Rejected or
@@ -1065,7 +1035,10 @@ For `SaveEventsV2`, construct one observation from the exact combined criteria s
 
 ## CatchUpSubscribeToEvents
 
-Catch-up subscriptions replay stored events, then switch to live JetStream delivery.
+Subscriptions read matching events from the backend throughout their lifetime.
+NATS boundary hints trigger reads; an subscription-owned idle watchdog hints timer recovers
+missed hints. The backend evaluates the complete query for both historical and
+new events. See [Delivery Guarantees](../concepts/delivery-guarantees).
 
 When `after_position` is omitted, the subscription delivers the latest stored
 event matching the query once, then continues with newer matching events in

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/logging"
 	"github.com/google/uuid"
@@ -282,12 +282,12 @@ func positionAfter(commit, prepare, cursorCommit, cursorPrepare int64) bool {
 
 func boundaryDefinitionQuery() coreeventstore.Query {
 	return coreeventstore.Query{Criteria: []coreeventstore.Criterion{
-		{Tags: []coreeventstore.Tag{{Key: "__eventType", Value: adminevents.EventTypeBoundaryCreated}}},
+		{Tags: []coreeventstore.Tag{{Key: "__eventType", Value: boundaryevents.EventTypeBoundaryCreated}}},
 	}}
 }
 
 func boundaryActivationQuery() coreeventstore.Query {
 	return coreeventstore.Query{Criteria: []coreeventstore.Criterion{
-		{Tags: []coreeventstore.Tag{{Key: "__eventType", Value: adminevents.EventTypeBoundaryActivated}}},
+		{Tags: []coreeventstore.Tag{{Key: "__eventType", Value: boundaryevents.EventTypeBoundaryActivated}}},
 	}}
 }

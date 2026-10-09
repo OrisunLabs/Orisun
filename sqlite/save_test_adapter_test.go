@@ -13,14 +13,13 @@ func (s *SqliteSaveEvents) Save(
 	ctx context.Context,
 	events []eventstore.EventWithMapTags,
 	boundary string,
-	expectedPosition *eventstore.Position,
-	query *eventstore.Query,
+	observations []*eventstore.ConsistencyObservation,
 ) (string, int64, error) {
 	prepared, err := eventstore.PrepareEventsForSave(events)
 	if err != nil {
 		return "", 0, statuscode.Errorf(statuscode.InvalidArgument, "invalid event data: %v", err)
 	}
-	consistency, err := eventstore.LegacyConsistencyChecks(expectedPosition, query)
+	consistency, err := eventstore.ConsistencyChecksFromObservations(observations)
 	if err != nil {
 		return "", 0, err
 	}

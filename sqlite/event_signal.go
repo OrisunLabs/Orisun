@@ -9,26 +9,21 @@ import (
 )
 
 type SqliteEventNotifier struct {
-	interval  time.Duration
 	wakeDelay time.Duration
 	mu        sync.Mutex
 	signals   map[string]map[*sqliteEventSignal]struct{}
 	timers    map[string]*time.Timer
 }
 
-func NewSqliteEventNotifier(interval time.Duration) *SqliteEventNotifier {
-	return NewSqliteEventNotifierWithWakeDelay(interval, 0)
+func NewSqliteEventNotifier() *SqliteEventNotifier {
+	return NewSqliteEventNotifierWithWakeDelay(0)
 }
 
-func NewSqliteEventNotifierWithWakeDelay(interval, wakeDelay time.Duration) *SqliteEventNotifier {
-	if interval <= 0 {
-		interval = time.Second
-	}
+func NewSqliteEventNotifierWithWakeDelay(wakeDelay time.Duration) *SqliteEventNotifier {
 	if wakeDelay < 0 {
 		wakeDelay = 0
 	}
 	return &SqliteEventNotifier{
-		interval:  interval,
 		wakeDelay: wakeDelay,
 		signals:   make(map[string]map[*sqliteEventSignal]struct{}),
 		timers:    make(map[string]*time.Timer),
@@ -40,7 +35,6 @@ func (n *SqliteEventNotifier) Signal(boundary string) eventstore.EventSignal {
 		notifier: n,
 		boundary: boundary,
 		ch:       make(chan struct{}, 1),
-		ticker:   time.NewTicker(n.interval),
 	}
 	n.mu.Lock()
 	if n.signals[boundary] == nil {
@@ -102,7 +96,6 @@ type sqliteEventSignal struct {
 	notifier *SqliteEventNotifier
 	boundary string
 	ch       chan struct{}
-	ticker   *time.Ticker
 	stopOnce sync.Once
 }
 
@@ -112,14 +105,11 @@ func (s *sqliteEventSignal) Wait(ctx context.Context) error {
 		return ctx.Err()
 	case <-s.ch:
 		return nil
-	case <-s.ticker.C:
-		return nil
 	}
 }
 
 func (s *sqliteEventSignal) Stop() {
 	s.stopOnce.Do(func() {
-		s.ticker.Stop()
 		s.notifier.unregister(s)
 	})
 }

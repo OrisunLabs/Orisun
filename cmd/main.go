@@ -37,15 +37,13 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 		runtime := pg.InitializePostgresDatabaseRuntime(ctx, config.Postgres, config.Admin, js, logger)
 		adminBoundary := pg.AdminBoundaryDefinition(config.Postgres, config.Admin)
 		backend := server.Backend{
-			SaveEvents:            runtime.SaveEvents,
-			GetEvents:             runtime.GetEvents,
-			LockProvider:          runtime.LockProvider,
-			AdminDB:               runtime.AdminDB,
-			EventPublishing:       runtime.EventPublishing,
-			ProvisionBoundary:     runtime.ProvisionBoundary,
-			InstallBoundary:       runtime.InstallBoundary,
-			BootstrapBoundary:     &adminBoundary,
-			PreexistingAdminStore: runtime.PreexistingAdminStore,
+			SaveEvents:        runtime.SaveEvents,
+			GetEvents:         runtime.GetEvents,
+			LockProvider:      runtime.LockProvider,
+			AdminDB:           runtime.AdminDB,
+			ProvisionBoundary: runtime.ProvisionBoundary,
+			InstallBoundary:   runtime.InstallBoundary,
+			BootstrapBoundary: &adminBoundary,
 		}
 		if runtime.Listener != nil {
 			var stopListener context.CancelFunc
@@ -63,7 +61,7 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 				runtime.Listener.Close(waitCtx)
 			}
 			backend.SignalProvider = func(boundary string) orisun.EventSignal {
-				return runtime.Listener.Signal(boundary, 30*time.Second)
+				return runtime.Listener.Signal(boundary)
 			}
 		}
 		return backend, nil
@@ -84,7 +82,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 			GetEvents:         runtime.GetEvents,
 			LockProvider:      runtime.LockProvider,
 			AdminDB:           runtime.AdminDB,
-			EventPublishing:   runtime.EventPublishing,
 			SignalProvider:    runtime.SignalProvider,
 			ProvisionBoundary: runtime.ProvisionBoundary,
 			InstallBoundary:   runtime.InstallBoundary,
@@ -105,7 +102,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 			GetEvents:         runtime.GetEvents,
 			LockProvider:      runtime.LockProvider,
 			AdminDB:           runtime.AdminDB,
-			EventPublishing:   runtime.EventPublishing,
 			SignalProvider:    runtime.SignalProvider,
 			ProvisionBoundary: runtime.ProvisionBoundary,
 			InstallBoundary:   runtime.InstallBoundary,

@@ -103,7 +103,7 @@ func TestGroupCommitIndependentCCC(t *testing.T) {
 
 	_, seedGID, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "Seed", map[string]any{"stream_id": "current"}, map[string]any{}),
-	}, gcBoundary, nil, nil)
+	}, gcBoundary, nil)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestGroupCommitIndependentCCC(t *testing.T) {
 	// other requests in the batch.
 	if _, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "StaleSeed", map[string]any{"stream_id": "stale"}, map[string]any{}),
-	}, gcBoundary, nil, nil); err != nil {
+	}, gcBoundary, nil); err != nil {
 		t.Fatalf("seed stale context: %v", err)
 	}
 

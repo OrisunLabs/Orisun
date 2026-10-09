@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/require"
@@ -13,7 +13,7 @@ import (
 func TestCatalogFoldsCreatedBoundaryLifecycle(t *testing.T) {
 	catalog := NewCatalog()
 
-	created := lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+	created := lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 		Boundary:    "orders",
 		Description: "Orders context",
 		Placement: boundarymodel.Placement{
@@ -28,13 +28,12 @@ func TestCatalogFoldsCreatedBoundaryLifecycle(t *testing.T) {
 	boundary, ok := catalog.Get("orders")
 	require.True(t, ok)
 	require.Equal(t, boundarymodel.StatusProvisioning, boundary.Status)
-	require.False(t, boundary.ExistedBeforeCatalog)
 	require.Equal(t, "Orders context", boundary.Description)
 	require.Equal(t, "postgres", boundary.Placement.Backend)
 	require.Equal(t, "sales", boundary.Placement.Namespace)
 	require.Equal(t, &coreeventstore.Position{CommitPosition: 10, PreparePosition: 2}, boundary.DefinitionPosition)
 
-	activated := lifecycleEvent(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	activated := lifecycleEvent(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 11, 3)
 	applied, err = catalog.Apply(activated)
@@ -51,9 +50,9 @@ func TestCatalogFoldsCreatedBoundaryLifecycle(t *testing.T) {
 func TestCatalogFoldsExistingStorageFailureAndRecovery(t *testing.T) {
 	catalog := NewCatalog()
 
-	_, err := catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
-		Boundary:             "billing",
-		ExistedBeforeCatalog: true,
+	_, err := catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
+		Boundary: "billing",
+
 		Placement: boundarymodel.Placement{
 			Backend:   "sqlite",
 			Namespace: "billing.db",
@@ -61,7 +60,7 @@ func TestCatalogFoldsExistingStorageFailureAndRecovery(t *testing.T) {
 	}, 1, 1))
 	require.NoError(t, err)
 
-	_, err = catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryFailed, adminevents.BoundaryProvisioningFailed{
+	_, err = catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryFailed, boundaryevents.BoundaryProvisioningFailed{
 		Boundary: "billing",
 		Error:    "database is locked",
 	}, 2, 2))
@@ -69,11 +68,10 @@ func TestCatalogFoldsExistingStorageFailureAndRecovery(t *testing.T) {
 
 	boundary, ok := catalog.Get("billing")
 	require.True(t, ok)
-	require.True(t, boundary.ExistedBeforeCatalog)
 	require.Equal(t, boundarymodel.StatusFailed, boundary.Status)
 	require.Equal(t, "database is locked", boundary.LastError)
 
-	_, err = catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	_, err = catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "billing",
 	}, 3, 3))
 	require.NoError(t, err)
@@ -86,16 +84,16 @@ func TestCatalogFoldsExistingStorageFailureAndRecovery(t *testing.T) {
 
 func TestCatalogDoesNotDowngradeActiveBoundary(t *testing.T) {
 	catalog := NewCatalog()
-	_, err := catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+	_, err := catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 		Boundary:  "orders",
 		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "public"},
 	}, 1, 1))
 	require.NoError(t, err)
-	_, err = catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	_, err = catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 2, 2))
 	require.NoError(t, err)
-	_, err = catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryFailed, adminevents.BoundaryProvisioningFailed{
+	_, err = catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryFailed, boundaryevents.BoundaryProvisioningFailed{
 		Boundary: "orders",
 		Error:    "late node-local failure",
 	}, 3, 3))
@@ -110,14 +108,14 @@ func TestCatalogDoesNotDowngradeActiveBoundary(t *testing.T) {
 func TestCatalogIgnoresOutcomeBeforeDefinition(t *testing.T) {
 	catalog := NewCatalog()
 
-	applied, err := catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	applied, err := catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 1, 1))
 	require.NoError(t, err)
 	require.True(t, applied)
 	require.Empty(t, catalog.List())
 
-	_, err = catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+	_, err = catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 		Boundary:  "orders",
 		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "public"},
 	}, 2, 2))
@@ -136,12 +134,12 @@ func TestCatalogRejectsInvalidLifecycle(t *testing.T) {
 	}{
 		{
 			name:  "outcome without boundary",
-			event: lifecycleEvent(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{}, 1, 1),
+			event: lifecycleEvent(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{}, 1, 1),
 			want:  "has no boundary",
 		},
 		{
 			name: "definition without backend",
-			event: lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+			event: lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 				Boundary:  "orders",
 				Placement: boundarymodel.Placement{Namespace: "public"},
 			}, 1, 1),
@@ -149,7 +147,7 @@ func TestCatalogRejectsInvalidLifecycle(t *testing.T) {
 		},
 		{
 			name: "failed without error",
-			event: lifecycleEvent(t, adminevents.EventTypeBoundaryFailed, adminevents.BoundaryProvisioningFailed{
+			event: lifecycleEvent(t, boundaryevents.EventTypeBoundaryFailed, boundaryevents.BoundaryProvisioningFailed{
 				Boundary: "orders",
 			}, 2, 2),
 			want: "empty error",
@@ -160,7 +158,7 @@ func TestCatalogRejectsInvalidLifecycle(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			catalog := NewCatalog()
 			if tt.name == "failed without error" {
-				_, err := catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+				_, err := catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 					Boundary: "orders",
 					Placement: boundarymodel.Placement{
 						Backend:   "postgres",
@@ -179,7 +177,7 @@ func TestCatalogRejectsInvalidLifecycle(t *testing.T) {
 
 func TestCatalogRejectsDuplicateDefinition(t *testing.T) {
 	catalog := NewCatalog()
-	definition := adminevents.BoundaryCreated{
+	definition := boundaryevents.BoundaryCreated{
 		Boundary: "orders",
 		Placement: boundarymodel.Placement{
 			Backend:   "postgres",
@@ -187,9 +185,9 @@ func TestCatalogRejectsDuplicateDefinition(t *testing.T) {
 		},
 	}
 
-	_, err := catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, definition, 1, 1))
+	_, err := catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, definition, 1, 1))
 	require.NoError(t, err)
-	_, err = catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, definition, 2, 2))
+	_, err = catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, definition, 2, 2))
 	require.ErrorContains(t, err, "already defined")
 }
 
@@ -200,7 +198,7 @@ func TestCatalogIgnoresOtherAdminEventsAndListsByName(t *testing.T) {
 	require.False(t, applied)
 
 	for i, name := range []string{"zeta", "alpha"} {
-		_, err := catalog.Apply(lifecycleEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+		_, err := catalog.Apply(lifecycleEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 			Boundary: name,
 			Placement: boundarymodel.Placement{
 				Backend:   "postgres",

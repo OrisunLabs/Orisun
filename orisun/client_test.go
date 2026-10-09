@@ -60,7 +60,7 @@ func TestOrisunServerSaveEventsKeepsEnvelopeSeparate(t *testing.T) {
 	saver := &capturePreparedSaver{}
 	server := &OrisunServer{eventStore: &EventStore{}, saveEvents: saver}
 
-	pos, err := server.SaveEvents(context.Background(), []EventWithMapTags{
+	pos, err := server.SaveEventsV2(context.Background(), []EventWithMapTags{
 		{
 			EventId:   "event-1",
 			EventType: "OrderPlaced",
@@ -70,7 +70,7 @@ func TestOrisunServerSaveEventsKeepsEnvelopeSeparate(t *testing.T) {
 			},
 			Metadata: map[string]any{},
 		},
-	}, "orders", nil, nil)
+	}, "orders", nil)
 	if err != nil {
 		t.Fatalf("SaveEvents returned error: %v", err)
 	}
@@ -100,12 +100,12 @@ func TestOrisunServerSaveEventsUsesPreparedBatch(t *testing.T) {
 	saver := &capturePreparedSaver{}
 	server := &OrisunServer{eventStore: &EventStore{}, saveEvents: saver}
 
-	_, err := server.SaveEvents(context.Background(), []EventWithMapTags{{
+	_, err := server.SaveEventsV2(context.Background(), []EventWithMapTags{{
 		EventId:   "event-1",
 		EventType: "OrderPlaced",
 		Data:      `{"order_id":"order-1","eventType":"stale"}`,
 		Metadata:  `{"trace_id":"trace-1"}`,
-	}}, "orders", nil, nil)
+	}}, "orders", nil)
 	if err != nil {
 		t.Fatalf("SaveEvents returned error: %v", err)
 	}

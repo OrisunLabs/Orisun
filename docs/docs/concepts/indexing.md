@@ -197,22 +197,10 @@ on the full declared `TEXT` field shape can
 therefore find its latest matching event without sorting the context's complete
 history.
 
-The PostgreSQL boundary schema version 4 migration rebuilds older API-managed
-indexes with the position columns. It verifies each physical definition against
-its metadata, preserves partial predicates and field types, and leaves unmanaged
-indexes untouched. Rebuilding runs transactionally during boundary initialization
-and holds an exclusive table lock; allow maintenance time and disk space for
-large indexes. A conflicting physical definition aborts the migration and rolls
-back earlier rebuilds. Subsequent startups skip the completed migration.
+Fresh stores create indexes in the current format. Startup rejects older storage
+versions instead of rebuilding historical index definitions. Index creation and
+retry are owned by the index API lifecycle.
 
-On the first SQLite startup after upgrading from an older physical index shape,
-Orisun atomically rebuilds API-managed indexes from their stored definitions.
-Large boundary files can make that first startup take longer and temporarily
-require space for rebuilding. The scalar-text index migration also rebuilds
-existing managed definitions, preserving their declared field types and using
-scalar-text expressions for `TEXT` fields. Partial conditions depend only on
-their own definition, never on another index. Subsequent startups skip the
-completed migration.
 
 ## Naming and safety
 

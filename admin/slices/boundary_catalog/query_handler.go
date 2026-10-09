@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 )
@@ -96,9 +96,9 @@ func replayCatalog(ctx context.Context, adminBoundary, name string, retriever Ev
 
 func lifecycleQuery(name string) coreeventstore.Query {
 	eventTypes := []string{
-		adminevents.EventTypeBoundaryCreated,
-		adminevents.EventTypeBoundaryActivated,
-		adminevents.EventTypeBoundaryFailed,
+		boundaryevents.EventTypeBoundaryCreated,
+		boundaryevents.EventTypeBoundaryActivated,
+		boundaryevents.EventTypeBoundaryFailed,
 	}
 	query := coreeventstore.Query{Criteria: make([]coreeventstore.Criterion, len(eventTypes))}
 	for i, eventType := range eventTypes {
