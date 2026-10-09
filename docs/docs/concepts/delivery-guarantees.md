@@ -3,7 +3,7 @@ title: Delivery Guarantees
 description: Understand ordered backend delivery, notification recovery, and replay.
 ---
 
-PostgreSQL, SQLite, or FoundationDB is the durable source of truth. Every
+PostgreSQL or SQLite is the durable source of truth. Every
 subscription event comes from a backend read. Core NATS carries
 empty boundary wake-up hints; it carries no application event data or metadata.
 
@@ -11,15 +11,15 @@ empty boundary wake-up hints; it carries no application event data or metadata.
 
 | Guarantee | How Orisun enforces it |
 | --- | --- |
+| Stable committed prefix | PostgreSQL preserves its ascending visibility barrier; SQLite serializes commits through one writer per boundary. |
 | Recovery from missed hints | Each subscription publishes a NATS hint after its idle threshold; receiving that hint resumes backend reads after the last successfully delivered position. Healthy NATS is required. |
 | Ordered delivery | One reader per subscription delivers matching events in ascending `(commit_position, prepare_position)` order and validates each complete batch before delivery. |
-| Stable committed prefix | PostgreSQL preserves its ascending visibility barrier; SQLite serializes commits through one writer per boundary; FoundationDB reads ordered committed versionstamps. |
 | Bounded memory | One pending wake-up and one bounded backend batch per subscription; handlers run sequentially and provide backpressure. |
 | Relay ownership | A boundary lease coordinates signal forwarding. Duplicate hints are harmless and never advance an event cursor. |
 
 ## Notifications are not the guarantee
 
-PostgreSQL `LISTEN/NOTIFY`, SQLite post-commit wake-ups, FoundationDB watches,
+PostgreSQL `LISTEN/NOTIFY`, SQLite post-commit wake-ups,
 tell a relay that a boundary may have new events. The relay forwards
 an empty hint on `ORISUN_NOTIFICATIONS___<boundary>.changed.v1`.
 

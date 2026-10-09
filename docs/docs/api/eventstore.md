@@ -135,9 +135,6 @@ queryable document:
 PostgreSQL and SQLite persist these values inside `data`. Their ordering and
 write-context columns are generated projections of that document, not separate
 writable values. PostgreSQL retains `pg_xact_id` as internal visibility bookkeeping.
-FoundationDB stores metadata and timestamps inside the document and derives
-positions from its native commit-ordered key. It derives write IDs from that key
-and the stored batch-end offset; no second transaction fills in positions.
 
 On retrieval, the backend extracts the usual envelope and removes **all
 top-level `__*` fields** from returned application `data`. Nested fields and
@@ -145,15 +142,6 @@ metadata values remain untouched. API and SDK event shapes stay unchanged.
 Content criteria and live subscription filters use reserved names, for example
 `{"key":"__eventId","value":"your-event-id"}`. Metadata is a JSON value under
 `__metadata`; this does not introduce dotted-path querying into nested objects.
-
-FoundationDB uses its native event-key range for criteria containing
-`__commitPosition` or `__writeId`, with any remaining tags applied within that
-range. Ordered `__commitPosition` predicates bound that native range;
-non-equality `__writeId` predicates can scan the full native event range because
-write IDs compare as strings. A `__preparePosition` criterion needs one of those
-anchors. These three
-fields cannot be secondary-index fields or conditions. Other FoundationDB
-criteria continue to require a ready covering index.
 
 Top-level keys in application event `data` beginning with `__` are reserved for
 Orisun, including names not currently in use. Writes containing such keys are
@@ -173,39 +161,18 @@ Content queries and index definitions now use `__eventType` instead of
 `eventType`. The API `event_type` field and SDK `eventType` property keep their
 existing names. There is no query-time alias for the old JSON key.
 
-Stop all Orisun servers sharing the storage before upgrading. At startup,
-Orisun migrates stored event discriminators, retained CCC observations, and
-index definitions created through the index API. PostgreSQL and SQLite rebuild
-affected managed indexes within their migration transaction. FoundationDB
-migrates in resumable batches before making the boundary available; its index
-entries retain the same values and positions. Existing positions, write IDs,
-and publisher checkpoints are preserved. The upgrade also moves stored event IDs
-into `data.__eventId`, removing the separate PostgreSQL/SQLite `event_id` column
-and FoundationDB record field. The remaining envelope migration replaces SQL
-columns with generated projections and rebuilds their indexes in the same
-transaction. FoundationDB migrates metadata, timestamps, and batch-end offsets
-in resumable batches, maintaining affected indexes. Historical events whose write
-context was never recorded continue to return an empty write ID. Large stores
-may take time to migrate.
+Stop all Orisun servers sharing the storage before upgrading. This release
+supports an in-place upgrade from `0.13.0`, preserving event documents, indexes,
+positions, write contexts, and projector checkpoints. Obsolete publisher
+checkpoint state is removed. Older and unversioned storage formats are rejected;
+the server does not automatically convert them.
 
-Update application criteria, subscription filters, and index declarations to
-`__eventType` before resuming traffic. Re-read command contexts after the upgrade;
-in-flight observations using the old key must not be reused. Indexes created
-directly with SQL are not managed by Orisun and must be reviewed separately.
-Older server binaries cannot be used with the migrated storage; take a backup
-before upgrading if you need to be able to restore the old format.
-
-If a legacy event already contains both `eventType` and `__eventType`, migration
-stops with a conflict instead of overwriting either value. Existing top-level
-`__eventId` values also block the event-ID migration, including JSON null. The
-remaining-envelope migration likewise rejects existing `__commitPosition`,
-`__preparePosition`, `__writeId`, `__dateCreated`, or `__metadata` fields;
-FoundationDB also reserves `__writeLastOffset` for its batch-end offset. Existing
-FoundationDB secondary indexes on commit-derived fields must be removed before
-that migration. Resolve any collision
-while the servers are stopped, then restart. Nested application fields and
-metadata are not renamed. Historical `eventType` was the store discriminator;
-after migration that unprefixed name is available for application data.
+Historical events whose write context was never recorded continue to return an
+empty write ID. To move an older store, export application events with its matching
+server version and import them into fresh current-format storage. Imports assign
+new positions and write IDs, so rebuild projections and obtain fresh CCC observations
+and subscription cursors. Back up storage before upgrading; older server binaries
+cannot open the upgraded schema.
 
 ## SaveEventsV2
 
@@ -383,11 +350,7 @@ non-equality operators; an older server does not understand this field.
 
 Range predicates may inspect more candidates than equality predicates.
 PostgreSQL and SQLite use exact decimal comparators for numeric ranges, so
-existing numeric-cast indexes do not directly accelerate that comparison. FoundationDB still requires
-a native position query or a ready covering index; it narrows a secondary-index
-scan by leading equality fields, filters candidates, and applies the requested
-position order and limit afterwards. Broad ranges can reach FoundationDB's
-transaction limits. Prefer selective equality fields alongside ranges.
+existing numeric-cast indexes do not directly accelerate that comparison. Prefer selective equality fields alongside ranges.
 
 ### Validation and limits
 
@@ -409,9 +372,7 @@ observations, and 16,384 tags across those criteria. These bounds prevent an
 individual write from creating unbounded query fan-out.
 
 PostgreSQL and SQLite can evaluate an unindexed content query correctly by
-scanning. FoundationDB requires each criterion to select a native position range
-through `__commitPosition` or `__writeId`, or have a ready covering secondary
-index; otherwise it returns `FAILED_PRECONDITION`. See [Indexing](../concepts/indexing).
+scanning. See [Indexing](../concepts/indexing).
 
 ### Unconditional append
 
@@ -668,10 +629,7 @@ malformed IDs return `INVALID_ARGUMENT`. The boundary must be active.
 
 The context is store-owned and commits atomically with its events. Rejected or
 rolled-back saves leave no context record. PostgreSQL and SQLite store one record
-per save alongside the event table. FoundationDB stores the context under the
-save's final versionstamp, splitting large contexts into values within the same
-transaction. Context storage counts toward FoundationDB's transaction-size
-budget. No application metadata fields are reserved or rewritten for this feature.
+per save alongside the event table. No application metadata fields are reserved or rewritten for this feature.
 
 ## GetEvents
 
@@ -1315,7 +1273,7 @@ The response contains:
 | `version` | Orisun release version embedded at build time. Local development builds report `dev`. |
 | `git_commit` | Source commit embedded at build time, or `unknown`. |
 | `build_time` | Build timestamp embedded by the release build, or `unknown`. |
-| `backend` | `STORAGE_BACKEND_POSTGRES`, `STORAGE_BACKEND_SQLITE`, or `STORAGE_BACKEND_FOUNDATIONDB`. |
+| `backend` | `STORAGE_BACKEND_POSTGRES` or `STORAGE_BACKEND_SQLITE`. |
 | `node_id` | UUID for this running server process. It changes when the process restarts. |
 | `capabilities` | Typed features supported by the connected server. |
 
@@ -1548,6 +1506,5 @@ The EventStore protobuf source lives at [`proto/eventstore.proto`](https://githu
 | `INVALID_ARGUMENT` | The request is malformed, uses invalid JSON, or references invalid index fields. |
 | `UNAUTHENTICATED` | Missing or invalid credentials. |
 | `PERMISSION_DENIED` | Authenticated user does not have a required role. |
-| `FAILED_PRECONDITION` | The boundary is not active, or a FoundationDB criterion has neither a native position range nor a ready covering secondary index. |
 | `ALREADY_EXISTS` | One or more observations changed during `SaveEventsV2`; re-query and retry if still valid. |
 | `INTERNAL` | Storage, publishing, or unexpected server failure. |

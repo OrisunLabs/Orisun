@@ -64,9 +64,8 @@ until the next release is published.
 | --- | --- | --- | --- | --- | --- |
 | SQLite | Embedded apps, edge services, development, single-node production | No | `orisun-sqlite` | `orisunlabs/orisun:sqlite` | `ghcr.io/orisunlabs/orisun:sqlite` |
 | PostgreSQL | Clustered deployments, larger datasets, shared database platforms | Yes | `orisun-pg` | `orisunlabs/orisun:pg` | `ghcr.io/orisunlabs/orisun:pg` |
-| FoundationDB | Distributed transactional key-value deployments | Yes | `orisun-fdb` | `orisunlabs/orisun:fdb` | `ghcr.io/orisunlabs/orisun:fdb` |
 
-All backends expose the same EventStore and Admin gRPC APIs. FoundationDB support is beta.
+Both backends expose the same EventStore and Admin gRPC APIs.
 
 ## Choose NATS mode
 
@@ -98,7 +97,6 @@ Download a release asset for your OS, architecture, and backend from [GitHub Rel
 | --- | --- |
 | `orisun-pg-<os>-<arch>` | PostgreSQL |
 | `orisun-sqlite-<os>-<arch>` | SQLite only |
-| `orisun-fdb-linux-<arch>` | FoundationDB only; beta; Linux only |
 
 For example, on Linux amd64:
 
@@ -343,7 +341,6 @@ Binary assets are attached to each GitHub release:
 | --- | --- |
 | `orisun-pg-linux-amd64`, `orisun-pg-darwin-arm64`, ... | PostgreSQL |
 | `orisun-sqlite-linux-amd64`, `orisun-sqlite-darwin-arm64`, ... | SQLite only |
-| `orisun-fdb-linux-amd64`, `orisun-fdb-linux-arm64` | FoundationDB only; beta; requires native FDB client libraries |
 
 Docker images are published to Docker Hub and GitHub Container Registry with the same backend flavor tags:
 
@@ -351,12 +348,10 @@ Docker images are published to Docker Hub and GitHub Container Registry with the
 | --- | --- |
 | `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
-| `orisunlabs/orisun:fdb` | FoundationDB only, beta, includes the FDB client library |
 | `orisunlabs/orisun:<version>-pg` | PostgreSQL-compatible release |
 | `orisunlabs/orisun:<version>-sqlite` | SQLite-only release |
-| `orisunlabs/orisun:<version>-fdb` | FoundationDB-only release |
 
-Use the same tag names under `ghcr.io/orisunlabs/orisun`, for example `ghcr.io/orisunlabs/orisun:0.10.0-fdb`.
+Use the same tag names under `ghcr.io/orisunlabs/orisun`, for example `ghcr.io/orisunlabs/orisun:0.10.0-pg`.
 
 ## Next steps
 

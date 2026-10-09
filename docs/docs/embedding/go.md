@@ -23,7 +23,6 @@ Backend-specific embedding packages keep deployments explicit:
 
 - `embedded/postgres` imports the PostgreSQL backend.
 - `embedded/sqlite` imports the SQLite backend.
-- `embedded/foundationdb` imports the FoundationDB backend when built with `-tags foundationdb`.
 - Neither package needs the unused backend.
 
 Use embedding when Orisun should be part of your service process. Use the standalone server when you want a separate operational boundary and language-agnostic gRPC access.
@@ -106,38 +105,6 @@ store, err := embeddedsqlite.Start(
 
 SQLite remains single-node only. Keep `cfg.Nats.Cluster.Enabled = false`.
 
-## FoundationDB Embedding
-
-FoundationDB embedding is beta. It requires the native FoundationDB client libraries and a build with the `foundationdb` tag. Treat FDB storage layout and operational defaults as subject to breaking change until the backend graduates from beta.
-
-```go
-import (
-	"context"
-
-	embeddedfdb "github.com/OrisunLabs/Orisun/embedded/foundationdb"
-	"github.com/OrisunLabs/Orisun/config"
-	"github.com/OrisunLabs/Orisun/logging"
-)
-
-func start(ctx context.Context) (*embeddedfdb.Store, error) {
-	cfg := config.InitializeConfig()
-	cfg.Backend.Type = "foundationdb"
-	cfg.FoundationDB.ClusterFile = "/etc/foundationdb/fdb.cluster"
-	logger := logging.InitializeDefaultLogger(cfg.Logging)
-	return embeddedfdb.Start(ctx, cfg, logger)
-}
-```
-
-Use the same NATS options as the other embedded stores. Build the host service with:
-
-```bash
-go build -tags foundationdb ./...
-```
-
-Application boundaries must exist and be `ACTIVE` before they are used by
-`SaveEventsV2`, reads, subscriptions, or index management. Embedded stores expose
-the same event-backed lifecycle as the Admin gRPC API.
-
 ## Embedded boundary management
 
 The examples below use:
@@ -170,8 +137,7 @@ if err != nil {
 _ = created // the initial status is PROVISIONING
 ```
 
-For PostgreSQL use backend `postgres` and a schema namespace. For FoundationDB
-use backend `foundationdb` and the configured root. SQLite requires the
+For PostgreSQL use backend `postgres` and a schema namespace. SQLite requires the
 namespace to equal the boundary name.
 
 Creation is asynchronous because the method first emits a durable definition
@@ -253,7 +219,7 @@ use(boundaries, boundary)
 
 At startup, embedded stores replay catalog definitions into the local runtime.
 PostgreSQL uses `ORISUN_PG_ADMIN_SCHEMA` only to locate the admin boundary;
-application schema placements come from the catalog. SQLite and FoundationDB
+application schema placements come from the catalog. SQLite
 also install application boundaries only from catalog definitions.
 
 Startup upgrades storage from `0.13.0` without rewriting event

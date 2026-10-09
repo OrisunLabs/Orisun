@@ -28,10 +28,6 @@ func TestAdminSlicesAndEmbeddedPackagesDoNotDependOnGRPCOrProtobuf(t *testing.T)
 			name: "embedded packages",
 			args: []string{"./embedded/..."},
 		},
-		{
-			name: "embedded FoundationDB build",
-			args: []string{"-tags=foundationdb", "./embedded/foundationdb"},
-		},
 	}
 
 	for _, testCase := range testCases {

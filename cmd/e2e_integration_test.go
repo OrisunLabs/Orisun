@@ -42,9 +42,6 @@ type E2ETestSuite struct {
 	natsStoreDir      string
 	sqliteDir         string
 	backend           string
-	buildTags         string
-	fdbClusterFile    string
-	fdbRoot           string
 }
 
 func setupE2ETest(t *testing.T) *E2ETestSuite {
@@ -137,15 +134,9 @@ func (s *E2ETestSuite) buildBinary(t *testing.T) {
 
 	// Set binary name
 	binaryName := fmt.Sprintf("orisun-%s-%s", targetOS, targetArch)
-	if s.buildTags != "" {
-		binaryName += "-" + s.buildTags
-	}
 	s.binaryPath = filepath.Join(buildDir, binaryName)
 
 	tags := "development=false"
-	if s.buildTags != "" {
-		tags += "," + s.buildTags
-	}
 
 	// Build the binary using the same command as build.sh
 	cmd := exec.Command("go", "build",
@@ -196,12 +187,6 @@ func (s *E2ETestSuite) startBinary(t *testing.T) {
 	}
 	if s.natsStoreDir != "" {
 		env = append(env, fmt.Sprintf("ORISUN_NATS_STORE_DIR=%s", s.natsStoreDir))
-	}
-	if s.fdbClusterFile != "" {
-		env = append(env, fmt.Sprintf("ORISUN_FDB_CLUSTER_FILE=%s", s.fdbClusterFile))
-	}
-	if s.fdbRoot != "" {
-		env = append(env, fmt.Sprintf("ORISUN_FDB_ROOT=%s", s.fdbRoot))
 	}
 
 	env = append(os.Environ(), env...)

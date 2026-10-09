@@ -12,8 +12,7 @@ release is `0.10.0`; APIs marked as upcoming are part of the next release.
 
 The mechanism behind that promise is **Command Context Consistency**: commands query the exact events they depend on, and writes succeed only if that context has not changed.
 
-It stores the event log transactionally in PostgreSQL, SQLite, or FoundationDB
-beta, and delivers committed events from backend reads with Core NATS wake-ups, including
+It stores the event log transactionally in PostgreSQL or SQLite, and delivers committed events from backend reads with Core NATS wake-ups, including
 catch-up replay and live subscriptions. Storage, consistency checks,
 publishing, indexes, auth, and gRPC APIs ship as one deployable server.
 
@@ -26,7 +25,7 @@ publishing, indexes, auth, and gRPC APIs ship as one deployable server.
 - **Runtime boundary management.** New and imported physical boundaries are
   durable lifecycle events, provisioned without restarting the server or
   maintaining a startup boundary list.
-- **Same API on every backend.** SQLite, PostgreSQL, and FoundationDB expose the
+- **Same API on every backend.** SQLite and PostgreSQL expose the
   identical gRPC surface, so deployments can grow without client changes.
 
 ## How it works
@@ -48,10 +47,9 @@ SQLite is the fastest local loop. Event log, admin state, indexes, projector che
    and wait for it to become active.
 5. Save an event with [Save your first event](/docs/getting-started#save-your-first-event).
 
-Move to PostgreSQL or FoundationDB when you need multiple Orisun nodes or
+Move to PostgreSQL when you need multiple Orisun nodes or
 database-managed operations. SQLite is single-node only and requires NATS
-clustering disabled. FoundationDB support is beta; read the FoundationDB
-operations guide before using it in production.
+clustering disabled.
 
 ## Pick your path
 

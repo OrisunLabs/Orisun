@@ -15,7 +15,6 @@ Release assets are backend-specific:
 | --- | --- |
 | `orisun-pg-<os>-<arch>` | The deployment only uses PostgreSQL. |
 | `orisun-sqlite-<os>-<arch>` | The deployment only uses SQLite. |
-| `orisun-fdb-linux-<arch>` | The deployment uses FoundationDB; beta, Linux only, requires native FDB client libraries. |
 
 For direct binary deployment:
 
@@ -58,7 +57,6 @@ Images are published to both Docker Hub and GitHub Container Registry. The Docke
 | --- | --- |
 | `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
-| `orisunlabs/orisun:fdb` | FoundationDB only, beta, includes the FDB client library |
 
 The same tags are also available under `ghcr.io/orisunlabs/orisun`.
 
@@ -206,57 +204,6 @@ Expected notification relay behavior:
 - One node holds the boundary relay lease and forwards backend signals as hints.
 - Other nodes may log lock contention for that boundary.
 - If the owner exits, another node acquires the lease and emits an initial hint. Subscription idle watchdogs publish hints if no notifications arrive; healthy NATS is required.
-
-## FoundationDB topology
-
-FoundationDB support in Orisun is beta. Use this topology for controlled production pilots, but expect FDB-specific storage layout, index internals, and operational defaults to remain eligible for breaking changes until the backend graduates from beta.
-
-A FoundationDB deployment has three independently scalable tiers:
-
-```text
-                gRPC clients
-                     │
-       ┌─────────────┼─────────────┐
-       │ Orisun node │ Orisun node │ Orisun node     stateless tier
-       │  + NATS     │  + NATS     │  + NATS         JetStream cluster (quorum: 3)
-       └──────┬──────┴──────┬──────┴──────┬───┘
-              │  libfdb_c + fdb.cluster file
-       ┌──────┴─────────────┴─────────────┴───┐
-       │           FoundationDB cluster        │
-       │  coordinators (3) · proxies/resolvers │
-       │  transaction logs (NVMe) · storage    │
-       └───────────────────────────────────────┘
-```
-
-**Orisun tier.** Orisun nodes are effectively stateless with this backend: all durable state lives in FoundationDB. Core NATS carries empty hints; relay ownership, indexes, users, and projector state live in FoundationDB. Scale horizontally behind any gRPC load balancer. One notification relay per boundary self-elects through an FDB lease lock and fails over automatically. Run at least three Orisun nodes when NATS clustering is enabled, with the same shared/unique variable split as [Clustered PostgreSQL](#clustered-postgresql) (minus the PostgreSQL variables, plus `ORISUN_FDB_CLUSTER_FILE`).
-
-**FoundationDB tier by size:**
-
-| Tier | Layout | Redundancy |
-| --- | --- | --- |
-| Starter | 3 machines, each running storage + log + stateless `fdbserver` processes | `double ssd` |
-| Production | 3 dedicated log-class machines on NVMe + 5 or more storage-class + 2–3 stateless-class (proxies, resolvers) | `triple ssd` |
-| Multi-region | Primary + synchronous satellite for transaction logs + asynchronous remote region | `triple` with satellite redundancy |
-
-Process classes are the scaling levers:
-
-- **Transaction logs** sit on the commit critical path because every write waits for a tLog fsync. Give them dedicated NVMe and nothing else to do.
-- **Storage servers** absorb reads and background data movement; add them for data volume and read throughput.
-- **Proxies and resolvers** are stateless CPU-bound processes; add them when commit throughput saturates.
-
-Orisun's write scaling rides this directly: positions come from commit versionstamps, so adding proxies, logs, and storage raises parallel commit throughput while every boundary stays totally ordered.
-
-**Kubernetes.** Use the official [fdb-kubernetes-operator](https://github.com/FoundationDB/fdb-kubernetes-operator) with a `FoundationDBCluster` resource. The operator maintains the cluster file in a ConfigMap; mount it into Orisun pods and point `ORISUN_FDB_CLUSTER_FILE` at it. Orisun itself is a plain Deployment.
-
-**Operational notes:**
-
-- The `libfdb_c` client major version must match the server. The multi-version client allows rolling server upgrades; use the published `orisunlabs/orisun:fdb` image or bake the client library into your own Orisun image. Release FDB binaries are Linux-only and still require the client library at runtime.
-- Backups: `fdbbackup` agents stream continuous backups to S3-compatible storage with point-in-time restore. This replaces the PostgreSQL dump/restore story.
-- Monitoring: feed `fdbcli status json` (or an exporter built on it) into your metrics stack. Watch commit latency, transaction log queue depth, storage lag, and transaction conflict rate. Conflict rate maps directly to Orisun consistency-condition retries on contended aggregates.
-- Coordinators: 3 spread across failure domains in one datacenter, 5 across multiple.
-- Bound client-side stalls with `ORISUN_FDB_TRANSACTION_TIMEOUT_MS` (default 10s) so a partitioned cluster surfaces as errors instead of hung requests.
-- Production runbook: see [FoundationDB operations](./foundationdb) for client libraries, cluster-file handling, backups, failover expectations, and release gates.
-
 
 ## PgBouncer
 

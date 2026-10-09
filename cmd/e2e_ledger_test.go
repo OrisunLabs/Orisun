@@ -75,9 +75,8 @@ func runLedgerWorkloadWithConfig(t *testing.T, suite *E2ETestSuite, cfg ledgerWo
 		return &pb.Query{Criteria: criteria}
 	}
 
-	// Covering index on account_id through the public CreateIndex RPC. The
-	// FoundationDB backend requires it for criteria reads and consistency
-	// checks; PostgreSQL and SQLite use it as a partial btree index.
+	// Create an account_id index through the public CreateIndex RPC to
+	// accelerate criteria reads and consistency checks.
 	_, err := client.CreateIndex(ctx, &pb.CreateIndexRequest{
 		Boundary: boundary,
 		Name:     "account",

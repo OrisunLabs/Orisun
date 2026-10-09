@@ -1,7 +1,6 @@
 .root {
   --benchmark-postgres: #08745f;
   --benchmark-sqlite: #b2762c;
-  --benchmark-foundationdb: #60756e;
   margin: 1.25rem 0 2.5rem;
 }
 
@@ -190,7 +189,6 @@
   .root {
     --benchmark-postgres: #0b9d80;
     --benchmark-sqlite: #d3a058;
-    --benchmark-foundationdb: #80978f;
   }
 
   .button,
@@ -216,7 +214,6 @@
 [data-theme='dark'] .root {
   --benchmark-postgres: #68cfa9;
   --benchmark-sqlite: #f3c35e;
-  --benchmark-foundationdb: #8ba49b;
 }
 
 [data-theme='dark'] .chartCard {

@@ -7,11 +7,6 @@ const clients = [1, 4, 16, 64, 256] as const;
 const backends = [
   {key: 'postgres', label: 'PostgreSQL', color: 'var(--benchmark-postgres)'},
   {key: 'sqlite', label: 'SQLite', color: 'var(--benchmark-sqlite)'},
-  {
-    key: 'foundationdb',
-    label: 'FoundationDB',
-    color: 'var(--benchmark-foundationdb)',
-  },
 ] as const;
 
 type BackendKey = (typeof backends)[number]['key'];
@@ -30,12 +25,10 @@ const workloads: Record<string, Workload> = {
     throughput: {
       postgres: [507.057, 1078.29, 3600.419, 9495.733, 16987.907],
       sqlite: [2479.517, 6296.322, 12930.323, 17165.543, 18542.239],
-      foundationdb: [186.232, 697.483, 2023.832, 3920.136, 5578.222],
     },
     p99: {
       postgres: [5.397, 9.484, 11.212, 15.516, 34.342],
       sqlite: [1.171, 2.252, 3.612, 10.924, 40.419],
-      foundationdb: [16.797, 16.101, 22.241, 53.926, 219.642],
     },
   },
   'ccc-100': {
@@ -44,12 +37,10 @@ const workloads: Record<string, Workload> = {
     throughput: {
       postgres: [17996.59, 26546.417, 35906.252, 25352.725, 28479.044],
       sqlite: [38996.561, 57389.554, 60761.534, 55135.686, 57532.875],
-      foundationdb: [8473.317, 14266.569, 20012.981, 20322.803, 18502.629],
     },
     p99: {
       postgres: [13.631, 42.422, 89.547, 498.837, 1323.518],
       sqlite: [8.158, 18.798, 56.144, 240.365, 653.447],
-      foundationdb: [55.127, 115.158, 302.967, 1436.641, 3271.168],
     },
   },
   'unconditional-1': {
@@ -58,12 +49,10 @@ const workloads: Record<string, Workload> = {
     throughput: {
       postgres: [494.496, 1062.736, 3685.721, 10747.267, 19888.892],
       sqlite: [2064.827, 6688.316, 13978.502, 22837.898, 27279.773],
-      foundationdb: [159.598, 719.923, 1946.447, 3895.923, 4973.278],
     },
     p99: {
       postgres: [10.131, 12.669, 14.109, 15.79, 34.191],
       sqlite: [2.233, 1.965, 4.414, 8.844, 24.108],
-      foundationdb: [36.093, 18.025, 30.723, 68.581, 313.913],
     },
   },
   'conditional-read': {
@@ -72,12 +61,10 @@ const workloads: Record<string, Workload> = {
     throughput: {
       postgres: [4553.311, 14707.896, 34931.156, 48902.254, 52509.941],
       sqlite: [10109.636, 26105.268, 77263.054, 91564.157, 98985.075],
-      foundationdb: [973.326, 3944.973, 9804.822, 14785.347, 20421.476],
     },
     p99: {
       postgres: [7.354, 7.883, 14.837, 44.517, 208.295],
       sqlite: [7.822, 8.877, 7.727, 16.429, 81.359],
-      foundationdb: [30.19, 21.239, 49.828, 124.749, 278.627],
     },
   },
   'projection-read': {
@@ -86,12 +73,10 @@ const workloads: Record<string, Workload> = {
     throughput: {
       postgres: [133332.882, 261598.492, 371555.933, 356194.84, 342457.467],
       sqlite: [82999.818, 303732.639, 712450.512, 765185.758, 767918.573],
-      foundationdb: [49899.824, 143197.416, 235730.481, 260228.181, 264529.288],
     },
     p99: {
       postgres: [21.895, 45.032, 120.113, 379.093, 2946.76],
       sqlite: [43.09, 39.307, 54.851, 146.624, 599.552],
-      foundationdb: [52.616, 101.209, 203.865, 486.885, 1696.57],
     },
   },
   mixed: {
@@ -100,12 +85,10 @@ const workloads: Record<string, Workload> = {
     throughput: {
       postgres: [253.133, 569.73, 2072.369, 6151.144, 12897.376],
       sqlite: [1448.192, 4407.705, 8848.472, 12329.853, 13427.223],
-      foundationdb: [118.2, 503.697, 1575.884, 3954.684, 6302.919],
     },
     p99: {
       postgres: [12.957, 20.894, 21.763, 28.204, 52.552],
       sqlite: [5.178, 4.812, 7.251, 20.164, 49.076],
-      foundationdb: [21.63, 17.386, 26.431, 44.31, 98.578],
     },
   },
 };
@@ -174,7 +157,7 @@ function Chart({id, metric, title, workload}: ChartProps) {
           {title} for {workload.label}
         </title>
         <desc id={`${id}-description`}>
-          Comparison of PostgreSQL, SQLite, and FoundationDB at 1, 4, 16, 64,
+          Comparison of PostgreSQL and SQLite at 1, 4, 16, 64,
           and 256 clients.
         </desc>
 

@@ -14,10 +14,9 @@ needed for this upgrade.
 | --- | --- | --- |
 | PostgreSQL | Per-boundary schema version `4`. | Schema version `5`; removes the obsolete publisher checkpoint table. |
 | SQLite | Event version `6`; metadata version `1`. | Event version `7`, metadata version `2`; removes the obsolete publisher checkpoint table. |
-| FoundationDB | Completed `reserved_event_type`, `event_id_document`, and `envelope_document` stages. | Per-boundary schema version `1`; replaces completed progress markers. |
 
 PostgreSQL upgrades commit with boundary initialization. SQLite upgrades commit
-inside a savepoint. FoundationDB replaces completed progress markers atomically.
+inside a savepoint.
 Interrupted transactions leave the previous markers intact, so startup can retry.
 No physical indexes or event documents are rebuilt. The runtime uses only current
 documents; it does not resume unfinished old conversion jobs or serve multiple
@@ -27,8 +26,7 @@ Events saved before write-context recording retain their missing evidence: their
 `write_id` is empty, and no consistency observations are fabricated. New writes
 always persist their actual context.
 
-Older versions, unversioned PostgreSQL/SQLite stores, and incomplete FoundationDB
-conversion stages are rejected without rewriting their events. For these stores,
+Older versions and unversioned PostgreSQL/SQLite stores are rejected without rewriting their events. For these stores,
 use the export/import procedure below.
 
 Do not change version markers to bypass validation. The marker certifies the

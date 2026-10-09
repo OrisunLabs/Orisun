@@ -135,65 +135,6 @@ concurrency increased from 1 to 256.
 These results describe the single-node SQLite backend; SQLite clustering is
 not supported.
 
-## FoundationDB results
-
-The FoundationDB results below use the same July 30, 2026 workload, client
-concurrency, dataset, payload, warm-up, and measurement duration. All 30
-measured points completed with zero foreground and background request errors.
-
-### Throughput
-
-Values are events per second.
-
-| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| CCC append, 1 event | 186 | 697 | 2,024 | 3,920 | **5,578** |
-| CCC append, 100 events | 8,473 | 14,267 | 20,013 | **20,323** | 18,503 |
-| Unconditional append, 1 event | 160 | 720 | 1,946 | 3,896 | **4,973** |
-| Conditional read | 973 | 3,945 | 9,805 | 14,785 | **20,421** |
-| Projection read | 49,900 | 143,197 | 235,730 | 260,228 | **264,529** |
-| Append with four readers | 118 | 504 | 1,576 | 3,955 | **6,303** |
-
-The 100-event CCC workload saturated around 16 to 64 clients. Projection
-throughput continued to increase through 256 clients, but the final step added
-little throughput and substantially more latency.
-
-### Tail latency
-
-Values are foreground request p99 latency in milliseconds.
-
-| Workload | 1 client | 4 clients | 16 clients | 64 clients | 256 clients |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| CCC append, 1 event | 16.80 | 16.10 | 22.24 | 53.93 | 219.64 |
-| CCC append, 100 events | 55.13 | 115.16 | 302.97 | 1,436.64 | 3,271.17 |
-| Unconditional append, 1 event | 36.09 | 18.03 | 30.72 | 68.58 | 313.91 |
-| Conditional read | 30.19 | 21.24 | 49.83 | 124.75 | 278.63 |
-| Projection read | 52.62 | 101.21 | 203.87 | 486.89 | 1,696.57 |
-| Append with four readers | 21.63 | 17.39 | 26.43 | 44.31 | 98.58 |
-
-During the mixed workload, the four background readers sustained 180,167,
-200,799, 170,998, 111,998, and 43,930 events per second as foreground writer
-concurrency increased from 1 to 256.
-
-### Test environment
-
-- Orisun commit `53e5578`, built as FoundationDB server and benchmark binaries
-  with Go 1.26.5
-- FoundationDB 7.3.77 arm64 in Docker Desktop, with one `fdbserver` process
-- `ssd-2` storage and log engines, single redundancy, and no machine fault
-  tolerance
-- Apple MacBook Pro arm64, 10 logical CPUs, 32 GB RAM, host SSD
-- benchmark runner and Orisun server on the host; FoundationDB in local Docker
-- a fresh FoundationDB root and benchmark boundary
-- 1,000,000 seed events, 100,000 indexed contexts, and approximately 256 bytes
-  per event
-- 5-second warm-up and 30-second measurement per point
-
-[Download the raw FoundationDB CSV](/benchmarks/foundationdb-2026-07-30.csv).
-This is a single-process FoundationDB baseline. It does not represent a
-fault-tolerant FoundationDB cluster.
-
-
 ## Default benchmark
 
 The default run pre-populates one clean boundary with 1,000,000 events spread

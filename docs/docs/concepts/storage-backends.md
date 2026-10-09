@@ -1,12 +1,10 @@
 ---
 title: Storage Backends
-description: Choose between PostgreSQL, SQLite, and FoundationDB deployment profiles.
+description: Choose between PostgreSQL and SQLite deployment profiles.
 ---
 
-Orisun supports PostgreSQL, SQLite, and FoundationDB. The backend is selected
+Orisun supports PostgreSQL and SQLite. The backend is selected
 with `ORISUN_BACKEND` or by using a backend-specific binary or Docker image.
-
-FoundationDB support is beta. It is tested for correctness and failover, but storage layout, index internals, and operational contracts may still receive breaking changes while the backend hardens.
 
 ## Backend Matrix
 
@@ -14,7 +12,6 @@ FoundationDB support is beta. It is tested for correctness and failover, but sto
 | --- | --- | --- | --- |
 | `postgres` | Production clusters, larger datasets, shared database platforms | Yes | `pgx` |
 | `sqlite` | Embedded apps, edge, development, low-ops single-node production | No | `zombiezen.com/go/sqlite` |
-| `foundationdb` | Distributed transactional key-value deployments | Yes | FoundationDB Go binding; beta |
 
 ## PostgreSQL
 
@@ -41,37 +38,6 @@ PostgreSQL mode stores two ordering-related values:
 
 Do not use PostgreSQL internal transaction IDs as application cursors. Older
 storage formats before `0.13.0` are rejected. See [Positions and Ordering](./positions).
-
-## FoundationDB
-
-FoundationDB is a beta clustered backend built on ordered key-value transactions. Use the `orisun-fdb` release binary, the `orisunlabs/orisun:fdb` / `ghcr.io/orisunlabs/orisun:fdb` image, or build your own binary with the `foundationdb` build tag and native FoundationDB client libraries.
-
-FoundationDB stores:
-
-- event records in ordered per-boundary key ranges
-- projector checkpoints
-- admin state
-- index metadata and secondary index keys
-- watch signal keys for notification relay wake-ups
-- token-fenced notification relay lease locks
-
-```bash
-go build -tags foundationdb ./cmd/orisun-fdb
-
-ORISUN_BACKEND=foundationdb
-ORISUN_FDB_CLUSTER_FILE=/etc/foundationdb/fdb.cluster
-ORISUN_FDB_ROOT=orisun
-```
-
-Criteria queries keep the same public API. FoundationDB requires each criterion
-to select a native range through `__commitPosition` or `__writeId`, or have a
-ready covering secondary index. This applies to reads and every `SaveEventsV2`
-observation. Unsupported criteria fail with `FAILED_PRECONDITION`, avoiding
-boundary-wide scans and keeping conflict ranges scoped to the selected events.
-
-FoundationDB assigns event positions with commit versionstamps instead of a per-boundary counter. Plain appends can commit in parallel; writes with consistency observations track conflicts on the native event or secondary-index ranges selected by those queries, so commands on unrelated contexts in one boundary commit concurrently.
-
-For cluster layout, process classes, Kubernetes, backups, monitoring, lock failover, and release gates, see [FoundationDB topology](../operations/deployment#foundationdb-topology) and [FoundationDB operations](../operations/foundationdb).
 
 ## SQLite
 
@@ -125,12 +91,6 @@ each catalogued boundary to files:
 /var/lib/orisun/sqlite/orisun_admin.db
 /var/lib/orisun/sqlite/orisun_admin_metadata.db
 ```
-
-FoundationDB maps each boundary to tuple-encoded key ranges under
-`ORISUN_FDB_ROOT`. A FoundationDB placement uses backend `foundationdb` and the
-configured root as its namespace. Because this backend is beta, startup does
-not discover or migrate legacy key ranges into the catalog; define boundaries
-through `CreateBoundary`.
 
 ## Migrating between backends
 

@@ -3,7 +3,7 @@ title: Indexing
 description: Create JSON indexes for criteria queries and CCC checks.
 ---
 
-Criteria queries match JSON payload fields. Without indexes, PostgreSQL and SQLite reads and CCC checks may scan the full boundary event table. FoundationDB requires either a native position range (anchored by `__commitPosition` or `__writeId`) or a ready covering secondary index. Other uncovered criteria return `FAILED_PRECONDITION`.
+Criteria queries match JSON payload fields. Without indexes, PostgreSQL and SQLite reads and CCC checks may scan the full boundary event table.
 
 Create indexes for fields used in:
 
@@ -70,18 +70,11 @@ This lets each criterion use its own matching index without sorting all events
 matching the combined OR query. Index each remaining criterion shape; an
 unindexed branch can still scan history even when another branch is indexed.
 
-FoundationDB needs a ready covering index for each criterion that does not
-select a native range through `__commitPosition` or `__writeId`. A V2 request with several observations can therefore depend on
-several indexes; create and wait for all of them before enabling that command
-path.
-
 Create indexes for every criterion shape used by high-volume command paths. A
 simple `customer_id` criterion needs the simple index above; a criterion on
 `customer_id AND region` should have a composite index with both fields. On
 PostgreSQL and SQLite, unindexed criteria remain correct but can scan the
-boundary event table. FoundationDB rejects a criteria read or CCC observation with
-`FAILED_PRECONDITION` if it has neither a native position range nor a ready
-covering secondary index.
+boundary event table.
 
 PostgreSQL group commit bulk-inserts accepted multi-event saves. For
 burst-oriented workloads, start performance testing with
@@ -173,7 +166,7 @@ grpcurl -H "$AUTH" \
 
 Each definition includes its fields, conditions, combinator, and state.
 `BUILDING` means the index is registered but its backfill has not completed;
-`READY` means it can be used. FoundationDB exposes its live backfill state.
+`READY` means it can be used.
 Synchronous PostgreSQL and SQLite creation normally returns only after the
 index is ready.
 

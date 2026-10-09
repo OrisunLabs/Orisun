@@ -13,7 +13,7 @@ Two properties define Orisun's position:
 
 1. **Consistency is scoped by event content, not by a fixed stream.** A command preserves every complete event query it depended on together with that query's latest matching position, then saves only if all of those observations are still current. This is Orisun's [Command Context Consistency](./concepts/command-context-consistency) model.
 2. **The event store and the delivery layer are one system.** The durable log
-   in PostgreSQL, SQLite, or FoundationDB is the source of truth; embedded NATS
+   in PostgreSQL or SQLite is the source of truth; embedded NATS
    Core NATS carries boundary hints; subscriptions deliver events from ordered
    backend reads and recover missed hints through NATS idle watchdog messages. See
    [Delivery Guarantees](./concepts/delivery-guarantees).
@@ -24,7 +24,7 @@ Most adjacent tools optimize one of consistency, throughput, simplicity, or deco
 
 | Tool | Consistency model | Source of truth | Delivery | Ops model |
 | --- | --- | --- | --- | --- |
-| Orisun | Content-scoped optimistic (CCC) | PostgreSQL, SQLite, or FoundationDB | Ordered backend replay and subscriptions, hints plus idle watchdog | One deployable server |
+| Orisun | Content-scoped optimistic (CCC) | PostgreSQL or SQLite | Ordered backend replay and subscriptions, hints plus idle watchdog | One deployable server |
 | Kafka | Partition order; no command consistency check | Kafka log (retention-bounded) | Log tailing by offset | Broker cluster (KRaft or ZooKeeper) |
 | EventStoreDB | Stream / aggregate optimistic (expected revision) | EventStoreDB store | Subscriptions + projections | Dedicated server |
 | PostgreSQL `LISTEN/NOTIFY` | None | Your tables | Best-effort notifications (≤ 8 KB, not durable, no replay) | Existing Postgres |

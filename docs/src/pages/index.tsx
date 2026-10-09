@@ -100,12 +100,6 @@ const backends = [
     summary: 'Multi-node Orisun deployments with mature database operations and shared storage.',
     details: ['cluster locks', 'schema boundaries', 'PgBouncer'],
   },
-  {
-    name: 'FoundationDB',
-    href: '/docs/operations/foundationdb',
-    summary: 'Beta clustered backend with ordered key ranges and parallel commits.',
-    details: ['versionstamps', 'fenced leases', 'covering indexes'],
-  },
 ];
 
 const docGroups: {title: string; links: LinkItem[]}[] = [
@@ -480,8 +474,8 @@ export default function Home(): ReactNode {
               <span className={styles.eyebrow}>Deploy your way</span>
               <h2>Keep the API. Change the operational shape.</h2>
               <p>
-                Start with a complete SQLite server, then use PostgreSQL or the FoundationDB
-                beta backend when the deployment needs multiple nodes or distributed storage.
+                Start with a complete SQLite server, then use PostgreSQL
+                when the deployment needs multiple nodes or shared database operations.
               </p>
             </div>
             <div className={styles.backendGrid}>

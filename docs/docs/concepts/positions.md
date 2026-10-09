@@ -16,7 +16,7 @@ A position has two fields:
 
 Ordering within a boundary is the tuple `(commit_position, prepare_position)`, ascending. Positions are per boundary, so they are not comparable across boundaries.
 
-Treat positions as opaque ordering tokens. Some backends store dense integer sequences; FoundationDB encodes commit versionstamp data into the same `int64` pair, so values remain ordered and unique but are not guaranteed to be gap-free.
+Treat positions as opaque ordering tokens. Values are ordered and unique within a boundary, but need not be gap-free.
 
 ## PostgreSQL transaction IDs
 

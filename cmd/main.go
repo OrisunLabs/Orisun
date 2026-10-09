@@ -8,7 +8,6 @@ import (
 	"time"
 
 	c "github.com/OrisunLabs/Orisun/config"
-	fdbbackend "github.com/OrisunLabs/Orisun/foundationdb"
 	l "github.com/OrisunLabs/Orisun/logging"
 	"github.com/OrisunLabs/Orisun/orisun"
 	pg "github.com/OrisunLabs/Orisun/postgres"
@@ -86,26 +85,6 @@ func initializeBackend(ctx context.Context, config c.AppConfig, js jetstream.Jet
 			ProvisionBoundary: runtime.ProvisionBoundary,
 			InstallBoundary:   runtime.InstallBoundary,
 			BootstrapBoundary: &adminBoundary,
-		}, nil
-	case "foundationdb":
-		runtime, err := fdbbackend.InitializeFoundationDBRuntime(
-			ctx,
-			config.FoundationDB,
-			config.Admin,
-			logger,
-		)
-		if err != nil {
-			return server.Backend{}, err
-		}
-		return server.Backend{
-			SaveEvents:        runtime.SaveEvents,
-			GetEvents:         runtime.GetEvents,
-			LockProvider:      runtime.LockProvider,
-			AdminDB:           runtime.AdminDB,
-			SignalProvider:    runtime.SignalProvider,
-			ProvisionBoundary: runtime.ProvisionBoundary,
-			InstallBoundary:   runtime.InstallBoundary,
-			Close:             runtime.Close,
 		}, nil
 	default:
 		return server.Backend{}, fmt.Errorf("unsupported backend: %s", config.BackendType())

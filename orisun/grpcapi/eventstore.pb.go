@@ -71,10 +71,9 @@ func (Direction) EnumDescriptor() ([]byte, []int) {
 type StorageBackend int32
 
 const (
-	StorageBackend_STORAGE_BACKEND_UNSPECIFIED  StorageBackend = 0
-	StorageBackend_STORAGE_BACKEND_POSTGRES     StorageBackend = 1
-	StorageBackend_STORAGE_BACKEND_SQLITE       StorageBackend = 2
-	StorageBackend_STORAGE_BACKEND_FOUNDATIONDB StorageBackend = 3
+	StorageBackend_STORAGE_BACKEND_UNSPECIFIED StorageBackend = 0
+	StorageBackend_STORAGE_BACKEND_POSTGRES    StorageBackend = 1
+	StorageBackend_STORAGE_BACKEND_SQLITE      StorageBackend = 2
 )
 
 // Enum value maps for StorageBackend.
@@ -83,13 +82,11 @@ var (
 		0: "STORAGE_BACKEND_UNSPECIFIED",
 		1: "STORAGE_BACKEND_POSTGRES",
 		2: "STORAGE_BACKEND_SQLITE",
-		3: "STORAGE_BACKEND_FOUNDATIONDB",
 	}
 	StorageBackend_value = map[string]int32{
-		"STORAGE_BACKEND_UNSPECIFIED":  0,
-		"STORAGE_BACKEND_POSTGRES":     1,
-		"STORAGE_BACKEND_SQLITE":       2,
-		"STORAGE_BACKEND_FOUNDATIONDB": 3,
+		"STORAGE_BACKEND_UNSPECIFIED": 0,
+		"STORAGE_BACKEND_POSTGRES":    1,
+		"STORAGE_BACKEND_SQLITE":      2,
 	}
 )
 
@@ -2337,12 +2334,11 @@ const file_eventstore_proto_rawDesc = "" +
 	"\x05index\x18\x01 \x01(\v2\x17.orisun.IndexDefinitionR\x05index*\x1e\n" +
 	"\tDirection\x12\a\n" +
 	"\x03ASC\x10\x00\x12\b\n" +
-	"\x04DESC\x10\x01*\x8d\x01\n" +
+	"\x04DESC\x10\x01*q\n" +
 	"\x0eStorageBackend\x12\x1f\n" +
 	"\x1bSTORAGE_BACKEND_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18STORAGE_BACKEND_POSTGRES\x10\x01\x12\x1a\n" +
-	"\x16STORAGE_BACKEND_SQLITE\x10\x02\x12 \n" +
-	"\x1cSTORAGE_BACKEND_FOUNDATIONDB\x10\x03*\x89\x02\n" +
+	"\x16STORAGE_BACKEND_SQLITE\x10\x02\"\x04\b\x03\x10\x03*\x89\x02\n" +
 	"\x10ServerCapability\x12!\n" +
 	"\x1dSERVER_CAPABILITY_UNSPECIFIED\x10\x00\x121\n" +
 	"-SERVER_CAPABILITY_COMMAND_CONTEXT_CONSISTENCY\x10\x01\x12,\n" +

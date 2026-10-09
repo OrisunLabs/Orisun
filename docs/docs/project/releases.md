@@ -67,7 +67,6 @@ Each release publishes standalone binaries for Linux, macOS, and Windows. Use th
 | --- | --- |
 | `orisun-pg-<os>-<arch>` | PostgreSQL |
 | `orisun-sqlite-<os>-<arch>` | SQLite only |
-| `orisun-fdb-linux-<arch>` | FoundationDB only; beta; Linux only |
 
 Linux and macOS binaries should be marked executable after download:
 
@@ -83,9 +82,7 @@ The release workflow publishes the same tags to Docker Hub (`orisunlabs/orisun`)
 | --- | --- |
 | `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
-| `orisunlabs/orisun:fdb` | FoundationDB only, beta, includes the FDB client library |
 | `orisunlabs/orisun:<version>-pg` | PostgreSQL-compatible release version |
 | `orisunlabs/orisun:<version>-sqlite` | SQLite-only release version |
-| `orisunlabs/orisun:<version>-fdb` | FoundationDB-only release version |
 
 Use the same suffixes with `ghcr.io/orisunlabs/orisun` when you prefer GHCR.

@@ -14,11 +14,10 @@ import (
 
 // AppConfig represents the application configuration
 type AppConfig struct {
-	Backend      BackendConfig
-	Postgres     PostgresDBConfig
-	Sqlite       SqliteConfig
-	FoundationDB FoundationDBConfig
-	Grpc         struct {
+	Backend  BackendConfig
+	Postgres PostgresDBConfig
+	Sqlite   SqliteConfig
+	Grpc     struct {
 		Port                         string
 		EnableReflection             bool
 		ConnectionTimeout            time.Duration
@@ -73,24 +72,9 @@ type LoggingConfig struct {
 	Level   string // e.g., "debug", "info", "warn", "error"
 }
 
-// BackendConfig selects the storage driver. Values: "postgres" (default), "sqlite", or "foundationdb".
+// BackendConfig selects the storage driver. Values: "postgres" (default), "sqlite".
 type BackendConfig struct {
 	Type string
-}
-
-// FoundationDBConfig holds settings for the FoundationDB backend.
-// The real backend is built with the "foundationdb" build tag because the Go
-// binding requires native FoundationDB client libraries.
-type FoundationDBConfig struct {
-	ClusterFile string
-	APIVersion  int
-	Root        string
-	// TransactionTimeoutMs bounds each FoundationDB transaction including its
-	// internal retries. 0 = backend default (10s); negative = no timeout.
-	TransactionTimeoutMs int
-	// TransactionRetryLimit caps internal retries per transaction. 0 = unlimited
-	// (the timeout is the bound).
-	TransactionRetryLimit int
 }
 
 // SqliteConfig holds settings for the embedded SQLite backend.
@@ -281,15 +265,8 @@ func validateConfig(config AppConfig) error {
 		if config.Sqlite.PublisherWakeDelay < 0 {
 			return fmt.Errorf("sqlite publisher wake delay must be >= 0, got %s", config.Sqlite.PublisherWakeDelay)
 		}
-	case "foundationdb":
-		if config.FoundationDB.Root == "" {
-			return fmt.Errorf("foundationdb backend requires ORISUN_FDB_ROOT")
-		}
-		if config.FoundationDB.APIVersion == 0 {
-			return fmt.Errorf("foundationdb backend requires ORISUN_FDB_API_VERSION")
-		}
 	default:
-		return fmt.Errorf("unknown backend type %q (expected 'postgres', 'sqlite', or 'foundationdb')", config.Backend.Type)
+		return fmt.Errorf("unknown backend type %q (expected 'postgres' or 'sqlite')", config.Backend.Type)
 	}
 
 	if err := validateBoundaryName(config.Admin.Boundary); err != nil {

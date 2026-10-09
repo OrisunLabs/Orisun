@@ -39,12 +39,6 @@ tasks:
       - mkdir -p {{.BIN_DIR}}
       - go build -o {{.BIN_DIR}}/orisun-sqlite ./cmd/orisun-sqlite
 
-  build:fdb:
-    desc: Build the FoundationDB-only server
-    cmds:
-      - mkdir -p {{.BIN_DIR}}
-      - CGO_CFLAGS=-I/opt/homebrew/include CGO_LDFLAGS='-L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib' go build -tags foundationdb -o {{.BIN_DIR}}/orisun-fdb ./cmd/orisun-fdb
-
   build:release:
     desc: Build release binaries for the current platform
     cmds:
@@ -74,20 +68,6 @@ tasks:
       ORISUN_BACKEND: sqlite
     cmds:
       - ./{{.BIN_DIR}}/orisun-sqlite
-
-  run:fdb:
-    desc: Run the FoundationDB-only server
-    deps: [build:fdb]
-    cmds:
-      - scripts/fdb_local_docker.sh start
-      - |
-        export ORISUN_BACKEND=foundationdb
-        export ORISUN_FDB_CLUSTER_FILE="$PWD/build/fdb/fdb.cluster"
-        export ORISUN_FDB_API_VERSION=730
-        export ORISUN_FDB_ROOT=orisun_live
-        export CGO_CFLAGS=-I/opt/homebrew/include
-        export CGO_LDFLAGS='-L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib'
-        ./{{.BIN_DIR}}/orisun-fdb
 
   live:
     desc: Run the PostgreSQL-only server with Go live reload
@@ -122,72 +102,6 @@ tasks:
           -build.send_interrupt "true" \
           -build.kill_delay "200" \
           -misc.clean_on_exit "true"
-
-  live:fdb:
-    desc: Run the FoundationDB server with native Go live reload
-    cmds:
-      - scripts/fdb_local_docker.sh start
-      - |
-        export ORISUN_BACKEND=foundationdb
-        export ORISUN_FDB_CLUSTER_FILE="$PWD/build/fdb/fdb.cluster"
-        export ORISUN_FDB_API_VERSION=730
-        export ORISUN_FDB_ROOT=orisun_live
-        export ORISUN_LOGGING_LEVEL=INFO
-        export ORISUN_NATS_STORE_DIR=./data/orisun/nats
-        export ORISUN_NATS_PORT=4222
-        export ORISUN_GRPC_PORT=5006
-        export CGO_CFLAGS=-I/opt/homebrew/include
-        export CGO_LDFLAGS='-L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib'
-        air \
-          -build.cmd "go build -tags foundationdb -o {{.BIN_DIR}}/orisun-fdb ./cmd/orisun-fdb" \
-          -build.bin "{{.BIN_DIR}}/orisun-fdb" \
-          -build.delay "100" \
-          -build.exclude_dir "build,data,node_modules,tmp,clients" \
-          -build.include_ext "go" \
-          -build.stop_on_error "false" \
-          -build.send_interrupt "true" \
-          -build.kill_delay "200" \
-          -misc.clean_on_exit "true"
-
-  live:fdb:docker:
-    desc: Run the FoundationDB server with Go live reload in Docker
-    cmds:
-      - scripts/fdb_local_docker.sh start
-      - |
-        docker run --rm -it \
-          --network container:orisun-fdb-local \
-          -v "$PWD":/src \
-          -v orisun-go-mod-cache:/go/pkg/mod \
-          -v orisun-go-build-cache:/root/.cache/go-build \
-          -w /src \
-          -e ORISUN_BACKEND=foundationdb \
-          -e ORISUN_FDB_CLUSTER_FILE=/tmp/fdb.cluster \
-          -e ORISUN_FDB_API_VERSION=730 \
-          -e ORISUN_FDB_ROOT=orisun_live \
-          -e ORISUN_LOGGING_LEVEL=INFO \
-          -e ORISUN_NATS_STORE_DIR=./data/orisun/nats \
-          -e ORISUN_NATS_PORT=4222 \
-          -e ORISUN_GRPC_PORT=5006 \
-          golang:1.27.1-bookworm bash -ec '
-            set -euo pipefail
-            apt-get update >/dev/null
-            apt-get install -y --no-install-recommends curl ca-certificates >/dev/null
-            base="https://github.com/apple/foundationdb/releases/download/7.3.77"
-            curl -fsSL -o /tmp/foundationdb-clients.deb "$base/foundationdb-clients_7.3.77-1_aarch64.deb"
-            dpkg -i /tmp/foundationdb-clients.deb >/dev/null
-            echo "docker:docker@127.0.0.1:4500" > /tmp/fdb.cluster
-            go install github.com/air-verse/air@latest
-            air \
-              -build.cmd "go build -tags foundationdb -o {{.BIN_DIR}}/orisun-fdb ./cmd/orisun-fdb" \
-              -build.bin "{{.BIN_DIR}}/orisun-fdb" \
-              -build.delay "100" \
-              -build.exclude_dir "build,data,node_modules,tmp,clients" \
-              -build.include_ext "go" \
-              -build.stop_on_error "false" \
-              -build.send_interrupt "true" \
-              -build.kill_delay "200" \
-              -misc.clean_on_exit "true"
-          '
 
   debug:
     desc: Debug the PostgreSQL-only server with Delve

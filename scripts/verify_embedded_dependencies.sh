@@ -26,18 +26,10 @@ done
 embedded_packages=(
   ./embedded/sqlite
   ./embedded/postgres
-  ./embedded/foundationdb
 )
 embedded_dependencies="$(go list -deps "${embedded_packages[@]}")"
 if matches="$(printf '%s\n' "${embedded_dependencies}" | grep -E '^google\.golang\.org/(grpc|protobuf)($|/)')"; then
   echo "embedded package dependency guard rejected gRPC/protobuf packages:" >&2
-  printf '%s\n' "${matches}" >&2
-  exit 1
-fi
-
-foundationdb_dependencies="$(go list -tags=foundationdb -deps ./embedded/foundationdb)"
-if matches="$(printf '%s\n' "${foundationdb_dependencies}" | grep -E '^google\.golang\.org/(grpc|protobuf)($|/)')"; then
-  echo "FoundationDB embedded dependency guard rejected gRPC/protobuf packages:" >&2
   printf '%s\n' "${matches}" >&2
   exit 1
 fi

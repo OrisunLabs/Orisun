@@ -585,7 +585,7 @@ Reusing the same `event_id`s on retry keeps the command idempotent at the applic
 
 ## 5. Index the query field
 
-Steps 2 and 3 filter on both the account root (`__eventType = AccountOpened` plus `accountOpenedId`) and later movements (`scopes.accountOpenedId`). Create both indexes once, during deployment. FoundationDB requires these ready covering indexes before the criteria reads or CCC checks will run.
+Steps 2 and 3 filter on both the account root (`__eventType = AccountOpened` plus `accountOpenedId`) and later movements (`scopes.accountOpenedId`). Create both indexes once, during deployment.
 
 <Tabs groupId="client-lang">
   <TabItem value="go" label="Go" default>

@@ -12,7 +12,6 @@ Admin is available in every server flavor:
 
 - PostgreSQL-compatible server
 - SQLite-only server
-- FoundationDB server
 
 Administrative mutations require the `ADMIN` role. The `OPERATIONS` role can
 inspect boundary state and event counts but cannot provision boundaries or
@@ -87,7 +86,6 @@ has one immutable definition.
 | --- | --- | --- |
 | PostgreSQL | `postgres` | PostgreSQL schema name. Multiple boundaries may share a schema because physical objects are boundary-prefixed. |
 | SQLite | `sqlite` | Must exactly equal the boundary name. Files are created or opened beneath `ORISUN_SQLITE_DIR`. |
-| FoundationDB | `foundationdb` | Must equal the configured `ORISUN_FDB_ROOT`. |
 
 Boundary and PostgreSQL schema identifiers use the portable identifier
 contract: 1–63 characters, starting with a letter or underscore, followed by

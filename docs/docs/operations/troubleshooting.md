@@ -49,7 +49,7 @@ grpcurl -H "$AUTH" \
   runtime is not ready yet.
 - If it is `FAILED`, inspect `last_error`. Verify that backend and namespace
   match the running backend: PostgreSQL uses a schema, SQLite requires the
-  boundary name, and FoundationDB requires `ORISUN_FDB_ROOT`.
+  boundary name.
 - Do not call create again for a failed definition. Its immutable name
   already exists and the server is retrying it independently.
 
@@ -60,9 +60,7 @@ the complete legacy `ORISUN_PG_SCHEMAS` mapping, verify every boundary is
 recreate catalog entries manually.
 
 For SQLite, verify both `{boundary}.db` and `{boundary}_metadata.db` are in
-`ORISUN_SQLITE_DIR` before registration. FoundationDB does not discover legacy
-key ranges into the catalog; define beta-backend boundaries explicitly through
-`CreateBoundary`.
+`ORISUN_SQLITE_DIR` before registration.
 
 ## Subscription Lag
 
@@ -72,7 +70,6 @@ Boundary notifications are hints. If lag persists:
 2. Check handler latency and application/projector checkpoint progress.
 3. Check `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` and backend read-pool contention.
 4. Check NATS health and the notification relay lease owner for latency improvements.
-5. For FoundationDB, verify each criterion selects a native range or a ready covering index.
 
 Publisher checkpoints and legacy event-stream retention no longer control
 subscription delivery. Healthy NATS is required for live delivery. Idle watchdog hints recover missed
@@ -86,8 +83,5 @@ Orisun delivery is at least once. Consumers should be idempotent and deduplicate
 
 Criteria queries read JSON fields from event `data`. On PostgreSQL and SQLite,
 create indexes for high-volume keys used in command contexts,
-`GetLatestByCriteria`, or projector filters. FoundationDB does not fall back to
-a boundary scan: each criterion used by a read or `SaveEventsV2` observation
-needs a native range anchored by `__commitPosition` or `__writeId`, or a ready
-covering secondary index. Otherwise the request fails with `FAILED_PRECONDITION`. See
+`GetLatestByCriteria`, or projector filters. See
 [Indexing](../concepts/indexing).
