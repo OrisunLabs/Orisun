@@ -28,10 +28,7 @@ Orisun provides:
 
 See the [Orisun documentation](https://orisunlabs.github.io/Orisun/) for concepts, setup, the
 [Admin boundary API](https://orisunlabs.github.io/Orisun/docs/api/admin#boundary-lifecycle),
-client libraries, embedding, migration, and operations. Existing deployments
-should follow the dedicated
-[0.7.0 to 0.8.0 upgrade guide](https://orisunlabs.github.io/Orisun/docs/operations/upgrading-0.7-to-0.8)
-before changing their server version.
+client libraries, embedding, migration, and operations.
 
 ## License
 
