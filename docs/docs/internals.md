@@ -7,7 +7,7 @@ slug: /internals
 
 This page describes the mechanisms behind Orisun's public guarantees. It is
 intended for operators and contributors who need to reason about concurrency,
-failure, and ownership across the PostgreSQL, SQLite, and FoundationDB
+failure, and ownership across the PostgreSQL and SQLite
 backends.
 
 For the public contracts, start with
@@ -36,13 +36,13 @@ and checkpoints          the admin boundary
 boundary signal relay    provisioning + local
         |                 runtime installation
         v
-embedded JetStream
+Core NATS hints
         |
         v
 backend-draining subscriptions and projectors
 ```
 
-The PostgreSQL, SQLite, or FoundationDB event log is the durable source of
+The PostgreSQL or SQLite event log is the durable source of
 truth. Core NATS carries empty boundary hints. Every subscription event is read from the backend. Process-local registries,
 activation gates, listeners, and caches are rebuilt or repopulated state; they
 must not be required to recover durable data.
@@ -64,20 +64,20 @@ Several invariants shape the implementation:
 ## Runtime composition
 
 `server.Run` is the shared composition root. A backend initializer supplies
-narrow implementations for saving, reading, locking, admin state, publisher
+narrow implementations for saving, reading, locking, admin state, projector
 checkpoints, wake-up signals, and boundary provisioning. The server then wires
 those ports into:
 
-1. the embedded NATS and JetStream runtime;
+1. embedded or caller-supplied NATS with JetStream enabled;
 2. the transport-neutral EventStore core;
 3. the admin boundary and boundary lifecycle slices;
-4. one publisher contender per locally installed boundary;
+4. one notification relay contender per locally installed boundary;
 5. internal projectors and catch-up subscriptions; and
 6. the gRPC transport.
 
 The backend-specific binaries and embedding packages select the initializer.
 `cmd/orisun-pg` and `embedded/postgres` do not depend on SQLite, and the
-equivalent SQLite and FoundationDB entry points remain backend-specific. The
+equivalent SQLite entry points remain backend-specific. The
 generated protobuf messages and gRPC adapters live under `orisun/grpcapi`;
 domain slices and storage packages exchange transport-neutral values.
 
@@ -100,15 +100,15 @@ runtime resource. Creation deliberately separates those two concerns.
    `BoundaryProvisioningFailed`.
 5. Every process also owns a uniquely named runtime subscription. On an
    activation event it installs the boundary into that process's backend
-   registry and signal provider, starts the local publisher contender and
+   registry and signal provider, starts the local notification relay contender and
    dynamic projectors, and only then opens the local request gate.
 6. `ListBoundaries` and `GetBoundary` rebuild catalog state from the durable
    lifecycle events.
 
 Provisioning and installation are idempotent because either can be retried
 after a crash or partial attempt. A replacement controller replays the catalog
-while holding the same subscription lease. Active definitions do not repeat
-physical provisioning, but their streams are re-ensured.
+while holding the same subscription lease. Active definitions are initialized and installed locally at startup; notifications
+require no stream provisioning.
 
 Startup replays activation state before gRPC is exposed. Live subscription
 gaps cause another replay. A boundary may therefore be durably `ACTIVE` before
@@ -127,13 +127,13 @@ boundary list.
 | --- | --- |
 | PostgreSQL | A catalog placement selects a schema; boundary tables and functions are prefixed within it. |
 | SQLite | A boundary maps to its event database and metadata database files. |
-| FoundationDB | A boundary maps to tuple-encoded key ranges under the configured Orisun root. |
 
 The admin boundary is bootstrapped so it can contain the catalog that activates
-all other boundaries. Existing storage must use the current schema. Startup
-rejects older formats and installs active placements from catalog definitions.
+all other boundaries. Existing storage must use the current or supported `0.13.0` schema. Startup
+upgrades `0.13.0`, rejects older formats, and installs active placements from
+catalog definitions.
 
-## `SaveEventsV2`: one contract, three concurrency models
+## `SaveEventsV2`: one contract, two concurrency models
 
 Before invoking a backend, the EventStore core validates the request, converts
 events into an immutable prepared batch, and checks the local active-boundary
@@ -154,7 +154,6 @@ between them.
 | --- | --- | --- |
 | PostgreSQL | Per-boundary in-process group-commit queue; one SQL transaction per flush | A transaction-scoped PostgreSQL advisory lock orders all writers across processes |
 | SQLite | Per-boundary in-process group-commit queue; one `BEGIN IMMEDIATE` transaction per flush | SQLite's single writer for the boundary file |
-| FoundationDB | One native FoundationDB transaction per `SaveEventsV2` request | None for plain appends; CCC conflicts are scoped by native or secondary-index ranges |
 
 ### PostgreSQL group commit
 
@@ -178,8 +177,9 @@ The SQL function deduplicates criteria and groups them once by key shape. It
 resolves each criterion's latest persisted position with literal predicates and
 `ORDER BY ... LIMIT 1`, then evaluates requests in queue order. Accepted requests
 project their final event documents onto each distinct criterion key shape and
-look up the matching criterion ID directly. This avoids rebuilding a SQL join
-against every criterion for each accepted request. Events advance criterion
+look up matching equality criterion IDs directly. Non-equality predicates are
+evaluated against each accepted document. This retains the same comparisons for
+stored events and earlier events in the flush. Events advance criterion
 state in order, so later requests observe earlier accepted writes, including
 queries on store-owned envelope fields. A CCC conflict rejects only that request.
 Accepted events and their write contexts are bulk-inserted together.
@@ -228,31 +228,6 @@ The event log and metadata use separate databases for each boundary. SQLite is
 a single-node backend, and startup rejects configurations that enable NATS
 clustering with SQLite.
 
-### FoundationDB transactions
-
-FoundationDB does not use the process-local group-commit queues. Each
-`SaveEventsV2` call executes as one FoundationDB transaction:
-
-- criteria reads and event writes share the transaction;
-- criteria require a native range anchored by `__commitPosition` or
-  `__writeId`, or a ready covering secondary index; unsupported criteria fail
-  with `FAILED_PRECONDITION`;
-- the transaction reads the index epoch so an index definition change forces
-  an overlapping save to retry with the current index set;
-- matching native event or secondary-index ranges provide CCC conflict coverage, allowing
-  unrelated contexts in one boundary to commit concurrently;
-- events and their index entries are written with commit versionstamps; and
-- the estimated payload and index footprint is checked before commit to stay
-  within FoundationDB's transaction budget.
-
-The backend maps a failed CCC comparison to `ALREADY_EXISTS`. FoundationDB's
-normal transaction retry behavior handles retryable storage conflicts before a
-result is returned.
-
-FoundationDB support is beta. See
-[FoundationDB Operations](./operations/foundationdb) for its deployment and
-release constraints.
-
 ### Cancellation and unknown outcomes
 
 Cancellation before a queued request is included in a flush excludes it.
@@ -272,7 +247,6 @@ not a portable database sequence.
 | --- | --- |
 | PostgreSQL | `global_id` is a boundary sequence. Each accepted request receives a logical `transaction_id` derived from the last sequence value in that request, even when several requests share one physical group-commit transaction. |
 | SQLite | Boundary-local counters assign the logical transaction and event order while the single writer holds the transaction. |
-| FoundationDB | The commit versionstamp supplies commit order; the versionstamp batch component and event offset supply order within a commit. |
 
 ### PostgreSQL's visibility barrier
 
@@ -293,8 +267,8 @@ returning a later committed position first. Rows restored from a dump may have
 a null marker because an XID is not meaningful across clusters; those rows are
 already durable and are safe to read.
 
-The publisher depends on this barrier. `LISTEN/NOTIFY` can wake it, but a
-wake-up cannot prove that every earlier transaction is visible.
+Ascending subscription reads depend on this barrier. `LISTEN/NOTIFY` wakes the
+notification relay, but a hint cannot prove that every earlier transaction is visible.
 
 ### Read batches
 
@@ -303,8 +277,10 @@ timestamps. Internal subscriptions and projectors can consume those values
 without constructing a protobuf object graph for every row. The gRPC adapter
 materializes generated response objects only at the transport boundary.
 
-Read pages are capped at 10,000 events. Internal drainers advance by the last
-position and continue across pages.
+The gRPC API rejects counts outside 1–10,000; embedded backend reads default
+a zero count to 1,000 and clamp larger counts to 10,000. Forward reads are
+inclusive. Internal drainers discard only the first row equal to their cursor
+and advance from the last successfully delivered position.
 
 ## Content-query indexes
 
@@ -315,14 +291,11 @@ index API:
   their definitions in boundary metadata.
 - SQLite creates targeted expression indexes in the boundary event database
   and records their definitions in metadata.
-- FoundationDB backfills versioned index key ranges and exposes
-  `BUILDING`/`READY` state.
+
 
 PostgreSQL and SQLite preserve correctness without a matching user index, but a
 CCC check or read may scan the boundary event table. Orisun does not create a
-broad automatic GIN index. FoundationDB instead fails closed when criteria are
-unable to select a native position range or a ready covering index; a boundary scan inside a transaction would be
-both unsafe for scale and too broad for useful conflict isolation.
+broad automatic GIN index.
 
 The PostgreSQL criterion-state group-commit path builds shape-specific,
 indexable predicates. Production workloads should still create indexes for the
@@ -332,8 +305,9 @@ and the [`CreateIndex` API](./api/eventstore#createindex).
 ## Boundary notification relays
 
 The notification manager starts one local relay contender per installed
-boundary. PostgreSQL and SQLite runtimes use revision-fenced JetStream KV
-leases; FoundationDB uses a token-fenced renewable lease in FoundationDB.
+boundary. Both backends use the shared revision-fenced JetStream KV leases
+(`ORISUN_LOCKS`, memory storage, one replica, 15-second lease, renewed every
+five seconds). Lease state is coordination, not durable event progress.
 SQLite still permits only one Orisun node. The PostgreSQL advisory write lock
 serializes position assignment and is separate from relay ownership.
 
@@ -347,7 +321,6 @@ A relay never makes a successful durable write depend on NATS availability.
 | --- | --- |
 | PostgreSQL | Boundary-specific `LISTEN/NOTIFY`, plus a wake after reconnect |
 | SQLite | In-process coalesced notification after commit |
-| FoundationDB | Watch on a transactionally updated boundary signal key |
 | Backend notifications disabled | No relay signal; subscription idle watchdogs publish NATS hints |
 
 ## Backend-driven subscriptions
@@ -393,13 +366,13 @@ at-least-once delivery.
 | --- | --- | --- |
 | Events | Selected backend | Source of truth, partitioned by boundary |
 | Boundary catalog | Admin boundary event log | Replayed to recover lifecycle state |
-| Index definitions and build state | Selected backend | Boundary-scoped; physical indexes or key ranges are reconciled from it |
+| Index definitions and build state | Selected backend | Boundary-scoped; physical indexes are reconciled from it |
 | Projector checkpoints and projections | Selected backend | Rebuilt or resumed from durable events |
 | Core NATS notification listener | Process memory | One pending hint; recovery comes from subscription backend reads |
 | Active-boundary gate | Process memory | Rebuilt from activation replay before requests are admitted |
 | Backend boundary registry and signal listeners | Process memory | Reinstalled from the catalog on every process |
 | User lookup and other hot-path caches | Process memory | Disposable accelerators; durable admin state remains authoritative |
-| Wake-up notifications | PostgreSQL, process channels, or FDB watches | Ephemeral hints backed by a NATS idle watchdog |
+| Wake-up notifications | PostgreSQL or process channels | Ephemeral hints backed by a NATS idle watchdog |
 
 This separation is intentional: a process may lose every local cache and
 listener, or NATS may drop a hint, without losing the
@@ -410,7 +383,9 @@ durable event history or advancing a checkpoint incorrectly.
 | Failure | Result |
 | --- | --- |
 | Any CCC observation no longer equals the latest position of its query | That request returns `ALREADY_EXISTS`; none of its events are appended |
-| Request-local error inside a multi-request group flush | That request rolls back; later requests continue in queue order |
+| CCC conflict in a group flush | Only that request is rejected; later requests continue in queue order |
+| SQLite request-local validation or insert failure | Its savepoint rolls back; later requests continue |
+| PostgreSQL SQL statement failure | The outer transaction rolls back every accepted request in that flush |
 | Known outer transaction rollback | No accepted request in that transaction persists |
 | Caller cancellation or connection loss around commit | Outcome may be unknown; retry idempotently |
 | Subscription crash before application checkpoint | Resume from the durable application checkpoint; events can be delivered again |
@@ -428,7 +403,6 @@ durable event history or advancing a checkpoint incorrectly.
 | `boundary/` and `admin/slices/` | Event-backed catalog model and use-case slices |
 | `postgres/` | PostgreSQL storage, group commit, migrations, indexing, checkpoints, and notifications |
 | `sqlite/` | SQLite storage, group commit, per-boundary files, indexing, checkpoints, and signals |
-| `foundationdb/` | FoundationDB transactions, versionstamped layout, covering indexes, watches, and leases |
 | `nats/` | Embedded NATS and JetStream lifecycle |
 | `orisun/grpcapi/` | Generated protobuf code and domain-to-transport adapters |
 | `cmd/` and `embedded/` | Executable and in-process composition roots |

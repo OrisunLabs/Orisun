@@ -99,7 +99,7 @@ AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
 Send the header on every call:
 
 ```bash
-grpcurl -H "$AUTH" localhost:5005 orisun.EventStore/Ping
+grpcurl -plaintext -H "$AUTH" localhost:5005 orisun.EventStore/Ping
 ```
 
   </TabItem>
@@ -114,9 +114,9 @@ Events have four caller-supplied fields:
 | `event_id` | Stable event identifier. Use UUIDs for portability; the docs use UUIDv7 examples. PostgreSQL requires UUID format, while SQLite accepts any string. Orisun does not deduplicate writes by `event_id`; use it for application-level retry recognition and consumer deduplication. |
 | `event_type` | Event type name, for example `OrderPlaced`. |
 | `data` | JSON object encoded as a string. Criteria queries match this JSON object. |
-| `metadata` | JSON object encoded as a string. Use for request source, tracing, or non-domain metadata. |
+| `metadata` | JSON object encoded as a string for tracing or non-domain metadata. Omission or JSON null becomes `{}`; arrays and scalars are rejected over gRPC. |
 
-Orisun also stores a durable `position` and `date_created` on committed events.
+Orisun also stores a durable `position`, `date_created`, and `write_id` on committed events. Empty or JSON-null `data` is normalized to `{}`; arrays and scalar data are rejected. SDK validators can impose stricter caller-side requirements.
 
 :::note
 Storage backends expose the event envelope through reserved fields in the
@@ -135,9 +135,6 @@ queryable document:
 PostgreSQL and SQLite persist these values inside `data`. Their ordering and
 write-context columns are generated projections of that document, not separate
 writable values. PostgreSQL retains `pg_xact_id` as internal visibility bookkeeping.
-FoundationDB stores metadata and timestamps inside the document and derives
-positions from its native commit-ordered key. It derives write IDs from that key
-and the stored batch-end offset; no second transaction fills in positions.
 
 On retrieval, the backend extracts the usual envelope and removes **all
 top-level `__*` fields** from returned application `data`. Nested fields and
@@ -145,15 +142,6 @@ metadata values remain untouched. API and SDK event shapes stay unchanged.
 Content criteria and live subscription filters use reserved names, for example
 `{"key":"__eventId","value":"your-event-id"}`. Metadata is a JSON value under
 `__metadata`; this does not introduce dotted-path querying into nested objects.
-
-FoundationDB uses its native event-key range for criteria containing
-`__commitPosition` or `__writeId`, with any remaining tags applied within that
-range. Ordered `__commitPosition` predicates bound that native range;
-non-equality `__writeId` predicates can scan the full native event range because
-write IDs compare as strings. A `__preparePosition` criterion needs one of those
-anchors. These three
-fields cannot be secondary-index fields or conditions. Other FoundationDB
-criteria continue to require a ready covering index.
 
 Top-level keys in application event `data` beginning with `__` are reserved for
 Orisun, including names not currently in use. Writes containing such keys are
@@ -173,39 +161,18 @@ Content queries and index definitions now use `__eventType` instead of
 `eventType`. The API `event_type` field and SDK `eventType` property keep their
 existing names. There is no query-time alias for the old JSON key.
 
-Stop all Orisun servers sharing the storage before upgrading. At startup,
-Orisun migrates stored event discriminators, retained CCC observations, and
-index definitions created through the index API. PostgreSQL and SQLite rebuild
-affected managed indexes within their migration transaction. FoundationDB
-migrates in resumable batches before making the boundary available; its index
-entries retain the same values and positions. Existing positions, write IDs,
-and publisher checkpoints are preserved. The upgrade also moves stored event IDs
-into `data.__eventId`, removing the separate PostgreSQL/SQLite `event_id` column
-and FoundationDB record field. The remaining envelope migration replaces SQL
-columns with generated projections and rebuilds their indexes in the same
-transaction. FoundationDB migrates metadata, timestamps, and batch-end offsets
-in resumable batches, maintaining affected indexes. Historical events whose write
-context was never recorded continue to return an empty write ID. Large stores
-may take time to migrate.
+Stop all Orisun servers sharing the storage before upgrading. This release
+supports an in-place upgrade from `0.13.0`, preserving event documents, indexes,
+positions, write contexts, and projector checkpoints. Obsolete publisher
+checkpoint state is removed. Older and unversioned storage formats are rejected;
+the server does not automatically convert them.
 
-Update application criteria, subscription filters, and index declarations to
-`__eventType` before resuming traffic. Re-read command contexts after the upgrade;
-in-flight observations using the old key must not be reused. Indexes created
-directly with SQL are not managed by Orisun and must be reviewed separately.
-Older server binaries cannot be used with the migrated storage; take a backup
-before upgrading if you need to be able to restore the old format.
-
-If a legacy event already contains both `eventType` and `__eventType`, migration
-stops with a conflict instead of overwriting either value. Existing top-level
-`__eventId` values also block the event-ID migration, including JSON null. The
-remaining-envelope migration likewise rejects existing `__commitPosition`,
-`__preparePosition`, `__writeId`, `__dateCreated`, or `__metadata` fields;
-FoundationDB also reserves `__writeLastOffset` for its batch-end offset. Existing
-FoundationDB secondary indexes on commit-derived fields must be removed before
-that migration. Resolve any collision
-while the servers are stopped, then restart. Nested application fields and
-metadata are not renamed. Historical `eventType` was the store discriminator;
-after migration that unprefixed name is available for application data.
+Historical events whose write context was never recorded continue to return an
+empty write ID. To move an older store, export application events with its matching
+server version and import them into fresh current-format storage. Imports assign
+new positions and write IDs, so rebuild projections and obtain fresh CCC observations
+and subscription cursors. Back up storage before upgrading; older server binaries
+cannot open the upgraded schema.
 
 ## SaveEventsV2
 
@@ -278,7 +245,7 @@ _, err = client.SaveEventsV2(ctx, &eventstore.SaveEventsV2Request{
 For multiple independently read contexts, include multiple observations:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
   "events": [{
@@ -383,11 +350,7 @@ non-equality operators; an older server does not understand this field.
 
 Range predicates may inspect more candidates than equality predicates.
 PostgreSQL and SQLite use exact decimal comparators for numeric ranges, so
-existing numeric-cast indexes do not directly accelerate that comparison. FoundationDB still requires
-a native position query or a ready covering index; it narrows a secondary-index
-scan by leading equality fields, filters candidates, and applies the requested
-position order and limit afterwards. Broad ranges can reach FoundationDB's
-transaction limits. Prefer selective equality fields alongside ranges.
+existing numeric-cast indexes do not directly accelerate that comparison. Prefer selective equality fields alongside ranges.
 
 ### Validation and limits
 
@@ -409,9 +372,7 @@ observations, and 16,384 tags across those criteria. These bounds prevent an
 individual write from creating unbounded query fan-out.
 
 PostgreSQL and SQLite can evaluate an unindexed content query correctly by
-scanning. FoundationDB requires each criterion to select a native position range
-through `__commitPosition` or `__writeId`, or have a ready covering secondary
-index; otherwise it returns `FAILED_PRECONDITION`. See [Indexing](../concepts/indexing).
+scanning. See [Indexing](../concepts/indexing).
 
 ### Unconditional append
 
@@ -479,7 +440,7 @@ Eventstore.WriteResult result = client.saveEventsV2(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
   "events": [
@@ -497,14 +458,16 @@ EOF
   </TabItem>
 </Tabs>
 
-The response contains the position of the last committed event in the batch:
+An example response contains the write ID and position of the last committed
+event. Position values vary by backend; treat the returned pair as opaque:
 
 ```json
 {
   "log_position": {
     "commit_position": 1,
     "prepare_position": 0
-  }
+  },
+  "write_id": "1:0"
 }
 ```
 
@@ -596,7 +559,7 @@ client.saveEventsV2(Eventstore.SaveEventsV2Request.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
   "consistency": [{
@@ -668,10 +631,7 @@ malformed IDs return `INVALID_ARGUMENT`. The boundary must be active.
 
 The context is store-owned and commits atomically with its events. Rejected or
 rolled-back saves leave no context record. PostgreSQL and SQLite store one record
-per save alongside the event table. FoundationDB stores the context under the
-save's final versionstamp, splitting large contexts into values within the same
-transaction. Context storage counts toward FoundationDB's transaction-size
-budget. No application metadata fields are reserved or rewritten for this feature.
+per save alongside the event table. No application metadata fields are reserved or rewritten for this feature.
 
 ## GetEvents
 
@@ -725,7 +685,7 @@ Eventstore.GetEventsResponse resp = client.getEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
 {
   "boundary": "orders",
   "from_position": {
@@ -797,7 +757,7 @@ Eventstore.GetEventsResponse resp = client.getEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
 {
   "boundary": "orders",
   "query": {
@@ -862,7 +822,7 @@ Eventstore.GetEventsResponse resp = client.getEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetEvents <<EOF
 {
   "boundary": "orders",
   "from_position": {
@@ -895,18 +855,35 @@ EOF
 }
 ```
 
-`Event` adds `position` and `date_created` to the fields supplied at write time. `CatchUpSubscribeToEvents` delivers the same event shape.
+`Event` adds `position`, `date_created`, and `write_id` to the fields supplied at write time. `CatchUpSubscribeToEvents` delivers the same event shape.
 
 ### Paging through a boundary
 
-`GetEvents` returns one bounded page (`count`, server-capped at 10000). To walk the whole log or a criteria set, page forward:
+`GetEvents.from_position` is **inclusive** in both directions: ascending reads
+include positions greater than or equal to it, and descending reads include
+positions less than or equal to it. Omit it to read from the beginning in `ASC`
+or from the latest match in `DESC`.
 
-1. First call uses `from_position` `{0, 0}` to start at the beginning.
-2. Process the page, then take the `position` of the last event.
-3. Pass it as `from_position` on the next call.
-4. Stop when a page returns fewer events than `count`.
+For forward paging:
 
-Keep the consumer idempotent and deduplicate by `event_id` rather than assuming exactly-once paging. The position model behind `from_position` and `direction` is described in [Positions and Ordering](../concepts/positions).
+1. Use `{0, 0}` for the first cursor and request between 2 and 10,000 rows.
+2. Discard only the first row if its complete position equals the cursor.
+3. Process the remaining rows in order and use the last returned position as
+   the next cursor. Do not increment either position component.
+4. Stop when the **original** page contains fewer rows than requested, before
+   subtracting the cursor row. A page containing only the cursor has no new rows.
+
+A one-row request is valid for a single lookup, but cannot advance an inclusive
+paging loop once the cursor matches a row. Counts outside 1–10,000 return
+`INVALID_ARGUMENT` over gRPC; the server does not silently truncate them.
+
+Ascending reads return a stable committed prefix. Descending latest lookups do
+not apply PostgreSQL's ascending visibility barrier. Each page has its own read
+snapshot; multiple pages are not a fixed snapshot of the whole log. Keep consumers
+idempotent and obtain fresh CCC observations after a long replay.
+
+Omit `query` to read all events; an empty criteria list also leaves the read
+unfiltered. Use non-empty criteria for content filters.
 
 ### Use `GetEvents` as a command context
 
@@ -1010,7 +987,7 @@ Eventstore.GetLatestByCriteriaResponse latest = client.getLatestByCriteria(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/GetLatestByCriteria <<EOF
 {
   "boundary": "ledger",
   "criteria": [
@@ -1039,7 +1016,7 @@ For `SaveEventsV2`, construct one observation from the exact combined criteria s
 ## CatchUpSubscribeToEvents
 
 Subscriptions read matching events from the backend throughout their lifetime.
-NATS boundary hints trigger reads; an subscription-owned idle watchdog hints timer recovers
+NATS boundary hints trigger reads; a subscription-owned idle watchdog recovers
 missed hints. The backend evaluates the complete query for both historical and
 new events. See [Delivery Guarantees](../concepts/delivery-guarantees).
 
@@ -1127,7 +1104,7 @@ EventSubscription sub = client.subscribeToEvents(
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
 {
   "subscriber_name": "order-projector",
   "boundary": "orders",
@@ -1202,7 +1179,7 @@ client.subscribeToEvents(Eventstore.CatchUpSubscribeToEventStoreRequest.newBuild
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CatchUpSubscribeToEvents <<EOF
 {
   "subscriber_name": "placed-orders",
   "boundary": "orders",
@@ -1257,7 +1234,7 @@ client.ping();
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d '{}' localhost:5005 orisun.EventStore/Ping
+grpcurl -plaintext -H "$AUTH" -d '{}' localhost:5005 orisun.EventStore/Ping
 ```
 
   </TabItem>
@@ -1301,7 +1278,7 @@ System.out.printf("node=%s version=%s backend=%s%n",
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d '{}' \
+grpcurl -plaintext -H "$AUTH" -d '{}' \
   localhost:5005 orisun.EventStore/GetServerInfo
 ```
 
@@ -1315,7 +1292,7 @@ The response contains:
 | `version` | Orisun release version embedded at build time. Local development builds report `dev`. |
 | `git_commit` | Source commit embedded at build time, or `unknown`. |
 | `build_time` | Build timestamp embedded by the release build, or `unknown`. |
-| `backend` | `STORAGE_BACKEND_POSTGRES`, `STORAGE_BACKEND_SQLITE`, or `STORAGE_BACKEND_FOUNDATIONDB`. |
+| `backend` | `STORAGE_BACKEND_POSTGRES` or `STORAGE_BACKEND_SQLITE`. |
 | `node_id` | UUID for this running server process. It changes when the process restarts. |
 | `capabilities` | Typed features supported by the connected server. |
 
@@ -1376,7 +1353,7 @@ client.createIndex(Eventstore.CreateIndexRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "orders",
   "name": "customer_id",
@@ -1390,7 +1367,10 @@ EOF
   </TabItem>
 </Tabs>
 
-`value_type` is `TEXT`, `NUMERIC`, `BOOLEAN`, or `TIMESTAMPTZ`. Add `conditions` for a partial index. Each condition `operator` must be one of `=`, `>`, `<`, `>=`, or `<=`. See [Indexing](../concepts/indexing) for composite and partial index examples.
+`value_type` declares `TEXT`, `NUMERIC`, `BOOLEAN`, or `TIMESTAMPTZ`. Prefer
+`TEXT` for current equality queries. PostgreSQL currently rejects the generated
+`TIMESTAMPTZ` cast as a non-immutable index expression; SQLite stores it as text.
+Add `conditions` for a partial index. Each condition `operator` must be one of `=`, `>`, `<`, `>=`, or `<=`. See [Indexing](../concepts/indexing) for composite and partial index examples.
 
 ## ListIndexes and GetIndex
 
@@ -1426,10 +1406,10 @@ Eventstore.GetIndexResponse one = client.getIndex("orders", "customer_id");
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" -d '{"boundary":"orders"}' \
+grpcurl -plaintext -H "$AUTH" -d '{"boundary":"orders"}' \
   localhost:5005 orisun.EventStore/ListIndexes
 
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/GetIndex
 ```
@@ -1476,7 +1456,7 @@ client.dropIndex(Eventstore.DropIndexRequest.newBuilder()
   <TabItem value="grpcurl" label="grpcurl">
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/DropIndex
 ```
@@ -1548,6 +1528,5 @@ The EventStore protobuf source lives at [`proto/eventstore.proto`](https://githu
 | `INVALID_ARGUMENT` | The request is malformed, uses invalid JSON, or references invalid index fields. |
 | `UNAUTHENTICATED` | Missing or invalid credentials. |
 | `PERMISSION_DENIED` | Authenticated user does not have a required role. |
-| `FAILED_PRECONDITION` | The boundary is not active, or a FoundationDB criterion has neither a native position range nor a ready covering secondary index. |
 | `ALREADY_EXISTS` | One or more observations changed during `SaveEventsV2`; re-query and retry if still valid. |
 | `INTERNAL` | Storage, publishing, or unexpected server failure. |

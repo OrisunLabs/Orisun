@@ -13,7 +13,7 @@ Every EventStore and Admin call must carry credentials. Two forms are accepted:
 
   ```bash
   AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
-  grpcurl -H "$AUTH" localhost:5005 orisun.EventStore/Ping
+  grpcurl -plaintext -H "$AUTH" localhost:5005 orisun.EventStore/Ping
   ```
 
 - **A session token** in the `x-auth-token` header. Every authenticated response sets `x-auth-token`; a client can send that token on later calls instead of re-sending Basic credentials. The token is validated first, then Basic is used as the fallback.
@@ -59,6 +59,7 @@ Role values are validated and compared exactly. A user-creation request with
 | `EventStore/ListIndexes` | Yes | `ADMIN` or `OPERATIONS` |
 | `EventStore/GetIndex` | Yes | `ADMIN` or `OPERATIONS` |
 | `EventStore/GetEvents` | Yes | Any authenticated user |
+| `EventStore/GetWriteContext` | Yes | Any authenticated user |
 | `EventStore/GetLatestByCriteria` | Yes | Any authenticated user |
 | `EventStore/CatchUpSubscribeToEvents` | Yes | Any authenticated user |
 | `EventStore/Ping` | Yes | Any authenticated user |
@@ -84,6 +85,11 @@ Two points are worth calling out:
   boundary state and event counts, but cannot provision storage or manage
   users. `ChangePassword` remains self-service and only changes the caller's
   own account.
+
+The protobuf also declares `Admin/SetUserBoundaryPermissions` and
+`boundary_permissions` fields. This runtime does not implement that RPC (it
+returns `UNIMPLEMENTED`) or enforce those grants. Do not use these fields as an
+access-control mechanism.
 
 ## Recommended posture
 

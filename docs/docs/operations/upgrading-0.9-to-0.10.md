@@ -3,13 +3,19 @@ title: Upgrading from 0.9 to 0.10
 description: Prepare supported backends and YugabyteDB deployments for the 0.10.0 breaking release.
 ---
 
+:::note
+This page describes the historical **0.10.0** release. It is not the upgrade
+procedure for Next. Next only upgrades storage from `0.13.0`; use the
+[current storage upgrade policy](./upgrading-event-envelope) for all other sources.
+:::
+
 Orisun 0.10.0 removes YugabyteDB support and the `ORISUN_PG_DIALECT`
 configuration. The PostgreSQL backend now targets PostgreSQL only.
 
-## PostgreSQL, SQLite, and FoundationDB
+## PostgreSQL and SQLite
 
 The YugabyteDB removal does not require a storage migration for deployments
-already using PostgreSQL, SQLite, or FoundationDB. Before upgrading:
+already using PostgreSQL or SQLite. Before upgrading:
 
 1. Back up the durable event store and admin boundary.
 2. Remove `ORISUN_PG_DIALECT` from every process, container, secret, and
@@ -34,7 +40,7 @@ Choose one of these paths before upgrading:
 
 - remain on the latest 0.9.x release while planning a migration; or
 - migrate the complete event log, admin boundary, catalog, index definitions,
-  and publisher/projector checkpoints to PostgreSQL, SQLite, or FoundationDB
+  and publisher/projector checkpoints to PostgreSQL or SQLite
   using a separately validated migration process.
 
 An application-level event replay is not an exact-copy migration: it assigns

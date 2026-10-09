@@ -3,7 +3,7 @@ title: Indexing
 description: Create JSON indexes for criteria queries and CCC checks.
 ---
 
-Criteria queries match JSON payload fields. Without indexes, PostgreSQL and SQLite reads and CCC checks may scan the full boundary event table. FoundationDB requires either a native position range (anchored by `__commitPosition` or `__writeId`) or a ready covering secondary index. Other uncovered criteria return `FAILED_PRECONDITION`.
+Criteria queries match JSON payload fields. Without indexes, PostgreSQL and SQLite reads and CCC checks may scan the full boundary event table.
 
 Create indexes for fields used in:
 
@@ -25,7 +25,7 @@ AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
 ## Simple Index
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id","fields":[{"json_key":"customer_id","value_type":"TEXT"}]}' \
   localhost:5005 orisun.EventStore/CreateIndex
 ```
@@ -47,6 +47,10 @@ Literal predicates let PostgreSQL use event-type partial indexes during write-ti
 CCC checks, just as it does during context reads. Historical matches are no longer
 joined and ranked for each criterion shape. Applications still own their indexes;
 unindexed criteria can require scans.
+
+Equality criteria use the direct criterion-ID lookup. Criteria with non-equality
+operators use generated predicates against each accepted event document so
+in-batch checks retain the same semantics as persisted reads.
 
 This supports duplicate contexts, different keys, multi-tag AND criteria,
 multi-criterion OR queries, multiple query-level observations, and query-less
@@ -70,18 +74,11 @@ This lets each criterion use its own matching index without sorting all events
 matching the combined OR query. Index each remaining criterion shape; an
 unindexed branch can still scan history even when another branch is indexed.
 
-FoundationDB needs a ready covering index for each criterion that does not
-select a native range through `__commitPosition` or `__writeId`. A V2 request with several observations can therefore depend on
-several indexes; create and wait for all of them before enabling that command
-path.
-
 Create indexes for every criterion shape used by high-volume command paths. A
 simple `customer_id` criterion needs the simple index above; a criterion on
 `customer_id AND region` should have a composite index with both fields. On
 PostgreSQL and SQLite, unindexed criteria remain correct but can scan the
-boundary event table. FoundationDB rejects a criteria read or CCC observation with
-`FAILED_PRECONDITION` if it has neither a native position range nor a ready
-covering secondary index.
+boundary event table.
 
 PostgreSQL group commit bulk-inserts accepted multi-event saves. For
 burst-oriented workloads, start performance testing with
@@ -95,7 +92,7 @@ request-local validation and savepoints.
 ## Composite Index
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "orders",
   "name": "category_priority",
@@ -120,16 +117,23 @@ for the scalar-text CCC predicates.
 | Value | Backend cast |
 | --- | --- |
 | `TEXT` | Text (default). |
-| `NUMERIC` | Numeric, for range and ordering predicates. |
-| `BOOLEAN` | Boolean. |
-| `TIMESTAMPTZ` | Timestamp with time zone. |
+| `NUMERIC` | Backend numeric cast; not the exact-decimal query comparison expression. |
+| `BOOLEAN` | PostgreSQL boolean cast; SQLite integer cast. |
+| `TIMESTAMPTZ` | SQLite text expression. PostgreSQL emits a text-to-timestamptz cast, which PostgreSQL rejects in an index because it is not immutable. |
+
+Typed index definitions do not change query semantics. Numeric range queries
+use exact-decimal comparison functions, so a `NUMERIC` cast index does not
+directly accelerate them. For current content queries, start with `TEXT`
+indexes on selective equality keys. PostgreSQL partial-index conditions compare
+text; SQLite conditions use the indexed field type when one is declared. Keep
+partial-index predicates aligned with the backend query expression.
 
 ## Partial Index
 
 A partial index covers only events that match its `conditions`, keeping the index small and focused on one event category.
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "orders",
   "name": "placed_amount",
@@ -152,7 +156,7 @@ These are index-definition conditions. Query tag operators use `eq`, `ne`,
 ## Drop An Index
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/DropIndex
 ```
@@ -163,17 +167,17 @@ Use `ListIndexes` for a boundary-wide inventory and `GetIndex` for one logical
 name:
 
 ```bash
-grpcurl -H "$AUTH" -d '{"boundary":"orders"}' \
+grpcurl -plaintext -H "$AUTH" -d '{"boundary":"orders"}' \
   localhost:5005 orisun.EventStore/ListIndexes
 
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"boundary":"orders","name":"customer_id"}' \
   localhost:5005 orisun.EventStore/GetIndex
 ```
 
 Each definition includes its fields, conditions, combinator, and state.
-`BUILDING` means the index is registered but its backfill has not completed;
-`READY` means it can be used. FoundationDB exposes its live backfill state.
+`BUILDING` means the definition is registered but its physical build has not completed;
+`READY` means it can be used.
 Synchronous PostgreSQL and SQLite creation normally returns only after the
 index is ready.
 

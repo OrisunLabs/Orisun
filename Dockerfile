@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.2-bookworm AS builder
 
 # Set working directory
 WORKDIR /app

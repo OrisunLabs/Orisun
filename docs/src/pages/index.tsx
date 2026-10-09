@@ -22,11 +22,11 @@ const guaranteeNotes = [
   },
   {
     title: 'Storage remains the durable truth',
-    detail: 'Publisher checkpoints recover from storage before subscribers return to live JetStream delivery.',
+    detail: 'Subscriptions read every event from durable storage and resume from consumer checkpoints.',
   },
   {
     title: 'Ordering belongs to the boundary',
-    detail: 'Committed events publish sequentially by transaction and global position within each boundary.',
+    detail: 'Each subscription delivers matching events in ascending commit and prepare position order.',
   },
 ];
 
@@ -53,7 +53,7 @@ const outcomes = [
     label: 'Reaction',
     title: 'Recover and continue from every commit',
     description:
-      'Durable checkpoints provide no-skip, sequential publishing per boundary. Subscribers catch up from storage before moving live.',
+      'Consumer checkpoints and ordered backend reads support replay. Core NATS hints and idle watchdogs wake subscriptions while NATS is healthy.',
   },
 ];
 
@@ -81,10 +81,10 @@ const useCases = [
 ];
 
 const flow: FlowStep[] = [
-  ['1', 'Read the evidence', 'Query one consistent snapshot of the event history the command needs.'],
+  ['1', 'Read the evidence', 'Read each required context and retain its complete query and latest matching position.'],
   ['2', 'Make the decision', 'Apply business rules in application code and produce the next events.'],
   ['3', 'Validate and commit', 'Save only if the same declared event subset is still at the expected position.'],
-  ['4', 'Deliver the result', 'Publish sequentially per boundary, with storage-backed catch-up before live delivery.'],
+  ['4', 'Deliver the result', 'Deliver matching events through ordered backend reads, triggered by Core NATS hints.'],
 ];
 
 const backends = [
@@ -92,19 +92,13 @@ const backends = [
     name: 'SQLite',
     href: '/docs/getting-started#run-sqlite-from-a-binary',
     summary: 'Single-node production, embedded applications, edge services, and local development.',
-    details: ['one active node', 'JSON criteria', 'durable checkpoints'],
+    details: ['one active node', 'JSON criteria', 'consumer checkpoints'],
   },
   {
     name: 'PostgreSQL',
     href: '/docs/getting-started#run-postgresql-from-a-binary',
     summary: 'Multi-node Orisun deployments with mature database operations and shared storage.',
     details: ['cluster locks', 'schema boundaries', 'PgBouncer'],
-  },
-  {
-    name: 'FoundationDB',
-    href: '/docs/operations/foundationdb',
-    summary: 'Beta clustered backend with ordered key ranges and parallel commits.',
-    details: ['versionstamps', 'fenced leases', 'covering indexes'],
   },
 ];
 
@@ -154,11 +148,12 @@ await client.saveEvents({
 const dockerExample = `docker run --rm \\
   -p 5005:5005 \\
   -e ORISUN_BACKEND=sqlite \\
+  -e ORISUN_NATS_STORE_DIR=/var/lib/orisun/nats \\
   -e ORISUN_SQLITE_DIR=/var/lib/orisun/sqlite \\
   -e ORISUN_NATS_CLUSTER_ENABLED=false \\
   -e ORISUN_ADMIN_BOUNDARY=orisun_admin \\
   -v orisun-data:/var/lib/orisun \\
-  orisunlabs/orisun:0.6.1-sqlite`;
+  orisunlabs/orisun:0.13.0-sqlite`;
 
 export default function Home(): ReactNode {
   const diagramUrl = useBaseUrl('/img/orisun-flow.svg');
@@ -219,7 +214,7 @@ export default function Home(): ReactNode {
   return (
     <Layout
       title="The Event Database for Decisions That Must Stay Correct"
-      description="Orisun preserves complete event history, validates each declared command context at commit time, and publishes committed events sequentially within each boundary."
+      description="Orisun preserves complete event history, validates each declared command context at commit time, and delivers matching committed events in order through backend subscriptions."
     >
       <main ref={pageRef} className={styles.page}>
         <header className={styles.hero}>
@@ -413,21 +408,22 @@ export default function Home(): ReactNode {
         <section id="architecture" className="section">
           <div className={clsx('container', styles.architectureGrid)}>
             <div className={styles.architectureMedia} data-scale-reveal>
-              <img src={diagramUrl} alt="Command, Orisun storage, and JetStream delivery flow" />
+              <img src={diagramUrl} alt="Command checks, durable storage, and Core NATS subscription hints" />
             </div>
             <div className={styles.architectureCopy}>
               <span className={styles.eyebrow}>Built as one system</span>
               <h2>The durable log and delivery path share one ordering contract.</h2>
               <p>
-                Storage remains the source of truth. Embedded JetStream is the live delivery layer,
-                while durable publisher checkpoints ensure committed events are not skipped.
-                Publishing is at least once and sequential within each boundary.
+                Storage remains the source of truth. Core NATS carries empty wake-up hints;
+                subscriptions read every event from the backend. Consumers persist their own
+                checkpoints and handle ordered, at-least-once replay. JetStream provides leases
+                and admin messaging.
               </p>
               <ul>
                 <li>Transactional event writes and context checks</li>
                 <li>Runtime boundary creation through a durable event-backed catalog</li>
-                <li>Durable per-boundary publisher checkpoints</li>
-                <li>Storage-backed catch-up before live delivery</li>
+                <li>Subscription cursors and consumer checkpoints</li>
+                <li>Ordered backend reads for catch-up and new events</li>
                 <li>gRPC, auth, indexes, telemetry, and admin APIs</li>
               </ul>
               <aside
@@ -480,8 +476,8 @@ export default function Home(): ReactNode {
               <span className={styles.eyebrow}>Deploy your way</span>
               <h2>Keep the API. Change the operational shape.</h2>
               <p>
-                Start with a complete SQLite server, then use PostgreSQL or the FoundationDB
-                beta backend when the deployment needs multiple nodes or distributed storage.
+                Start with a complete SQLite server, then use PostgreSQL
+                when the deployment needs multiple nodes or shared database operations.
               </p>
             </div>
             <div className={styles.backendGrid}>
@@ -512,8 +508,8 @@ export default function Home(): ReactNode {
               <span className={styles.eyebrow}>Start locally</span>
               <h2>A complete event database in one SQLite container.</h2>
               <p>
-                Run the event log, context checks, publisher checkpoints, admin state, and embedded
-                JetStream together. The same EventStore API carries forward to every backend.
+                Run the event log, context checks, subscriptions, admin state, and embedded
+                NATS together. The same EventStore API carries forward to every backend.
               </p>
               <div className={styles.actions}>
                 <Link className="button button--primary button--lg" to="/docs/getting-started">

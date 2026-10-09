@@ -1,4 +1,4 @@
-# Storage backend selector. Values: "postgres" (default), "sqlite", or "foundationdb".
+# Storage backend selector. Values: "postgres" (default), "sqlite".
 # sqlite is single-node only — incompatible with ORISUN_NATS_CLUSTER_ENABLED=true.
 backend:
   type: ${ORISUN_BACKEND:postgres}
@@ -34,15 +34,6 @@ sqlite:
     maxDelay: ${ORISUN_SQLITE_GC_MAX_DELAY:0s}
     maxPending: ${ORISUN_SQLITE_GC_MAX_PENDING:4096}
     flushTimeout: ${ORISUN_SQLITE_GC_FLUSH_TIMEOUT:30s}
-
-# FoundationDB backend settings (used when backend.type=foundationdb).
-# Build with -tags foundationdb and install native FoundationDB client libraries.
-foundationDB:
-  clusterFile: ${ORISUN_FDB_CLUSTER_FILE:}
-  apiVersion: ${ORISUN_FDB_API_VERSION:730}
-  root: ${ORISUN_FDB_ROOT:orisun}
-  transactionTimeoutMs: ${ORISUN_FDB_TRANSACTION_TIMEOUT_MS:10000}
-  transactionRetryLimit: ${ORISUN_FDB_TRANSACTION_RETRY_LIMIT:0}
 
 postgres:
   user: ${ORISUN_PG_USER:postgres}

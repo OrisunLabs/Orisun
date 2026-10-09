@@ -927,8 +927,6 @@ func grpcStorageBackend(backend string) grpcapi.StorageBackend {
 		return grpcapi.StorageBackend_STORAGE_BACKEND_POSTGRES
 	case "sqlite":
 		return grpcapi.StorageBackend_STORAGE_BACKEND_SQLITE
-	case "foundationdb":
-		return grpcapi.StorageBackend_STORAGE_BACKEND_FOUNDATIONDB
 	default:
 		return grpcapi.StorageBackend_STORAGE_BACKEND_UNSPECIFIED
 	}

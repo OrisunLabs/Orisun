@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           check-latest: true
 
       - name: Install dependencies
@@ -30,26 +30,6 @@ jobs:
 
       - name: Run tests
         run: go test -p 1 -timeout 90m -v ./...
-
-  foundationdb-test:
-    name: Test FoundationDB Backend
-    runs-on: ubuntu-latest
-    env:
-      FDB_VERSION: '7.3.77'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Run FoundationDB backend tests
-        run: scripts/fdb_test_container.sh -run TestFoundationDB -v
-
-      - name: Run FoundationDB gRPC ledger workload
-        run: TEST_PKGS=./cmd/ scripts/fdb_test_container.sh -run TestE2E_LedgerWorkload_FoundationDB -v
-
-      - name: Build FoundationDB binary
-        run: TEST_PKGS=./cmd/orisun-fdb scripts/fdb_test_container.sh -run '^$'
 
   # lint:
   #   name: Lint
@@ -63,7 +43,7 @@ jobs:
   #     - name: Set up Go
   #       uses: actions/setup-go@v5
   #       with:
-  #         go-version: '1.27.1'
+  #         go-version: '1.27.2'
   #         check-latest: true
 
   #     - name: golangci-lint
@@ -83,7 +63,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           check-latest: true
 
       - name: Build
@@ -94,6 +74,3 @@ jobs:
 
       - name: Build SQLite-only Docker image
         run: docker build -t orisun-sqlite:test --build-arg FLAVOR=sqlite .
-
-      - name: Build FoundationDB-only Docker image
-        run: docker build -t orisun-fdb:test -f Dockerfile.fdb .

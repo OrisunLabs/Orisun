@@ -261,10 +261,6 @@ func (s *BenchmarkSetup) startBinary(b *testing.B) {
 		env = append(env,
 			fmt.Sprintf("ORISUN_SQLITE_DIR=%s", s.sqliteDir),
 		)
-	case "foundationdb":
-		env = append(env,
-			fmt.Sprintf("ORISUN_SQLITE_DIR=%s", s.sqliteDir),
-		)
 	default:
 		b.Fatalf("unknown benchmark backend: %s", s.backend)
 	}

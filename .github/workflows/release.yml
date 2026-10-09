@@ -188,7 +188,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           check-latest: true
 
       - name: Build binary
@@ -208,62 +208,9 @@ jobs:
 
 
 
-  build-fdb:
-    name: Build FoundationDB Binary (${{ matrix.arch }})
-    needs: validate
-    if: ${{ !inputs.docker_only }}
-    runs-on: ${{ matrix.runner }}
-    env:
-      FDB_VERSION: '7.3.77'
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            deb_arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            deb_arch: aarch64
-            runner: ubuntu-24.04-arm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.validate.outputs.commit }}
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.1'
-          check-latest: true
-
-      # The FDB Go binding is cgo and links libfdb_c at build and run time, so the
-      # binary is built natively per arch (no cross-compile) against the installed
-      # client package.
-      - name: Install FoundationDB client library
-        run: |
-          curl -fsSL -o /tmp/clients.deb \
-            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_${{ matrix.deb_arch }}.deb"
-          sudo dpkg -i /tmp/clients.deb
-
-      - name: Build binary
-        run: |
-          mkdir -p build
-          CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.arch }} go build \
-            -tags foundationdb \
-            -ldflags="-X 'github.com/OrisunLabs/Orisun/orisun.Version=v${{ needs.validate.outputs.version }}' -X 'github.com/OrisunLabs/Orisun/orisun.BuildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')' -X 'github.com/OrisunLabs/Orisun/orisun.GitCommit=${{ needs.validate.outputs.short_commit }}'" \
-            -o build/orisun-fdb-linux-${{ matrix.arch }} \
-            ./cmd/orisun-fdb
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: orisun-fdb-linux-${{ matrix.arch }}
-          path: build/orisun-fdb-linux-${{ matrix.arch }}
-          if-no-files-found: error
-
   create-release:
     name: Create GitHub Release
-    needs: [validate, build-binaries, build-fdb]
+    needs: [validate, build-binaries]
     if: ${{ !inputs.docker_only }}
     runs-on: ubuntu-latest
     permissions:
@@ -331,10 +278,6 @@ jobs:
           curl -L https://github.com/OrisunLabs/Orisun/releases/download/v${VERSION}/orisun-sqlite-linux-amd64 -o orisun-sqlite
           chmod +x orisun-sqlite
 
-          # FoundationDB-only binary (Linux only; requires the FoundationDB
-          # client library installed: foundationdb-clients ${FDB_VERSION:-7.3.x})
-          curl -L https://github.com/OrisunLabs/Orisun/releases/download/v${VERSION}/orisun-fdb-linux-amd64 -o orisun-fdb
-          chmod +x orisun-fdb
           \`\`\`
 
           ### macOS
@@ -355,10 +298,9 @@ jobs:
           \`\`\`bash
           docker pull orisunlabs/orisun:${VERSION}-pg
           docker pull orisunlabs/orisun:${VERSION}-sqlite
-          docker pull orisunlabs/orisun:${VERSION}-fdb
           \`\`\`
 
-          Channel tags are also available: \`pg\`, \`sqlite\`, and \`fdb\`.
+          Channel tags are also available: \`pg\` and \`sqlite\`.
           EOF
 
           echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
@@ -391,10 +333,6 @@ jobs:
             channel_tag: sqlite
             version_suffix: -sqlite
             dockerfile: Dockerfile
-          - flavor: fdb
-            channel_tag: fdb
-            version_suffix: -fdb
-            dockerfile: Dockerfile.fdb
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

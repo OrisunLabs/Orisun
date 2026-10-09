@@ -14,10 +14,9 @@ func TestNewServerRuntimeInfo(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]grpcapi.StorageBackend{
-		"postgres":     grpcapi.StorageBackend_STORAGE_BACKEND_POSTGRES,
-		"sqlite":       grpcapi.StorageBackend_STORAGE_BACKEND_SQLITE,
-		"foundationdb": grpcapi.StorageBackend_STORAGE_BACKEND_FOUNDATIONDB,
-		"unknown":      grpcapi.StorageBackend_STORAGE_BACKEND_UNSPECIFIED,
+		"postgres": grpcapi.StorageBackend_STORAGE_BACKEND_POSTGRES,
+		"sqlite":   grpcapi.StorageBackend_STORAGE_BACKEND_SQLITE,
+		"unknown":  grpcapi.StorageBackend_STORAGE_BACKEND_UNSPECIFIED,
 	}
 	for backend, want := range tests {
 		cfg := config.AppConfig{Backend: config.BackendConfig{Type: backend}}

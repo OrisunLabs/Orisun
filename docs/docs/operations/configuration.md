@@ -7,13 +7,12 @@ Orisun reads environment variables with the `ORISUN_` prefix.
 
 Configuration is shared across release binaries, Docker images, and embedded deployments that call `config.InitializeConfig()`. If you run the binary directly, set these variables in your shell, process supervisor, service manager, or platform secret store. The compiled defaults come from [`config/config.yaml`](https://github.com/OrisunLabs/Orisun/blob/main/config/config.yaml).
 
-## Minimum Required Settings
+## Bootstrap settings
 
-| Variable | Description |
-| --- | --- |
-| `ORISUN_BACKEND` | `postgres`, `sqlite`, or `foundationdb`; defaults to `postgres`. |
-| `ORISUN_ADMIN_BOUNDARY` | Boundary used for admin state. |
-| `ORISUN_ADMIN_PASSWORD` | Bootstrap admin password. The default is for local development only. |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ORISUN_ADMIN_BOUNDARY` | `orisun_admin` | Boundary used for admin state. |
+| `ORISUN_ADMIN_PASSWORD` | `changeit` | Bootstrap admin password. The default is for local development only; it does not reset an existing user password. |
 
 For PostgreSQL, also set:
 
@@ -36,25 +35,13 @@ For SQLite, set:
 | `ORISUN_SQLITE_SYNCHRONOUS` | `FULL` | Recommended SQLite durability mode. Use `NORMAL` only when you explicitly accept the power-loss durability tradeoff. |
 | `ORISUN_NATS_CLUSTER_ENABLED` | `false` | Must stay `false` for SQLite. |
 
-For FoundationDB beta deployments, set:
-
-| Variable | Description |
-| --- | --- |
-| `ORISUN_FDB_CLUSTER_FILE` | FoundationDB cluster file path. Empty uses the client default. |
-| `ORISUN_FDB_API_VERSION` | FoundationDB API version. Defaults to `730`. |
-| `ORISUN_FDB_ROOT` | Root tuple prefix for Orisun data. Defaults to `orisun`. |
-| `ORISUN_FDB_TRANSACTION_TIMEOUT_MS` | Per-transaction timeout including internal retries. Defaults to `10000`; negative disables. |
-| `ORISUN_FDB_TRANSACTION_RETRY_LIMIT` | Max internal retries per transaction. Defaults to `0` (unlimited; the timeout is the bound). |
-
-FoundationDB support is beta. It is compiled with `-tags foundationdb` and requires native FoundationDB client libraries on the host, unless you use the published `orisun:fdb` Docker image. Review the FDB-specific release notes before upgrading, because storage layout and operational defaults may still change while the backend hardens.
-
 ## Boundary management
 
 Boundaries are defined through the Admin `CreateBoundary` RPC and stored as
 lifecycle events in the admin boundary. They do not require a startup boundary
 list.
 
-For PostgreSQL-compatible backends, `ORISUN_PG_ADMIN_SCHEMA` identifies the
+For PostgreSQL, `ORISUN_PG_ADMIN_SCHEMA` identifies the
 schema that contains the admin boundary:
 
 ```bash
@@ -64,9 +51,6 @@ ORISUN_PG_ADMIN_SCHEMA=admin
 Application-boundary names and placements are replayed from the admin catalog.
 Create them with `CreateBoundary`; there is no startup application-boundary
 list. SQLite bootstraps only the admin boundary on a fresh installation.
-FoundationDB is beta; define its boundaries through `CreateBoundary`, using
-the configured `ORISUN_FDB_ROOT` as the namespace.
-
 Boundary names must be valid PostgreSQL identifiers even when using SQLite: 1-63 characters, starting with a letter or underscore, then letters, digits, or underscores. This keeps boundary names portable across backends.
 
 ### Existing storage
@@ -81,6 +65,7 @@ restored storage in the current format, call `CreateBoundary` with its placement
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `ORISUN_BACKEND` | `postgres` | All-backends binary selector: `postgres` or `sqlite`. Backend-specific binaries fix their backend. |
 | `ORISUN_GRPC_PORT` | `5005` | gRPC API port. |
 | `ORISUN_GRPC_ENABLE_REFLECTION` | `true` | Enable gRPC reflection for tools such as `grpcurl`. |
 | `ORISUN_GRPC_CONNECTION_TIMEOUT` | `60s` | Server connection timeout. |
@@ -100,7 +85,7 @@ restored storage in the current format, call `CreateBoundary` with its placement
 | `ORISUN_ADMIN_PASSWORD` | `changeit` | Bootstrap admin password. |
 | `ORISUN_AUTH_SESSION_TTL` | `24h` | Inactivity timeout for `x-auth-token` sessions. Successful token use renews the deadline. Must be greater than zero. |
 | `ORISUN_LOGGING_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
-| `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` | `1s` | Positive silence threshold since a subscription last received a hint; its watchdog publishes a NATS hint at expiry. No periodic backend reads. |
+| `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` | `10s` | Positive silence threshold since a subscription last received a hint; its watchdog publishes a NATS hint at expiry. No periodic backend reads. |
 
 ## SQLite settings
 
@@ -130,20 +115,20 @@ configured `ORISUN_NATS_STORE_DIR`.
 | `ORISUN_SQLITE_SYNCHRONOUS` | `FULL` | Recommended SQLite synchronous mode. `FULL` makes acknowledged WAL commits durable across OS crashes and power loss. `NORMAL` can improve write throughput, but acknowledged commits may be lost until a checkpoint reaches durable storage; use it only as an explicit, measured opt-out. |
 | `ORISUN_SQLITE_BUSY_TIMEOUT_MS` | `5000` | Busy timeout for contended SQLite operations. |
 | `ORISUN_SQLITE_READ_POOL_SIZE` | `0` | Read pool size. `0` lets Orisun choose a CPU-based default. |
-| `ORISUN_SQLITE_CACHE_SIZE` | `0` | SQLite cache size override. |
-| `ORISUN_SQLITE_MMAP_SIZE` | `0` | SQLite mmap size override. |
-| `ORISUN_SQLITE_WAL_AUTO_CHECKPOINT` | `0` | SQLite WAL auto-checkpoint override. |
+| `ORISUN_SQLITE_CACHE_SIZE` | `0` | SQLite `PRAGMA cache_size` override: positive values are pages; negative values are KiB. `0` leaves the SQLite default unchanged. |
+| `ORISUN_SQLITE_MMAP_SIZE` | `0` | SQLite `PRAGMA mmap_size` override in bytes. `0` leaves the SQLite default unchanged. |
+| `ORISUN_SQLITE_WAL_AUTO_CHECKPOINT` | `0` | WAL auto-checkpoint threshold in pages. `0` leaves the SQLite default unchanged. |
 | `ORISUN_SQLITE_TEMP_STORE` | `MEMORY` | SQLite temp-store mode. |
 | `ORISUN_SQLITE_PUBLISHER_WAKE_DELAY` | `5ms` | Coalesce notification relay wake-ups after SQLite commits. Set `0s` for immediate wake-ups; idle watchdog hints recover missed signals while NATS is healthy. |
-| `ORISUN_SQLITE_GC_MAX_BATCH_REQUESTS` | `128` | Maximum save requests flushed by one SQLite group-commit batch. Applies to both V2 calls and translated legacy requests. |
+| `ORISUN_SQLITE_GC_MAX_BATCH_REQUESTS` | `128` | Maximum save requests flushed by one SQLite group-commit batch. All SDK save methods use the same V2 RPC. |
 | `ORISUN_SQLITE_GC_MAX_BATCH_EVENTS` | `1024` | Maximum events flushed by one SQLite group-commit batch. A request that would exceed the cap is carried to the next flush. |
 | `ORISUN_SQLITE_GC_MAX_DELAY` | `0s` | Optional wait to fill a SQLite group-commit batch. `0s` keeps batching opportunistic. |
 | `ORISUN_SQLITE_GC_MAX_PENDING` | `4096` | Per-boundary queued save-request capacity before callers block. |
 | `ORISUN_SQLITE_GC_FLUSH_TIMEOUT` | `30s` | Timeout for one SQLite group-commit flush. |
 
-## PostgreSQL-compatible settings
+## PostgreSQL settings
 
-Orisun uses per-boundary group commit plus separate PostgreSQL-compatible pools for writes, reads, and admin work. Size the pools' combined open connections below the database connection limit or the PgBouncer pool size.
+Orisun uses per-boundary group commit plus separate PostgreSQL pools for writes, reads, and admin work. Size the pools' combined open connections below the database connection limit or the PgBouncer pool size.
 
 | Variable | Default | Description |
 | --- |---------| --- |
@@ -152,7 +137,7 @@ Orisun uses per-boundary group commit plus separate PostgreSQL-compatible pools 
 | `ORISUN_PG_WRITE_MAX_IDLE_CONNS` | `10`    | Write pool idle-connection cap. |
 | `ORISUN_PG_WRITE_CONN_MAX_IDLE_TIME` | `5m`    | Write pool idle lifetime. |
 | `ORISUN_PG_WRITE_CONN_MAX_LIFETIME` | `30m`   | Write pool max connection lifetime. |
-| `ORISUN_PG_GC_MAX_BATCH_REQUESTS` | `512`   | Maximum save requests committed in one PostgreSQL group-commit transaction. Applies to both V2 calls and translated legacy requests. |
+| `ORISUN_PG_GC_MAX_BATCH_REQUESTS` | `512`   | Maximum save requests committed in one PostgreSQL group-commit transaction. All SDK save methods use the same V2 RPC. |
 | `ORISUN_PG_GC_MAX_BATCH_EVENTS` | `1024`  | Maximum events committed in one PostgreSQL group-commit transaction. A request that would exceed the cap is carried to the next flush. |
 | `ORISUN_PG_GC_MAX_DELAY` | `0s`    | Optional wait to fill a PostgreSQL group-commit batch. `0s` keeps batching opportunistic. |
 | `ORISUN_PG_GC_MAX_PENDING` | `4096`  | Per-boundary queued save-request capacity before callers block. |
@@ -175,7 +160,7 @@ Orisun uses per-boundary group commit plus separate PostgreSQL-compatible pools 
 | `ORISUN_NATS_PORT` | `4224` | Embedded NATS client port. |
 | `ORISUN_NATS_MAX_PAYLOAD` | `1048576` | NATS max payload. |
 | `ORISUN_NATS_STORE_DIR` | `./data/orisun/nats` | NATS data directory. |
-| `ORISUN_NATS_PUBLISH_ASYNC_MAX_PENDING` | `8192` | In-flight async publish acknowledgements. |
+| `ORISUN_NATS_PUBLISH_ASYNC_MAX_PENDING` | `8192` | In-flight JetStream async publish acknowledgements for admin messaging; does not buffer subscription hints. |
 
 Core NATS carries empty transient hints without stream retention or replicas.
 NATS listeners use the client’s default bounded pending queue; each drain keeps

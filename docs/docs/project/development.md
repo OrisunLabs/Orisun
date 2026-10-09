@@ -5,7 +5,7 @@ description: Build, test, document, and package Orisun.
 
 ## Requirements
 
-- Go 1.27.1+
+- Go 1.27.2+
 - Docker for integration tests
 - `task` for optional development workflows
 - Bun 1.3.13 for the documentation site

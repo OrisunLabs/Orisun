@@ -5,12 +5,13 @@ description: Run Orisun directly inside a Go service.
 
 Go services can embed Orisun directly instead of running the gRPC server as a separate process.
 
-This guide follows the current `main` branch and includes the upcoming
-`SaveEventsV2` API. To build against that API before its first tagged release,
-install the canonical module path from `main`:
+This guide describes the selected documentation version. `v0.13.0` already
+supports `SaveEventsV2`; notification simplification and backend removal are
+changes after that release. For **Next**, build against the exact source revision
+you intend to run:
 
 ```bash
-go get github.com/OrisunLabs/Orisun@main
+go get 'github.com/OrisunLabs/Orisun@<revision>'
 ```
 
 For production, pin the exact release version that contains the APIs you use
@@ -23,7 +24,6 @@ Backend-specific embedding packages keep deployments explicit:
 
 - `embedded/postgres` imports the PostgreSQL backend.
 - `embedded/sqlite` imports the SQLite backend.
-- `embedded/foundationdb` imports the FoundationDB backend when built with `-tags foundationdb`.
 - Neither package needs the unused backend.
 
 Use embedding when Orisun should be part of your service process. Use the standalone server when you want a separate operational boundary and language-agnostic gRPC access.
@@ -106,38 +106,6 @@ store, err := embeddedsqlite.Start(
 
 SQLite remains single-node only. Keep `cfg.Nats.Cluster.Enabled = false`.
 
-## FoundationDB Embedding
-
-FoundationDB embedding is beta. It requires the native FoundationDB client libraries and a build with the `foundationdb` tag. Treat FDB storage layout and operational defaults as subject to breaking change until the backend graduates from beta.
-
-```go
-import (
-	"context"
-
-	embeddedfdb "github.com/OrisunLabs/Orisun/embedded/foundationdb"
-	"github.com/OrisunLabs/Orisun/config"
-	"github.com/OrisunLabs/Orisun/logging"
-)
-
-func start(ctx context.Context) (*embeddedfdb.Store, error) {
-	cfg := config.InitializeConfig()
-	cfg.Backend.Type = "foundationdb"
-	cfg.FoundationDB.ClusterFile = "/etc/foundationdb/fdb.cluster"
-	logger := logging.InitializeDefaultLogger(cfg.Logging)
-	return embeddedfdb.Start(ctx, cfg, logger)
-}
-```
-
-Use the same NATS options as the other embedded stores. Build the host service with:
-
-```bash
-go build -tags foundationdb ./...
-```
-
-Application boundaries must exist and be `ACTIVE` before they are used by
-`SaveEventsV2`, reads, subscriptions, or index management. Embedded stores expose
-the same event-backed lifecycle as the Admin gRPC API.
-
 ## Embedded boundary management
 
 The examples below use:
@@ -170,8 +138,7 @@ if err != nil {
 _ = created // the initial status is PROVISIONING
 ```
 
-For PostgreSQL use backend `postgres` and a schema namespace. For FoundationDB
-use backend `foundationdb` and the configured root. SQLite requires the
+For PostgreSQL use backend `postgres` and a schema namespace. SQLite requires the
 namespace to equal the boundary name.
 
 Creation is asynchronous because the method first emits a durable definition
@@ -185,7 +152,8 @@ for {
 	}
 	switch boundary.Status {
 	case boundarymodel.StatusActive:
-		// The runtime registry, publisher, and physical storage are ready.
+		// Shared provisioning completed; the local runtime may still be installing.
+		// Retry a brief FAILED_PRECONDITION from event operations.
 		goto ready
 	case boundarymodel.StatusFailed:
 		// Provisioning is retried automatically; expose the current cause.
@@ -219,7 +187,7 @@ Use `CreateBoundary` to attach restored storage in the current format:
 
 ```go
 existing, err := store.CreateBoundary(ctx, boundarymodel.Definition{
-	Name:                 "restored_orders",
+	Name:        "orders",
 	Description:          "Existing order event log",
 	Placement: boundarymodel.Placement{
 		Backend:   "postgres",
@@ -253,8 +221,8 @@ use(boundaries, boundary)
 
 At startup, embedded stores replay catalog definitions into the local runtime.
 PostgreSQL uses `ORISUN_PG_ADMIN_SCHEMA` only to locate the admin boundary;
-application schema placements come from the catalog. SQLite and FoundationDB
-also install application boundaries only from catalog definitions.
+application schema placements come from the catalog. SQLite
+also installs application boundaries only from catalog definitions.
 
 Startup upgrades storage from `0.13.0` without rewriting event
 documents. Older formats are rejected; historical boundary mappings are not imported.
@@ -276,7 +244,10 @@ for _, e := range batch {
 }
 ```
 
-One page is capped at 10,000 events; page forward from the last event's position for larger reads.
+Embedded backend reads default `Count: 0` to 1,000 and clamp counts to 10,000.
+`FromPosition` is inclusive; for larger reads request at least two rows, discard
+only the first row equal to the previous cursor, and continue from the last
+returned position. See [paging](../concepts/positions#positions-and-paging).
 
 For carried-state command contexts, `GetLatestByCriteria` takes a `LatestByCriteriaQuery` and returns a `LatestByCriteriaBatch`. Matches align positionally with the input criteria and expose a `Found` flag:
 
@@ -393,7 +364,7 @@ Embedded stores expose the same high-level behavior as the server:
 - create and import boundaries
 - list and inspect boundary lifecycle state
 - create and drop boundary indexes
-- preserve backend-specific publishing guarantees
+- deliver ordered events from durable backend reads
 
 ## Shutdown
 

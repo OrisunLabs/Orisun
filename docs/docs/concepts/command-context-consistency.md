@@ -149,7 +149,7 @@ an unconditional append. Pair every complete query with its observed position.
 
 When any observed query has changed, Orisun returns gRPC `ALREADY_EXISTS`. This is an expected concurrency signal, not a server failure. The application should re-read all contexts needed by the decision, rebuild its model, re-run business validation, and retry with fresh observations only if the command remains valid.
 
-Orisun validates equality queries and positions; it does not perform domain decoding or business validation. Those remain the command handler's responsibility.
+Orisun validates content-query predicates and positions; it does not perform domain decoding or business validation. Those remain the command handler's responsibility.
 
 Malformed observations fail closed with `INVALID_ARGUMENT`. Queries and
 criteria must be non-empty, every tag needs a key, and a position must either
@@ -164,7 +164,7 @@ criteria, and 16,384 total tags.
 - Preserve query-level observations; never attach separate positions to criteria from one OR query.
 - When `GetLatestByCriteria` informs a command, pair its exact request criteria with its returned `context_position`.
 - Use multiple observations when a command genuinely made multiple complete reads.
-- Create indexes for fields used by high-volume contexts. FoundationDB requires a native commit-position or write-ID range, or a ready covering secondary index, for each criterion in reads and checks.
+- Create indexes for fields used by high-volume contexts.
 - Treat `ALREADY_EXISTS` as a signal to re-read and decide again.
 
 If you are comparing terminology, see [CCC and DCB terminology](./dynamic-consistency-boundaries). Orisun product APIs and guidance use CCC.

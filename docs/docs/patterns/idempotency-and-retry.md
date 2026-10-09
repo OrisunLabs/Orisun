@@ -199,7 +199,7 @@ while (true) {
 `grpcurl` is not suited to retry loops because it makes one call. Use it to reproduce a single conflict:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "accounts",
   "consistency": [{

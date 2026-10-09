@@ -5,10 +5,12 @@ description: Choose a backend, run Orisun, and verify the gRPC API.
 slug: /getting-started
 ---
 
-Orisun is an event database for decisions that must stay correct as facts change: preserve the event history a command depends on, commit only when its declared context is still current, and publish committed events sequentially within each boundary without running a separate broker.
+Orisun is an event database for decisions that must stay correct as facts change: preserve the event history a command depends on, commit only when its declared context is still current, and deliver matching committed events sequentially within each subscription without running a separate broker.
 
-This guide follows the current `main` branch. The latest tagged release is
-`0.10.0`; `SaveEventsV2` is documented here for the upcoming release.
+These pages describe the breaking changes after `0.13.0`. When reading **Next**,
+build the checked-out source for its notification and storage behavior. Select
+**0.13.0** in the version menu when running that release; it already supports
+`SaveEventsV2`.
 
 You can run Orisun as a release binary, a Docker image, or an embedded Go package. Docker Compose is convenient for trying the full stack, but production deployments can run the binary directly under systemd, Nomad, Kubernetes, Fly, Render, or any process supervisor.
 
@@ -32,9 +34,8 @@ The examples use:
 
 ## Fastest local path
 
-Use SQLite first when you want the shortest feedback loop. Until
-`SaveEventsV2` has a tagged release, follow this page from a current `main`
-checkout:
+Use SQLite first when you want the shortest feedback loop. To try the upcoming
+release, build the checked-out source:
 
 1. Build `orisun-sqlite` with the commands under [Install a binary](#install-a-binary).
 2. Start it with the [SQLite binary example](#run-sqlite-from-a-binary).
@@ -53,9 +54,9 @@ You can move to PostgreSQL later without changing the EventStore API.
 | Embedded Go package | You want Orisun inside your service process. | [Go Embedding](./embedding/go) |
 
 :::note
-Release downloads and the unversioned registry tags currently resolve to the
-0.10 line, before `SaveEventsV2`. Use a current source build for the V2 steps
-until the next release is published.
+Release downloads and channel tags contain published releases, not necessarily
+the source described by Next. Use a source build for Next and pin a versioned
+image tag for a deployed release.
 :::
 
 ## Choose a backend
@@ -64,13 +65,13 @@ until the next release is published.
 | --- | --- | --- | --- | --- | --- |
 | SQLite | Embedded apps, edge services, development, single-node production | No | `orisun-sqlite` | `orisunlabs/orisun:sqlite` | `ghcr.io/orisunlabs/orisun:sqlite` |
 | PostgreSQL | Clustered deployments, larger datasets, shared database platforms | Yes | `orisun-pg` | `orisunlabs/orisun:pg` | `ghcr.io/orisunlabs/orisun:pg` |
-| FoundationDB | Distributed transactional key-value deployments | Yes | `orisun-fdb` | `orisunlabs/orisun:fdb` | `ghcr.io/orisunlabs/orisun:fdb` |
 
-All backends expose the same EventStore and Admin gRPC APIs. FoundationDB support is beta.
+Both backends expose the same EventStore and Admin gRPC APIs.
 
 ## Choose NATS mode
 
-Orisun starts embedded NATS JetStream by default. That is the simplest path for local development, standalone binaries, containers, and embedded Go services.
+Orisun starts embedded NATS with JetStream enabled by default. Core NATS carries
+subscription wake-ups; JetStream provides leases and admin messaging. That is the simplest path for local development, standalone binaries, containers, and embedded Go services.
 
 If you already operate a JetStream-enabled NATS server, set `ORISUN_NATS_URL`:
 
@@ -98,7 +99,6 @@ Download a release asset for your OS, architecture, and backend from [GitHub Rel
 | --- | --- |
 | `orisun-pg-<os>-<arch>` | PostgreSQL |
 | `orisun-sqlite-<os>-<arch>` | SQLite only |
-| `orisun-fdb-linux-<arch>` | FoundationDB only; beta; Linux only |
 
 For example, on Linux amd64:
 
@@ -116,11 +116,12 @@ Use a binary built from this release with the current client contract. To build
 the checked-out source locally:
 
 ```bash
-./build.sh linux amd64 dev pg
-./build/orisun-pg-linux-amd64
+./build.sh "$(go env GOOS)" "$(go env GOARCH)" dev sqlite
+cp "./build/orisun-sqlite-$(go env GOOS)-$(go env GOARCH)" ./orisun-sqlite
 
-./build.sh linux amd64 dev sqlite
-./build/orisun-sqlite-linux-amd64
+# For PostgreSQL instead:
+./build.sh "$(go env GOOS)" "$(go env GOARCH)" dev pg
+cp "./build/orisun-pg-$(go env GOOS)-$(go env GOARCH)" ./orisun-pg
 ```
 
 ## Run SQLite from a binary
@@ -146,7 +147,8 @@ crash/power-loss durability for write throughput.
 
 ## Run PostgreSQL from a binary
 
-PostgreSQL mode expects an existing PostgreSQL database. Create the database and schemas with your normal database tooling, then start Orisun with connection settings:
+PostgreSQL mode expects an existing PostgreSQL database. Create the database with your normal database tooling; Orisun initializes the
+configured admin schema and catalogued boundary storage, then start Orisun with connection settings:
 
 ```bash
 ORISUN_BACKEND=postgres \
@@ -174,6 +176,7 @@ services:
     environment:
       ORISUN_BACKEND: sqlite
       ORISUN_SQLITE_DIR: /var/lib/orisun/sqlite
+      ORISUN_NATS_STORE_DIR: /var/lib/orisun/nats
       ORISUN_NATS_CLUSTER_ENABLED: "false"
       ORISUN_ADMIN_BOUNDARY: orisun_admin
       ORISUN_ADMIN_USERNAME: admin
@@ -221,6 +224,7 @@ services:
       ORISUN_PG_PASSWORD: password@1
       ORISUN_PG_NAME: orisun
       ORISUN_PG_ADMIN_SCHEMA: admin
+      ORISUN_NATS_STORE_DIR: /var/lib/orisun/nats
       ORISUN_ADMIN_BOUNDARY: orisun_admin
       ORISUN_ADMIN_USERNAME: admin
       ORISUN_ADMIN_PASSWORD: changeit
@@ -228,7 +232,7 @@ services:
       - "5005:5005"
       - "8991:8991"
     volumes:
-      - orisun-data:/var/lib/orisun/data
+      - orisun-data:/var/lib/orisun
     depends_on:
       - postgres
     restart: unless-stopped
@@ -250,7 +254,7 @@ The examples use the default `admin:changeit` credentials.
 
 ```bash
 AUTH='Authorization: Basic YWRtaW46Y2hhbmdlaXQ='
-grpcurl -H "$AUTH" localhost:5005 list
+grpcurl -plaintext -H "$AUTH" localhost:5005 list
 ```
 
 Expected services include:
@@ -272,12 +276,12 @@ Use the placement for the backend you started:
 
 ```bash
 # SQLite
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"name":"orders","description":"Order events","placement":{"backend":"sqlite","namespace":"orders"}}' \
   localhost:5005 orisun.Admin/CreateBoundary
 
 # PostgreSQL
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"name":"orders","description":"Order events","placement":{"backend":"postgres","namespace":"public"}}' \
   localhost:5005 orisun.Admin/CreateBoundary
 ```
@@ -288,7 +292,7 @@ clustered node briefly returns `FAILED_PRECONDITION`, retry while its local
 runtime installation converges:
 
 ```bash
-grpcurl -H "$AUTH" \
+grpcurl -plaintext -H "$AUTH" \
   -d '{"name":"orders"}' \
   localhost:5005 orisun.Admin/GetBoundary
 ```
@@ -301,7 +305,7 @@ through environment mappings.
 This first write is deliberately unconditional, so it omits `consistency`:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 {
   "boundary": "orders",
   "events": [
@@ -316,14 +320,16 @@ grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/SaveEventsV2 <<EOF
 EOF
 ```
 
-The response contains the committed log position:
+For a fresh SQLite `orders` boundary, the response contains its write ID and
+committed log position (other backends can assign different position values):
 
 ```json
 {
   "log_position": {
     "commit_position": 1,
-    "prepare_position": 0
-  }
+    "prepare_position": 1
+  },
+  "write_id": "1:1"
 }
 ```
 
@@ -343,7 +349,6 @@ Binary assets are attached to each GitHub release:
 | --- | --- |
 | `orisun-pg-linux-amd64`, `orisun-pg-darwin-arm64`, ... | PostgreSQL |
 | `orisun-sqlite-linux-amd64`, `orisun-sqlite-darwin-arm64`, ... | SQLite only |
-| `orisun-fdb-linux-amd64`, `orisun-fdb-linux-arm64` | FoundationDB only; beta; requires native FDB client libraries |
 
 Docker images are published to Docker Hub and GitHub Container Registry with the same backend flavor tags:
 
@@ -351,12 +356,10 @@ Docker images are published to Docker Hub and GitHub Container Registry with the
 | --- | --- |
 | `orisunlabs/orisun:pg` | PostgreSQL |
 | `orisunlabs/orisun:sqlite` | SQLite only |
-| `orisunlabs/orisun:fdb` | FoundationDB only, beta, includes the FDB client library |
-| `orisunlabs/orisun:<version>-pg` | PostgreSQL-compatible release |
+| `orisunlabs/orisun:<version>-pg` | PostgreSQL release |
 | `orisunlabs/orisun:<version>-sqlite` | SQLite-only release |
-| `orisunlabs/orisun:<version>-fdb` | FoundationDB-only release |
 
-Use the same tag names under `ghcr.io/orisunlabs/orisun`, for example `ghcr.io/orisunlabs/orisun:0.10.0-fdb`.
+Use the same tag names under `ghcr.io/orisunlabs/orisun`, for example `ghcr.io/orisunlabs/orisun:<version>-pg`.
 
 ## Next steps
 

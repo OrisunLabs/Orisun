@@ -224,7 +224,7 @@ Use all queries that the command model actually read. If grading rules depend on
 Create indexes for scope keys used by command contexts or high-volume projections:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "courses",
   "name": "course_scope",
@@ -238,7 +238,7 @@ EOF
 For high-volume event categories, prefer partial indexes with `__eventType` conditions:
 
 ```bash
-grpcurl -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
+grpcurl -plaintext -H "$AUTH" -d @ localhost:5005 orisun.EventStore/CreateIndex <<EOF
 {
   "boundary": "courses",
   "name": "grade_assigned_enrollment_scope",
