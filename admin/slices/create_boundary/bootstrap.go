@@ -6,35 +6,11 @@ import (
 	"strings"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
 )
-
-// RequireMigratedCatalog prevents a pre-0.8 PostgreSQL installation from
-// starting without first importing its legacy boundary mappings in 0.8.0.
-func RequireMigratedCatalog(
-	ctx context.Context,
-	preexistingAdminStore bool,
-	adminBoundary string,
-	retriever LatestByCriteriaRetriever,
-) error {
-	if !preexistingAdminStore {
-		return nil
-	}
-
-	model, err := loadContext(ctx, adminBoundary, adminBoundary, retriever)
-	if err != nil {
-		return fmt.Errorf("inspect existing boundary catalog: %w", err)
-	}
-	if model.existing == nil {
-		return fmt.Errorf(
-			"existing PostgreSQL admin store has no boundary catalog; upgrade this installation through Orisun 0.8.0 with its complete ORISUN_PG_SCHEMAS mapping before starting this version",
-		)
-	}
-	return nil
-}
 
 // EnsureBootstrapBoundary creates the admin catalog definition on a fresh
 // installation. Existing definitions are accepted only when their immutable
@@ -105,16 +81,15 @@ func verifyBootstrapDefinition(
 
 func definitionFromEvent(event coreeventstore.ReadEvent) (boundarymodel.Definition, error) {
 	switch event.EventType {
-	case adminevents.EventTypeBoundaryCreated:
-		var data adminevents.BoundaryCreated
+	case boundaryevents.EventTypeBoundaryCreated:
+		var data boundaryevents.BoundaryCreated
 		if err := json.Unmarshal([]byte(event.Data), &data); err != nil {
 			return boundarymodel.Definition{}, err
 		}
 		return boundarymodel.Definition{
-			Name:                 data.Boundary,
-			Description:          data.Description,
-			Placement:            data.Placement,
-			ExistedBeforeCatalog: data.ExistedBeforeCatalog,
+			Name:        data.Boundary,
+			Description: data.Description,
+			Placement:   data.Placement,
 		}, nil
 	default:
 		return boundarymodel.Definition{}, fmt.Errorf("unsupported definition event %q", event.EventType)

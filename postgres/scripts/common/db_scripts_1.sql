@@ -1,3 +1,104 @@
+-- Compare JSON number tokens exactly, including values beyond float64 precision.
+-- Invalid numeric targets are incomparable. Exponents do not allocate expanded
+-- decimal strings.
+CREATE OR REPLACE FUNCTION orisun_compare_number(a TEXT, b TEXT)
+RETURNS INT LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+    tokens TEXT[] := ARRAY[a,b];
+    digits TEXT[] := ARRAY['',''];
+    magnitudes NUMERIC[] := ARRAY[0::NUMERIC,0::NUMERIC];
+    negatives BOOLEAN[] := ARRAY[FALSE,FALSE];
+    token TEXT;
+    exponent_at INT;
+    decimal_at INT;
+    fraction_length INT;
+    i INT;
+    comparison INT := 0;
+BEGIN
+    FOR i IN 1..2 LOOP
+        token := tokens[i];
+        IF token !~ '^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$' THEN RETURN NULL; END IF;
+        negatives[i] := left(token,1) = '-';
+        IF negatives[i] THEN token := substring(token FROM 2); END IF;
+        exponent_at := strpos(lower(token), 'e');
+        IF exponent_at > 0 THEN
+            magnitudes[i] := substring(token FROM exponent_at+1)::NUMERIC;
+            token := left(token, exponent_at-1);
+        END IF;
+        decimal_at := strpos(token, '.');
+        fraction_length := 0;
+        IF decimal_at > 0 THEN
+            fraction_length := length(token)-decimal_at;
+            token := replace(token, '.', '');
+        END IF;
+        digits[i] := ltrim(token, '0');
+        IF digits[i] = '' THEN negatives[i] := FALSE;
+        ELSE magnitudes[i] := magnitudes[i] + length(digits[i])-fraction_length;
+        END IF;
+    END LOOP;
+    IF negatives[1] <> negatives[2] THEN
+        RETURN CASE WHEN negatives[1] THEN -1 ELSE 1 END;
+    END IF;
+    IF digits[1] = '' AND digits[2] = '' THEN RETURN 0;
+    ELSIF digits[1] = '' THEN comparison := -1;
+    ELSIF digits[2] = '' THEN comparison := 1;
+    ELSIF magnitudes[1] < magnitudes[2] THEN comparison := -1;
+    ELSIF magnitudes[1] > magnitudes[2] THEN comparison := 1;
+    ELSE
+        digits[1] := rpad(digits[1], greatest(length(digits[1]),length(digits[2])), '0');
+        digits[2] := rpad(digits[2], length(digits[1]), '0');
+        IF digits[1] COLLATE "C" < digits[2] COLLATE "C" THEN comparison := -1;
+        ELSIF digits[1] COLLATE "C" > digits[2] COLLATE "C" THEN comparison := 1;
+        END IF;
+    END IF;
+    RETURN CASE WHEN negatives[1] THEN -comparison ELSE comparison END;
+END;
+$$;
+
+-- One renderer owns predicates for reads, latest observations, persisted CCC
+-- checks, and matching accepted events within a group-commit transaction.
+-- data_expression is supplied only by the storage implementation, never a query.
+CREATE OR REPLACE FUNCTION orisun_criterion_sql(criterion JSONB, data_expression TEXT DEFAULT 'data')
+RETURNS TEXT LANGUAGE plpgsql IMMUTABLE SET search_path FROM CURRENT AS $$
+DECLARE
+    field_key TEXT;
+    field_value JSONB;
+    predicates JSONB;
+    predicate JSONB;
+    operator_name TEXT;
+    sql_operator TEXT;
+    target TEXT;
+    scalar_expression TEXT;
+    parts TEXT[] := '{}';
+BEGIN
+    FOR field_key, field_value IN SELECT * FROM jsonb_each(criterion) ORDER BY key LOOP
+        IF jsonb_typeof(field_value) = 'string' THEN
+            predicates := jsonb_build_array(jsonb_build_object('operator','eq','value',field_value));
+        ELSIF jsonb_typeof(field_value) = 'array' AND jsonb_array_length(field_value) > 0 THEN
+            predicates := field_value;
+        ELSE RAISE EXCEPTION 'invalid tag predicates';
+        END IF;
+        FOR predicate IN SELECT * FROM jsonb_array_elements(predicates) LOOP
+            operator_name := COALESCE(NULLIF(predicate->>'operator',''), 'eq');
+            sql_operator := CASE operator_name WHEN 'eq' THEN '=' WHEN 'ne' THEN '<>'
+                WHEN 'gt' THEN '>' WHEN 'gte' THEN '>=' WHEN 'lt' THEN '<' WHEN 'lte' THEN '<=' END;
+            IF sql_operator IS NULL THEN RAISE EXCEPTION 'unsupported tag operator %', operator_name; END IF;
+            target := predicate->>'value';
+            scalar_expression := format('(%s ->> %L)', data_expression, field_key);
+            IF operator_name IN ('eq','ne') THEN
+                parts := parts || format('(%s %s %L)', scalar_expression, sql_operator, target);
+            ELSE
+                parts := parts || format(
+                    '(CASE jsonb_typeof(%s -> %L) WHEN ''string'' THEN (%s COLLATE "C" %s %L COLLATE "C") WHEN ''number'' THEN (orisun_compare_number(%s, %L) %s 0) ELSE FALSE END)',
+                    data_expression, field_key, scalar_expression, sql_operator, target,
+                    scalar_expression, target, sql_operator);
+            END IF;
+        END LOOP;
+    END LOOP;
+    RETURN CASE WHEN cardinality(parts) = 0 THEN 'TRUE' ELSE '(' || array_to_string(parts, ' AND ') || ')' END;
+END;
+$$;
+
 -- Canonical envelope encoding is owned by the storage write path.
 CREATE OR REPLACE FUNCTION orisun_event_document(payload JSONB, meta JSONB, tx BIGINT, gid BIGINT, wid BIGINT, created TIMESTAMPTZ)
 RETURNS JSONB LANGUAGE SQL STABLE AS $$
@@ -22,7 +123,6 @@ $$;
 -- Creates or maintains:
 --   <boundary>_orisun_es_event
 --   <boundary>_orisun_es_event_global_id_seq
---   <boundary>_orisun_last_published_event_position
 --   <boundary>_events_count
 --   <boundary>_projector_checkpoint
 --
@@ -48,23 +148,20 @@ BEGIN
 
     prefixed_seq_name := format('%I.%I', schema_name, boundary_name || '_orisun_es_event_global_id_seq');
 
-    -- Create the durable event table for this boundary.
-    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
-        transaction_id BIGINT NOT NULL,
-        pg_xact_id     BIGINT,
-        global_id      BIGINT PRIMARY KEY,
-        event_id       UUID NOT NULL,
-        data           JSONB NOT NULL,
-        metadata       JSONB,
-        date_created   TIMESTAMPTZ DEFAULT (NOW() AT TIME ZONE ''UTC'') NOT NULL
-    )', schema_name, boundary_name || '_orisun_es_event');
-
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         write_id BIGINT PRIMARY KEY,
         consistency JSONB NOT NULL CHECK (jsonb_typeof(consistency) = ''array'')
     )', schema_name, boundary_name || '_orisun_es_write');
-    EXECUTE format('ALTER TABLE %I.%I ADD COLUMN IF NOT EXISTS write_id BIGINT REFERENCES %I.%I(write_id)',
-        schema_name, boundary_name || '_orisun_es_event', schema_name, boundary_name || '_orisun_es_write');
+    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
+        data JSONB NOT NULL CHECK (jsonb_typeof(data) = ''object''),
+        pg_xact_id BIGINT,
+        transaction_id BIGINT GENERATED ALWAYS AS ((data->>''__commitPosition'')::BIGINT) STORED NOT NULL,
+        global_id BIGINT GENERATED ALWAYS AS ((data->>''__preparePosition'')::BIGINT) STORED NOT NULL PRIMARY KEY,
+        write_id BIGINT GENERATED ALWAYS AS (NULLIF(split_part(data->>''__writeId'', '':'', 2), '''')::BIGINT) STORED REFERENCES %I.%I(write_id),
+        metadata JSONB GENERATED ALWAYS AS (data->''__metadata'') STORED,
+        date_created TEXT GENERATED ALWAYS AS (data->>''__dateCreated'') STORED NOT NULL,
+        CHECK ((jsonb_typeof(data->''__dateCreated'') = ''string'' AND (data->>''__dateCreated'')::timestamptz IS NOT NULL) IS TRUE)
+    )', schema_name, boundary_name || '_orisun_es_event', schema_name, boundary_name || '_orisun_es_write');
 
     -- Create the boundary-local global_id sequence.
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I.%I
@@ -86,41 +183,7 @@ BEGIN
           AND pg_xact_id >= pg_current_xact_id()::TEXT::BIGINT',
                    schema_name, boundary_name || '_orisun_es_event');
 
-    EXECUTE format('SELECT setval(%L::regclass, (SELECT COALESCE(MAX(global_id) + 1, 0) FROM %I.%I), false)',
-                   prefixed_seq_name,
-                   schema_name,
-                   boundary_name || '_orisun_es_event');
 
-    -- Older releases included the unbounded JSONB data and metadata columns in
-    -- these B-tree indexes. PostgreSQL applies its index-tuple size limit to
-    -- INCLUDE columns too, so sufficiently large events could not be inserted.
-    -- Drop only those legacy managed definitions; the lean replacements below
-    -- keep ordered reads fast without copying event payloads into the index.
-    IF EXISTS (
-        SELECT 1
-        FROM pg_indexes
-        WHERE schemaname = schema_name
-          AND tablename = boundary_name || '_orisun_es_event'
-          AND indexname = boundary_name || '_idx_global_order_covering'
-          AND indexdef ILIKE '%INCLUDE%'
-          AND indexdef ILIKE '%data%'
-    ) THEN
-        EXECUTE format('DROP INDEX %I.%I',
-                       schema_name, boundary_name || '_idx_global_order_covering');
-    END IF;
-
-    IF EXISTS (
-        SELECT 1
-        FROM pg_indexes
-        WHERE schemaname = schema_name
-          AND tablename = boundary_name || '_orisun_es_event'
-          AND indexname = boundary_name || '_idx_event_order_visibility_covering'
-          AND indexdef ILIKE '%INCLUDE%'
-          AND indexdef ILIKE '%data%'
-    ) THEN
-        EXECUTE format('DROP INDEX %I.%I',
-                       schema_name, boundary_name || '_idx_event_order_visibility_covering');
-    END IF;
 
     -- Create indexes used by latest-position checks and ordered event reads.
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC)',
@@ -142,15 +205,6 @@ BEGIN
         date_updated TIMESTAMPTZ DEFAULT NOW() NOT NULL
     )', schema_name, boundary_name || '_orisun_boundary_index_metadata');
 
-    -- Create the per-boundary NATS publisher checkpoint table.
-    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
-        boundary       TEXT PRIMARY KEY,
-        transaction_id BIGINT NOT NULL DEFAULT 0,
-        global_id      BIGINT NOT NULL DEFAULT 0,
-        date_created   TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-        date_updated   TIMESTAMPTZ DEFAULT NOW() NOT NULL
-    )', schema_name, boundary_name || '_orisun_last_published_event_position');
-
     -- Create the admin event-count cache table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
         id          VARCHAR(255) PRIMARY KEY,
@@ -158,18 +212,6 @@ BEGIN
         created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )', schema_name, boundary_name || '_events_count');
-
-    -- Legacy tables stored the count as VARCHAR; convert in place (one-row cache).
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = schema_name
-          AND table_name = boundary_name || '_events_count'
-          AND column_name = 'event_count'
-          AND data_type = 'character varying'
-    ) THEN
-        EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN event_count TYPE BIGINT USING event_count::BIGINT',
-                       schema_name, boundary_name || '_events_count');
-    END IF;
 
     -- Create the admin/projector checkpoint table.
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I (
@@ -184,10 +226,6 @@ $$ LANGUAGE plpgsql;
 
 
 -- Retire alternate write implementations when upgrading an existing schema.
-DROP FUNCTION IF EXISTS insert_events_v2(TEXT, TEXT, JSONB, JSONB);
-DROP FUNCTION IF EXISTS insert_unconditional_event_requests_v1(TEXT, TEXT, JSONB);
-DROP FUNCTION IF EXISTS insert_independent_event_requests_v2(TEXT, TEXT, TEXT, JSONB);
-DROP FUNCTION IF EXISTS insert_canonical_event_requests_v2(TEXT, TEXT, JSONB);
 
 -- Single group-commit entry point for prepared event-batch requests. Initial
 -- positions are resolved with literal latest-match lookups per criterion.
@@ -243,10 +281,10 @@ DECLARE
     prefixed_seq_name         TEXT;
     criterion_shape           JSONB;
     shape_criteria            JSONB;
-    criterion_key             TEXT;
-    join_parts                TEXT[];
     latest_selects            TEXT[] := '{}'::TEXT[];
     criterion_shapes          JSONB[] := '{}'::JSONB[];
+    predicate_selects         TEXT[] := '{}'::TEXT[];
+    matching_criterion_id     INT;
     event_record              RECORD;
     event_criterion           JSONB;
     latest_record             RECORD;
@@ -310,14 +348,13 @@ BEGIN
                 -- planner; each lookup needs only the latest stored match.
                 FOR crit IN SELECT value FROM jsonb_array_elements(shape_criteria)
                     LOOP
-                        join_parts := '{}';
-                        FOR criterion_key IN SELECT value #>> '{}' FROM jsonb_array_elements(criterion_shape)
-                            LOOP
-                                join_parts := join_parts || format(
-                                    '(stored.data ->> %L = %L)',
-                                    criterion_key, crit ->> criterion_key
-                                );
-                            END LOOP;
+                        IF EXISTS (SELECT 1 FROM jsonb_each(crit) WHERE jsonb_typeof(value) <> 'string') THEN
+                            predicate_selects := predicate_selects || format(
+                                'SELECT %s AS id WHERE %s',
+                                (criterion_ids ->> crit::TEXT)::INT + 1,
+                                orisun_criterion_sql(crit, '$1')
+                            );
+                        END IF;
                         latest_selects := latest_selects || format(
                             '(SELECT %L::JSONB AS criterion, stored.transaction_id, stored.global_id
                               FROM %I.%I stored
@@ -325,7 +362,7 @@ BEGIN
                               ORDER BY stored.transaction_id DESC, stored.global_id DESC
                               LIMIT 1)',
                             crit::TEXT, schema, boundary_name || '_orisun_es_event',
-                            array_to_string(join_parts, ' AND ')
+                            orisun_criterion_sql(crit, 'stored.data')
                         );
                     END LOOP;
 
@@ -457,6 +494,12 @@ BEGIN
                                     criterion_gids[criterion_id] := event_record.global_id;
                                 END IF;
                             END LOOP;
+                        IF cardinality(predicate_selects) > 0 THEN
+                            FOR matching_criterion_id IN EXECUTE array_to_string(predicate_selects, ' UNION ALL ') USING event_record.document LOOP
+                                criterion_tx_ids[matching_criterion_id] := inserted_tx_id;
+                                criterion_gids[matching_criterion_id] := event_record.global_id;
+                            END LOOP;
+                        END IF;
                     END LOOP;
             END IF;
 
@@ -546,72 +589,8 @@ $$;
 -- Position filtering is inclusive: ASC reads from >= after_position and DESC
 -- reads from <= after_position. ASC reads also apply a stable-prefix visibility
 -- barrier, hiding rows from transactions that are still in flight according to
--- pg_xact_id. Rows with NULL pg_xact_id are legacy/restored rows and are treated
+-- pg_xact_id. Rows with NULL pg_xact_id were restored into this cluster and are treated
 -- as visible.
-
-CREATE OR REPLACE FUNCTION get_matching_events_v3(
-    boundary_name TEXT,
-    schema TEXT,
-    criteria JSONB DEFAULT NULL,
-    after_position JSONB DEFAULT NULL,
-    sort_dir TEXT DEFAULT 'ASC',
-    max_count INT DEFAULT 1000
-)
-    RETURNS TABLE
-            (
-                transaction_id BIGINT,
-                global_id      BIGINT,
-                event_id       UUID,
-                event_type     TEXT,
-                data           JSONB,
-                metadata       JSONB,
-                date_created   TIMESTAMPTZ
-            )
-    LANGUAGE plpgsql
-    STABLE
-AS
-$$
-BEGIN
-    RETURN QUERY EXECUTE format(
-        'SELECT transaction_id, global_id, event_id, event_type, data, metadata, date_created FROM %I.get_matching_events_v4($1, $2, $3, $4, $5, $6)', schema
-    ) USING boundary_name, schema, criteria, after_position, sort_dir, max_count;
-END;
-$$;
-
--- get_latest_by_criteria_v1 returns the newest event matching each requested
--- criterion, all from ONE statement and therefore one PostgreSQL snapshot. The
--- Go caller computes the complete OR query's position as the maximum returned
--- event position and returns that query-level observation to the caller.
---
--- This function returns one row per matching criterion only. Criteria with no
--- matching event are omitted; the Go caller maps missing indexes back to empty
--- LatestCriterionResult entries.
-CREATE OR REPLACE FUNCTION get_latest_by_criteria_v1(
-    boundary_name TEXT,
-    schema TEXT,
-    criteria JSONB
-)
-    RETURNS TABLE
-            (
-                criterion_idx  INT,
-                transaction_id BIGINT,
-                global_id      BIGINT,
-                event_id       UUID,
-                event_type     TEXT,
-                data           JSONB,
-                metadata       JSONB,
-                date_created   TIMESTAMPTZ
-            )
-    LANGUAGE plpgsql
-    STABLE
-AS
-$$
-BEGIN
-    RETURN QUERY EXECUTE format(
-        'SELECT criterion_idx, transaction_id, global_id, event_id, event_type, data, metadata, date_created FROM %I.get_latest_by_criteria_v2($1, $2, $3)', schema
-    ) USING boundary_name, schema, criteria;
-END;
-$$;
 
 CREATE OR REPLACE FUNCTION get_matching_events_v4(
     boundary_name TEXT,
@@ -634,6 +613,7 @@ CREATE OR REPLACE FUNCTION get_matching_events_v4(
             )
     LANGUAGE plpgsql
     STABLE
+    SET search_path FROM CURRENT
 AS
 $$
 DECLARE
@@ -657,18 +637,13 @@ BEGIN
     qualified_table_name := format('%I.%I_orisun_es_event', schema, boundary_name);
 
     -- Build the content query as an OR of criteria, where each criterion is
-    -- an AND of tag equality checks.
+    -- an AND of tag predicates.
     IF criteria_array IS NOT NULL THEN
         all_parts := '{}';
         FOR crit IN SELECT jsonb_array_elements(criteria_array)
             LOOP
-                crit_parts := '{}';
-                FOR k, v IN SELECT * FROM jsonb_each_text(crit)
-                    LOOP
-                        crit_parts := crit_parts || format('(data->>%L = %L)', k, v);
-                    END LOOP;
-                IF array_length(crit_parts, 1) > 0 THEN
-                    all_parts := all_parts || ('(' || array_to_string(crit_parts, ' AND ') || ')');
+                IF crit <> '{}'::JSONB THEN
+                    all_parts := all_parts || orisun_criterion_sql(crit);
                 END IF;
             END LOOP;
         criteria_sql := CASE
@@ -683,7 +658,7 @@ BEGIN
     -- Use dynamic SQL because the boundary table name and criteria predicate are dynamic.
     RETURN QUERY EXECUTE format(
             $q$
-        SELECT transaction_id, global_id, (data->>'__eventId')::UUID AS event_id, data->>'__eventType' AS event_type, data - ARRAY(SELECT key FROM jsonb_object_keys(data) AS key WHERE left(key, 2) = '__') AS data, metadata, date_created::timestamptz, CASE WHEN write_id IS NULL THEN '' ELSE transaction_id::TEXT || ':' || write_id::TEXT END
+        SELECT transaction_id, global_id, (data->>'__eventId')::UUID AS event_id, data->>'__eventType' AS event_type, data - ARRAY(SELECT key FROM jsonb_object_keys(data) AS key WHERE left(key, 2) = '__') AS data, metadata, date_created::timestamptz, COALESCE(data->>'__writeId', '')
         FROM %s
         WHERE
             %2$s AND
@@ -738,6 +713,7 @@ CREATE OR REPLACE FUNCTION get_latest_by_criteria_v2(
             )
     LANGUAGE plpgsql
     STABLE
+    SET search_path FROM CURRENT
 AS
 $$
 DECLARE
@@ -758,17 +734,12 @@ BEGIN
 
     FOR crit IN SELECT jsonb_array_elements(criteria_array)
         LOOP
-            crit_parts := '{}';
-            FOR k, v IN SELECT * FROM jsonb_each_text(crit)
-                LOOP
-                    crit_parts := crit_parts || format('(data->>%L = %L)', k, v);
-                END LOOP;
-            IF array_length(crit_parts, 1) IS NULL THEN
+            IF crit = '{}'::JSONB THEN
                 RAISE EXCEPTION 'criterion % has no tags', idx;
             END IF;
             selects := selects || format(
-                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created::timestamptz, CASE WHEN e.write_id IS NULL THEN '''' ELSE e.transaction_id::TEXT || '':'' || e.write_id::TEXT END FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
-                    idx, qualified_table_name, array_to_string(crit_parts, ' AND '));
+                    '(SELECT %s AS criterion_idx, e.transaction_id, e.global_id, (e.data->>''__eventId'')::UUID AS event_id, e.data->>''__eventType'' AS event_type, e.data - ARRAY(SELECT key FROM jsonb_object_keys(e.data) AS key WHERE left(key, 2) = ''__'') AS data, e.metadata, e.date_created::timestamptz, COALESCE(e.data->>''__writeId'', '''') FROM %s e WHERE %s ORDER BY e.transaction_id DESC, e.global_id DESC LIMIT 1)',
+                    idx, qualified_table_name, orisun_criterion_sql(crit, 'e.data'));
             idx := idx + 1;
         END LOOP;
 

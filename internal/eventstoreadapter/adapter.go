@@ -1,4 +1,4 @@
-// Package eventstoreadapter confines conversions between Orisun's legacy
+// Package eventstoreadapter confines conversions between Orisun's native storage
 // event-store model and the transport-neutral eventstore model.
 package eventstoreadapter
 
@@ -45,10 +45,12 @@ func (a *Adapter) Append(ctx context.Context, request coreeventstore.AppendReque
 	if err != nil {
 		return coreeventstore.AppendResult{}, err
 	}
-	consistency, err := orisun.LegacyConsistencyChecks(
-		legacyPosition(request.ExpectedPosition),
-		legacyQuery(request.Subset),
-	)
+	observations := make([]*orisun.ConsistencyObservation, len(request.Consistency))
+	for i, observation := range request.Consistency {
+		position := observation.Position
+		observations[i] = &orisun.ConsistencyObservation{Query: storageQuery(observation.Query), Position: storagePosition(&position)}
+	}
+	consistency, err := orisun.ConsistencyChecksFromObservations(observations)
 	if err != nil {
 		return coreeventstore.AppendResult{}, err
 	}
@@ -72,10 +74,10 @@ func (a *Adapter) Read(ctx context.Context, request coreeventstore.ReadRequest) 
 	}
 	batch, err := a.retriever.GetBatch(ctx, &orisun.GetEventsRequest{
 		Boundary:     request.Boundary,
-		FromPosition: legacyPosition(request.FromPosition),
+		FromPosition: storagePosition(request.FromPosition),
 		Count:        request.Count,
-		Direction:    legacyDirection(request.Direction),
-		Query:        legacyQuery(request.Query),
+		Direction:    storageDirection(request.Direction),
+		Query:        storageQuery(request.Query),
 	})
 	if err != nil {
 		return nil, err
@@ -123,7 +125,7 @@ func readCriteria(criteria []coreeventstore.Criterion) []orisun.ReadCriterion {
 	for index, criterion := range criteria {
 		result[index] = orisun.ReadCriterion{Tags: make([]orisun.ReadTag, len(criterion.Tags))}
 		for tagIndex, tag := range criterion.Tags {
-			result[index].Tags[tagIndex] = orisun.ReadTag{Key: tag.Key, Value: tag.Value}
+			result[index].Tags[tagIndex] = orisun.ReadTag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result
@@ -140,7 +142,7 @@ func (a *Adapter) Subscribe(
 	return a.subscribe(ctx, request, handle)
 }
 
-func legacyPosition(position *coreeventstore.Position) *orisun.Position {
+func storagePosition(position *coreeventstore.Position) *orisun.Position {
 	if position == nil {
 		return nil
 	}
@@ -150,7 +152,7 @@ func legacyPosition(position *coreeventstore.Position) *orisun.Position {
 	}
 }
 
-func legacyQuery(query coreeventstore.Query) *orisun.Query {
+func storageQuery(query coreeventstore.Query) *orisun.Query {
 	if len(query.Criteria) == 0 {
 		return nil
 	}
@@ -158,14 +160,14 @@ func legacyQuery(query coreeventstore.Query) *orisun.Query {
 	for index, criterion := range query.Criteria {
 		tags := make([]*orisun.Tag, len(criterion.Tags))
 		for tagIndex, tag := range criterion.Tags {
-			tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value}
+			tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 		result.Criteria[index] = &orisun.Criterion{Tags: tags}
 	}
 	return result
 }
 
-func legacyDirection(direction coreeventstore.Direction) orisun.Direction {
+func storageDirection(direction coreeventstore.Direction) orisun.Direction {
 	if direction == coreeventstore.DirectionDescending {
 		return orisun.Direction_DESC
 	}

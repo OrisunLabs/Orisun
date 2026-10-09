@@ -150,6 +150,12 @@ func (s *PostgresSaveEvents) SavePrepared(
 }
 
 func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEventsRequest) (eventstore.ReadEventBatch, error) {
+	if req == nil {
+		return nil, statuscode.New(statuscode.InvalidArgument, "get events request is required")
+	}
+	if err := eventstore.ValidateQuery(req.Query); err != nil {
+		return nil, err
+	}
 	if s.logger.IsDebugEnabled() {
 		s.logger.Debugf("Getting events from request: %v", req)
 	}
@@ -244,9 +250,12 @@ func (s *PostgresGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEve
 
 // GetLatestByCriteria returns the latest event per criterion plus the latest
 // position of the complete OR query. The per-criterion lookups run inside one
-// SQL statement (get_latest_by_criteria_v1 builds a UNION ALL of LIMIT-1
+// SQL statement (get_latest_by_criteria_v2 builds a UNION ALL of LIMIT-1
 // subqueries), so all returned carried state comes from one snapshot.
 func (s *PostgresGetEvents) GetLatestByCriteria(ctx context.Context, query eventstore.LatestByCriteriaQuery) (eventstore.LatestByCriteriaBatch, error) {
+	if err := eventstore.ValidateReadCriteria(query.Criteria); err != nil {
+		return eventstore.LatestByCriteriaBatch{}, err
+	}
 	entry, ok := s.registry.lookup(query.Boundary)
 	if !ok {
 		return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "no schema found for boundary: %s", query.Boundary)
@@ -315,28 +324,14 @@ func (s *PostgresGetEvents) GetLatestByCriteria(ctx context.Context, query event
 func getReadCriteriaAsList(criteria []eventstore.ReadCriterion) []map[string]any {
 	result := make([]map[string]any, 0, len(criteria))
 	for _, criterion := range criteria {
-		if len(criterion.Tags) == 0 {
-			continue
+		if len(criterion.Tags) > 0 {
+			result = append(result, eventstore.EncodeCriterion(criterion.Tags))
 		}
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
-		result = append(result, anded)
 	}
 	return result
 }
-
 func getCriteriaAsList(query *eventstore.Query) []map[string]any {
-	result := make([]map[string]any, 0, len(query.Criteria))
-	for _, criterion := range query.Criteria {
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
-		result = append(result, anded)
-	}
-	return result
+	return eventstore.EncodeQueryCriteria(query)
 }
 
 type PostgresAdminDB struct {
@@ -952,21 +947,19 @@ func scanPostgresBoundaryIndex(row postgresIndexScanner) (eventstore.BoundaryInd
 		return eventstore.BoundaryIndex{}, fmt.Errorf("decode index %s conditions: %w", index.Name, err)
 	}
 	if index.State == "" {
-		index.State = eventstore.BoundaryIndexStateReady
+		return eventstore.BoundaryIndex{}, fmt.Errorf("index %s has no stored lifecycle state", index.Name)
 	}
 	return index, nil
 }
 
 type DatabaseRuntime struct {
-	SaveEvents            eventstore.EventsSaver
-	GetEvents             eventstore.EventsRetriever
-	LockProvider          eventstore.LockProvider
-	AdminDB               common.DB
-	EventPublishing       eventstore.EventPublishingTracker
-	Listener              *PGNotifyListener
-	ProvisionBoundary     func(context.Context, boundarymodel.Definition) error
-	InstallBoundary       func(context.Context, boundarymodel.Definition) error
-	PreexistingAdminStore bool
+	SaveEvents        eventstore.EventsSaver
+	GetEvents         eventstore.EventsRetriever
+	LockProvider      eventstore.LockProvider
+	AdminDB           common.DB
+	Listener          *PGNotifyListener
+	ProvisionBoundary func(context.Context, boundarymodel.Definition) error
+	InstallBoundary   func(context.Context, boundarymodel.Definition) error
 }
 
 func InitializePostgresDatabaseRuntime(
@@ -1052,38 +1045,19 @@ func InitializePostgresDatabaseRuntime(
 
 	postgesBoundarySchemaMappings := postgresDBConfig.BootstrapSchemaMapping(adminConfig.Boundary)
 	adminSchema := postgesBoundarySchemaMappings[adminConfig.Boundary]
-	preexistingAdminStore, err := boundaryEventTableExists(
-		ctx,
-		writeDB,
-		adminSchema.Schema,
-		adminConfig.Boundary,
-	)
-	if err != nil {
-		logger.Fatalf("Failed to inspect PostgreSQL admin event store: %v", err)
-	}
-	catalogNative, err := catalogNativeMarkerExists(
-		ctx,
-		writeDB,
-		adminSchema.Schema,
-		adminConfig.Boundary,
-	)
-	if err != nil {
-		logger.Fatalf("Failed to inspect PostgreSQL catalog bootstrap marker: %v", err)
-	}
-	preexistingAdminStore = preexistingAdminStore && !catalogNative
 	// Create PG LISTEN/NOTIFY listener if enabled.
 	var pgListener *PGNotifyListener
 	if postgresDBConfig.ListenEnabled {
 		var listenErr error
 		pgListener, listenErr = NewPGNotifyListener(ctx, connStr, postgesBoundarySchemaMappings, logger)
 		if listenErr != nil {
-			logger.Warnf("PG LISTEN disabled (connection failed): %v — falling back to polling", listenErr)
+			logger.Warnf("PG LISTEN disabled (connection failed): %v — subscriptions rely on idle notifications", listenErr)
 			pgListener = nil
 		} else {
 			logger.Info("PG LISTEN/NOTIFY listener created")
 		}
 	} else {
-		logger.Info("PG LISTEN disabled by configuration — using polling fallback")
+		logger.Info("PG LISTEN disabled by configuration — subscriptions rely on idle notifications")
 	}
 
 	// First, create all unique schemas
@@ -1096,11 +1070,6 @@ func InitializePostgresDatabaseRuntime(
 			if err := createSchemaIfNotExists(writeDB, schema, ctx); err != nil {
 				logger.Fatalf("Failed to create schema %s: %v", schema, err)
 			}
-		}
-	}
-	if !preexistingAdminStore && !catalogNative {
-		if err := markCatalogNativeInstall(ctx, writeDB, adminSchema.Schema, adminConfig.Boundary); err != nil {
-			logger.Fatalf("Failed to record PostgreSQL catalog-native installation: %v", err)
 		}
 	}
 
@@ -1146,12 +1115,6 @@ func InitializePostgresDatabaseRuntime(
 		boundaryRegistry,
 	)
 
-	// Use write pool for event publishing operations
-	eventPublishing := NewPostgresEventPublishingWithRegistry(
-		writeDB,
-		logger,
-		boundaryRegistry,
-	)
 	provisioner := NewPostgresBoundaryProvisioner(writeDB, boundaryRegistry)
 	installBoundary := provisioner.InstallBoundary
 	if pgListener != nil {
@@ -1167,14 +1130,12 @@ func InitializePostgresDatabaseRuntime(
 	}
 
 	return &DatabaseRuntime{
-		SaveEvents:            saveEvents,
-		GetEvents:             getEvents,
-		LockProvider:          lockProvider,
-		AdminDB:               adminDB,
-		EventPublishing:       eventPublishing,
-		Listener:              pgListener,
-		ProvisionBoundary:     provisioner.ProvisionBoundary,
-		InstallBoundary:       installBoundary,
-		PreexistingAdminStore: preexistingAdminStore,
+		SaveEvents:        saveEvents,
+		GetEvents:         getEvents,
+		LockProvider:      lockProvider,
+		AdminDB:           adminDB,
+		Listener:          pgListener,
+		ProvisionBoundary: provisioner.ProvisionBoundary,
+		InstallBoundary:   installBoundary,
 	}
 }

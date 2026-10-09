@@ -48,7 +48,7 @@ var _ grpcapi.AdminServer = (*AdminServiceServer)(nil)
 type GetEventsFunc func(ctx context.Context, req *orisun.GetEventsRequest) (*orisun.GetEventsResponse, error)
 
 // SaveEventsFunc is the function signature for saving events
-type SaveEventsFunc func(ctx context.Context, req *orisun.SaveEventsRequest) (*orisun.WriteResult, error)
+type SaveEventsFunc func(ctx context.Context, req *orisun.SaveEventsV2Request) (*orisun.WriteResult, error)
 
 // ListAdminUsersFunc is the function signature for listing admin users
 type ListAdminUsersFunc func(ctx context.Context) ([]*orisun.User, error)
@@ -59,9 +59,6 @@ type GetEventCountFunc func(ctx context.Context, boundary string) (int, error)
 
 type CredentialsValidator interface {
 	ValidateCredentials(context.Context, string, string) (orisun.User, string, error)
-}
-
-type CredentialsVerifier interface {
 	VerifyCredentials(context.Context, string, string) (orisun.User, error)
 }
 
@@ -157,8 +154,8 @@ func (s *AdminServiceServer) CreateBoundary(ctx context.Context, req *grpcapi.Cr
 				Backend:   req.Placement.Backend,
 				Namespace: req.Placement.Namespace,
 			},
-			ExistedBeforeCatalog: req.ExistedBeforeCatalog,
-			Metadata:             createboundary.CommandMetadata{"source": "grpc", "operation": "create_boundary"},
+
+			Metadata: createboundary.CommandMetadata{"source": "grpc", "operation": "create_boundary"},
 		},
 		s.boundary,
 		s.boundaryEvents,
@@ -361,15 +358,7 @@ func (s *AdminServiceServer) ValidateCredentials(ctx context.Context, req *grpca
 		return nil, status.Error(codes.Internal, "credentials validator is not configured")
 	}
 
-	// Credential checks do not need a session. Use the verification-only path
-	// when available, while retaining compatibility with custom validators.
-	var user orisun.User
-	var err error
-	if verifier, ok := s.authenticator.(CredentialsVerifier); ok {
-		user, err = verifier.VerifyCredentials(ctx, req.Username, req.Password)
-	} else {
-		user, _, err = s.authenticator.ValidateCredentials(ctx, req.Username, req.Password)
-	}
+	user, err := s.authenticator.VerifyCredentials(ctx, req.Username, req.Password)
 	if err != nil {
 		// Return success: false instead of an error for invalid credentials
 		return &grpcapi.ValidateCredentialsResponse{Success: false}, nil
@@ -638,11 +627,11 @@ func boundaryInfo(boundary boundarymodel.Boundary) *grpcapi.BoundaryInfo {
 			Backend:   boundary.Placement.Backend,
 			Namespace: boundary.Placement.Namespace,
 		},
-		Status:               status,
-		ExistedBeforeCatalog: boundary.ExistedBeforeCatalog,
-		LastError:            boundary.LastError,
-		DefinitionPosition:   grpcPosition(boundary.DefinitionPosition),
-		StatusPosition:       grpcPosition(boundary.StatusPosition),
+		Status: status,
+
+		LastError:          boundary.LastError,
+		DefinitionPosition: grpcPosition(boundary.DefinitionPosition),
+		StatusPosition:     grpcPosition(boundary.StatusPosition),
 	}
 }
 

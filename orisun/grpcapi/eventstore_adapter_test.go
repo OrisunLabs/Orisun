@@ -115,10 +115,10 @@ func TestEventStoreAdapterTranslatesStatusAtGRPCBoundary(t *testing.T) {
 	}
 	eventStore := orisun.NewEventStoreServer(
 		nil, codedErrorSaver{}, nil, nil, nil,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
 
-	_, err = AdaptEventStore(eventStore).SaveEvents(context.Background(), &SaveEventsRequest{
+	_, err = AdaptEventStore(eventStore).SaveEventsV2(context.Background(), &SaveEventsV2Request{
 		Boundary: "test",
 		Events: []*EventToSave{{
 			EventId:   "event-1",
@@ -140,17 +140,12 @@ func TestEventStoreAdapterMapsSaveRequestAndResponse(t *testing.T) {
 	saver := &mappingSaver{}
 	store := orisun.NewEventStoreServer(
 		nil, saver, nil, nil, nil,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
-	response, err := AdaptEventStore(store).SaveEvents(t.Context(), &SaveEventsRequest{
-		Boundary: "orders",
-		Query: &SaveQuery{
-			ExpectedPosition: &Position{CommitPosition: 3, PreparePosition: 4},
-			SubsetQuery: &Query{Criteria: []*Criterion{{
-				Tags: []*Tag{{Key: "order_id", Value: "o-1"}},
-			}}},
-		},
-		Events: []*EventToSave{{
+	response, err := AdaptEventStore(store).SaveEventsV2(t.Context(), &SaveEventsV2Request{
+		Boundary: "orders", Consistency: []*ConsistencyObservation{{Position: &Position{CommitPosition: 3, PreparePosition: 4}, Query: &Query{Criteria: []*Criterion{{
+			Tags: []*Tag{{Key: "order_id", Value: "o-1"}},
+		}}}}}, Events: []*EventToSave{{
 			EventId: "event-1", EventType: "Opened", Data: `{"order_id":"o-1"}`, Metadata: `{}`,
 		}},
 	})
@@ -174,7 +169,7 @@ func TestEventStoreAdapterMapsSaveEventsV2Observations(t *testing.T) {
 	}
 	saver := &mappingSaver{}
 	adapter := AdaptEventStore(orisun.NewEventStoreServer(
-		nil, saver, nil, nil, nil, orisun.EventStreamConfig{}, logger,
+		nil, saver, nil, nil, nil, logger,
 	))
 
 	response, err := adapter.SaveEventsV2(t.Context(), &SaveEventsV2Request{
@@ -212,7 +207,7 @@ func TestEventStoreAdapterMapsReadAndLatestResponses(t *testing.T) {
 	retriever := &mappingRetriever{created: created}
 	store := orisun.NewEventStoreServer(
 		nil, nil, retriever, nil, nil,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
 	adapter := AdaptEventStore(store)
 
@@ -317,7 +312,7 @@ func TestEventStoreAdapterMapsIndexInventory(t *testing.T) {
 	}}}
 	store := orisun.NewEventStoreServer(
 		nil, nil, nil, nil, manager,
-		orisun.EventStreamConfig{}, logger,
+		logger,
 	)
 	adapter := AdaptEventStore(store)
 
@@ -343,5 +338,23 @@ func TestEventStoreAdapterMapsIndexInventory(t *testing.T) {
 	_, err = adapter.GetIndex(t.Context(), &GetIndexRequest{Boundary: "orders", Name: "missing"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("GetIndex(missing) code = %v, want NotFound", status.Code(err))
+	}
+}
+
+func TestTagOperatorsSurviveTransportConversions(t *testing.T) {
+	for _, operator := range []string{"", "eq", "ne", "gt", "gte", "lt", "lte"} {
+		input := &Criterion{Tags: []*Tag{{Key: "amount", Value: "10", Operator: operator}}}
+		domain := domainCriteriaFromProto([]*Criterion{input})
+		if domain[0].Tags[0].Operator != operator {
+			t.Fatalf("lost domain operator %q", operator)
+		}
+		returned := criterionToProto(domain[0])
+		if returned.Tags[0].Operator != operator {
+			t.Fatalf("lost returned operator %q", operator)
+		}
+		subscription := coreQueryFromProto(&Query{Criteria: []*Criterion{input}})
+		if subscription.Criteria[0].Tags[0].Operator != operator {
+			t.Fatalf("lost subscription operator %q", operator)
+		}
 	}
 }

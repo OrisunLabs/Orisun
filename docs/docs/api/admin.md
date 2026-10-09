@@ -73,7 +73,6 @@ the existing definition continues to be retried and may later transition from
 
 | Field | Meaning |
 | --- | --- |
-| `existed_before_catalog` | Whether the physical storage predated its catalog definition. |
 | `placement` | The durable backend and immutable physical namespace recorded by the definition event. |
 | `last_error` | Recorded provisioning error; empty after activation. |
 | `definition_position` | Position of the definition event in the admin boundary. |
@@ -114,28 +113,26 @@ EOF
 
 The response initially contains `BOUNDARY_LIFECYCLE_STATUS_PROVISIONING`.
 
-When adopting physical storage that already exists, for example after restoring
-a PostgreSQL schema or attaching SQLite boundary files, set
-`existed_before_catalog`:
+Use the same command to attach restored storage in the current format or the
+supported `0.13.0` upgrade format. Older storage formats are rejected:
 
 ```bash
 grpcurl -H "$AUTH" -d @ localhost:5005 orisun.Admin/CreateBoundary <<EOF
 {
-  "name": "legacy_orders",
-  "description": "Orders migrated from the legacy deployment",
-  "existed_before_catalog": true,
+  "name": "restored_orders",
+  "description": "Restored orders",
   "placement": {
     "backend": "postgres",
-    "namespace": "legacy"
+    "namespace": "orders"
   }
 }
 EOF
 ```
 
-The provisioner uses the same idempotent migration and activation flow in both
+The provisioner uses the same initialization and activation flow in both
 cases. Legacy boundaries discovered at startup are recorded automatically with
 this flag. See
-[Boundary management and migration](../operations/configuration#boundary-management).
+[Boundary management](../operations/configuration#boundary-management).
 
 ## ListBoundaries
 

@@ -9,7 +9,6 @@ import TabItem from '@theme/TabItem';
 The EventStore service owns event operations:
 
 - `SaveEventsV2`
-- `SaveEvents` (deprecated)
 - `GetEvents`
 - `GetWriteContext`
 - `GetLatestByCriteria`
@@ -149,7 +148,10 @@ Content criteria and live subscription filters use reserved names, for example
 
 FoundationDB uses its native event-key range for criteria containing
 `__commitPosition` or `__writeId`, with any remaining tags applied within that
-range. A `__preparePosition` criterion needs one of those anchors. These three
+range. Ordered `__commitPosition` predicates bound that native range;
+non-equality `__writeId` predicates can scan the full native event range because
+write IDs compare as strings. A `__preparePosition` criterion needs one of those
+anchors. These three
 fields cannot be secondary-index fields or conditions. Other FoundationDB
 criteria continue to require a ready covering index.
 
@@ -331,6 +333,62 @@ observation position only when you can prove that the same complete query was
 observed and the last event in the batch is its latest match. Normally, derive
 positions from `GetLatestByCriteria` or a complete `GetEvents` read.
 
+### Tag comparison operators
+
+A tag has `key`, `value`, and an optional `operator`. Supported operators are
+`eq`, `ne`, `gt`, `gte`, `lt`, and `lte`. Omitting `operator` (or sending an empty
+string) means `eq`, preserving existing queries. Unknown operators return
+`INVALID_ARGUMENT`.
+
+| Operator | Match |
+| --- | --- |
+| `eq` | Equal to the supplied value |
+| `ne` | Different from the supplied value |
+| `gt` / `gte` | Greater than / greater than or equal to |
+| `lt` / `lte` | Less than / less than or equal to |
+
+`value` remains a string. Equality uses the existing text representation of the
+stored value: for example, numeric `10` and string `"10"` both match
+`{"key":"amount","value":"10"}`. `ne` is the inverse for a present, non-null
+value. Missing fields and JSON null never match any operator, including `ne`.
+
+Ordered comparisons use the **stored JSON type**:
+
+- Numbers compare numerically, without rounding through floating point. The
+  target must be a JSON number such as `"10"`, `"-2.5"`, or `"1e3"`; an invalid
+  numeric target does not match a numeric field.
+- Strings compare lexicographically in UTF-8 byte order, independent of database
+  locale. Thus numeric `10 > 2`, while string `"10" < "2"`.
+- Booleans, arrays, objects, and null do not support ordered comparisons.
+
+Tags within a criterion are ANDed, including multiple predicates on the same
+key. Criteria are ORed. For example, this query selects amounts in `[10, 20)`:
+
+```json
+{
+  "criteria": [{
+    "tags": [
+      {"key": "amount", "operator": "gte", "value": "10"},
+      {"key": "amount", "operator": "lt", "value": "20"}
+    ]
+  }]
+}
+```
+
+Use the same complete query for reads and the corresponding CCC observation.
+Operators apply to `GetEvents`, `GetLatestByCriteria`, subscription catch-up and
+live delivery, and consistency checks on writes. `GetWriteContext` retains the
+predicates that were checked. Upgrade servers before clients start sending
+non-equality operators; an older server does not understand this field.
+
+Range predicates may inspect more candidates than equality predicates.
+PostgreSQL and SQLite use exact decimal comparators for numeric ranges, so
+existing numeric-cast indexes do not directly accelerate that comparison. FoundationDB still requires
+a native position query or a ready covering index; it narrows a secondary-index
+scan by leading equality fields, filters candidates, and applies the requested
+position order and limit afterwards. Broad ranges can reach FoundationDB's
+transaction limits. Prefer selective equality fields alongside ranges.
+
 ### Validation and limits
 
 The server rejects the entire request with `INVALID_ARGUMENT` before touching
@@ -340,7 +398,8 @@ storage when any of these rules fail:
 - an observation has no query or position;
 - a query has no criteria, a criterion has no tags, or a tag has no key;
 - a position is neither exactly `{-1, -1}` nor a pair of non-negative values;
-- one criterion repeats a key with different values; or
+- a tag uses an unsupported operator, or one criterion has conflicting `eq`
+  predicates for the same key; or
 - equivalent observations claim different positions.
 
 Equivalent criteria, repeated identical tags, and duplicate observations with
@@ -349,7 +408,7 @@ may contain at most 1,024 observations, 4,096 criteria across those
 observations, and 16,384 tags across those criteria. These bounds prevent an
 individual write from creating unbounded query fan-out.
 
-PostgreSQL and SQLite can evaluate an unindexed equality query correctly by
+PostgreSQL and SQLite can evaluate an unindexed content query correctly by
 scanning. FoundationDB requires each criterion to select a native position range
 through `__commitPosition` or `__writeId`, or have a ready covering secondary
 index; otherwise it returns `FAILED_PRECONDITION`. See [Indexing](../concepts/indexing).
@@ -575,32 +634,6 @@ Orisun returns `ALREADY_EXISTS`. Treat that as a CCC conflict: re-read every
 context used by the command, decide again, and retry only if the command is
 still valid.
 
-## SaveEvents (deprecated)
-
-`SaveEvents` and `SaveQuery` remain wire-compatible for existing clients, but
-new code should use `SaveEventsV2`. The server translates a legacy request with
-a non-empty `subsetQuery` into one V2 observation and executes the same save
-implementation.
-
-| Deprecated V1 field | V2 replacement |
-| --- | --- |
-| `SaveEventsRequest.boundary` | `SaveEventsV2Request.boundary` |
-| `SaveEventsRequest.events` | `SaveEventsV2Request.events` |
-| `query.subsetQuery` | `consistency[0].query` |
-| `query.expected_position` | `consistency[0].position` |
-
-:::warning
-In the compatibility API, `expected_position` without a non-empty
-`subsetQuery` does not protect anything and is translated as an unconditional
-append. Do not use an expected position as a stream revision. To assert that a
-query is still empty, send that query in a V2 observation with position
-`{-1, -1}`.
-:::
-
-V1 can represent at most one observed query. If a command read more than one
-independent context, migrate it to V2 and preserve every complete query as a
-separate observation. `GetLatestByCriteria` itself is unchanged.
-
 ## GetWriteContext
 
 Every accepted save records the complete consistency observations checked for
@@ -623,14 +656,14 @@ Call `GetWriteContext` with:
 }
 ```
 
+Historical events without recorded write-context evidence have an empty `write_id`.
+The storage upgrade preserves that absence; it does not invent observations.
+
 The response contains `write_id` and `consistency`, an array of the same
 `ConsistencyObservation` shape accepted by `SaveEventsV2`. An existing record with
-an empty array means the save was unconditional. The deprecated `SaveEvents` RPC
-also records its effective consistency observation.
+an empty array means the save was unconditional.
 
-Events saved before this feature have an empty `write_id` and no recorded context.
-Their conditions are unknown; the server does not label them unconditional or
-attempt to reconstruct historical queries. Missing records return `NOT_FOUND`;
+Missing records return `NOT_FOUND`;
 malformed IDs return `INVALID_ARGUMENT`. The boundary must be active.
 
 The context is store-owned and commits atomically with its events. Rejected or
@@ -1005,7 +1038,16 @@ For `SaveEventsV2`, construct one observation from the exact combined criteria s
 
 ## CatchUpSubscribeToEvents
 
-Catch-up subscriptions replay stored events, then switch to live JetStream delivery.
+Subscriptions read matching events from the backend throughout their lifetime.
+NATS boundary hints trigger reads; an subscription-owned idle watchdog hints timer recovers
+missed hints. The backend evaluates the complete query for both historical and
+new events. See [Delivery Guarantees](../concepts/delivery-guarantees).
+
+When `after_position` is omitted, the subscription delivers the latest stored
+event matching the query once, then continues with newer matching events in
+ascending position order. If no stored event matches, it waits for future
+matches. An explicit `after_position` is exclusive: the event at that position
+is not replayed. The delivery cursor advances only after successful delivery.
 
 Only one active subscription may use the same boundary and subscriber-name
 pair. Orisun holds a renewable JetStream lease for the complete catch-up and

@@ -6,14 +6,14 @@ import (
 	"testing"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRuntimeEventHandlerInstallsThenActivatesLocally(t *testing.T) {
 	definitionEvent := createdBoundaryEvent(t, "orders", 10, 2)
-	activationEvent := lifecycleEventRead(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	activationEvent := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 11, 3)
 	installer := &captureInstaller{}
@@ -36,7 +36,7 @@ func TestRuntimeEventHandlerInstallsThenActivatesLocally(t *testing.T) {
 
 func TestRuntimeEventHandlerKeepsGateClosedWhenLocalInstallFails(t *testing.T) {
 	definitionEvent := createdBoundaryEvent(t, "orders", 10, 2)
-	activationEvent := lifecycleEventRead(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	activationEvent := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 11, 3)
 	installErr := errors.New("register LISTEN: unavailable")
@@ -54,7 +54,7 @@ func TestRuntimeEventHandlerKeepsGateClosedWhenLocalInstallFails(t *testing.T) {
 }
 
 func TestRuntimeEventHandlerIgnoresActivationBeforeCurrentDefinition(t *testing.T) {
-	staleActivation := lifecycleEventRead(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	staleActivation := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 9, 1)
 	definitionEvent := createdBoundaryEvent(t, "orders", 10, 2)
@@ -73,7 +73,7 @@ func TestRuntimeEventHandlerIgnoresActivationBeforeCurrentDefinition(t *testing.
 }
 
 func TestRuntimeEventHandlerIgnoresOrphanActivation(t *testing.T) {
-	orphanActivation := lifecycleEventRead(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	orphanActivation := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "removed_boundary",
 	}, 9, 1)
 	installer := &captureInstaller{}
@@ -91,13 +91,12 @@ func TestRuntimeEventHandlerIgnoresOrphanActivation(t *testing.T) {
 }
 
 func TestRuntimeEventHandlerPreservesExistingStorageFlag(t *testing.T) {
-	definitionEvent := lifecycleEventRead(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
-		Boundary:             "orders",
-		Description:          "Orders context",
-		Placement:            boundarymodel.Placement{Backend: "postgres", Namespace: "sales"},
-		ExistedBeforeCatalog: true,
+	definitionEvent := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
+		Boundary:    "orders",
+		Description: "Orders context",
+		Placement:   boundarymodel.Placement{Backend: "postgres", Namespace: "sales"},
 	}, 10, 2)
-	activationEvent := lifecycleEventRead(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	activationEvent := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 11, 3)
 	installer := &captureInstaller{}
@@ -110,7 +109,6 @@ func TestRuntimeEventHandlerPreservesExistingStorageFlag(t *testing.T) {
 
 	require.NoError(t, handler.Handle(t.Context(), activationEvent))
 	require.Len(t, installer.definitions, 1)
-	require.True(t, installer.definitions[0].ExistedBeforeCatalog)
 }
 
 type runtimeCatalogRetriever struct {

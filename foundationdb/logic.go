@@ -32,7 +32,7 @@ type eventRecord struct {
 
 type indexDefinition struct {
 	Name       string                              `json:"name"`
-	Generation string                              `json:"generation,omitempty"`
+	Generation string                              `json:"generation"`
 	Fields     []eventstore.BoundaryIndexField     `json:"fields"`
 	Conditions []eventstore.BoundaryIndexCondition `json:"conditions"`
 	Combinator string                              `json:"combinator"`
@@ -141,7 +141,7 @@ func readEventFromRecord(value []byte, tx, gid int64) (eventstore.ReadEvent, err
 	if err != nil {
 		return eventstore.ReadEvent{}, fmt.Errorf("invalid stored event timestamp: %w", err)
 	}
-	writeID := ""
+	var writeID string
 	if fields.WriteLastOffset != nil {
 		writeID = eventstore.WriteID(tx, (gid & ^int64(65535))|int64(*fields.WriteLastOffset))
 	}
@@ -189,14 +189,42 @@ func decodeUser(value []byte) (eventstore.User, error) {
 	}, nil
 }
 
-func eventMatchesCriterion(data map[string]any, criterion map[string]string) bool {
-	for key, expected := range criterion {
+func eventMatchesCriterion(data map[string]any, criterion map[string]any) bool {
+	for key, encoded := range criterion {
 		actual, ok := data[key]
-		if !ok || !eventValueEquals(actual, expected) {
+		if !ok {
 			return false
+		}
+		predicates, err := eventstore.DecodeTagPredicates(encoded)
+		if err != nil {
+			return false
+		}
+		for _, predicate := range predicates {
+			if !eventstore.MatchTagValue(actual, predicate.Value, predicate.Operator) {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+// Equality fields define the exact leading tuple prefix. Other comparisons are
+// evaluated against event documents within that prefix, before applying LIMIT.
+func criterionEquality(criterion map[string]any, key string) (string, bool) {
+	value, ok := criterion[key].(string)
+	if ok {
+		return value, true
+	}
+	predicates, err := eventstore.DecodeTagPredicates(criterion[key])
+	if err != nil {
+		return "", false
+	}
+	for _, predicate := range predicates {
+		if predicate.Operator == "" || predicate.Operator == "eq" {
+			return predicate.Value, true
+		}
+	}
+	return "", false
 }
 
 func eventMatchesIndexConditions(data map[string]any, idx indexDefinition) bool {
@@ -252,7 +280,7 @@ func compareCondition(value any, operator, expected string) bool {
 	return false
 }
 
-func chooseIndex(indexes []indexDefinition, criterion map[string]string) (indexDefinition, bool) {
+func chooseIndex(indexes []indexDefinition, criterion map[string]any) (indexDefinition, bool) {
 	for _, idx := range indexes {
 		if len(idx.Fields) == 0 {
 			continue
@@ -272,7 +300,7 @@ func chooseIndex(indexes []indexDefinition, criterion map[string]string) (indexD
 	return indexDefinition{}, false
 }
 
-func chooseCoveringIndex(indexes []indexDefinition, criterion map[string]string) (indexDefinition, bool) {
+func chooseCoveringIndex(indexes []indexDefinition, criterion map[string]any) (indexDefinition, bool) {
 	for _, idx := range indexes {
 		if _, ok := chooseIndex([]indexDefinition{idx}, criterion); !ok {
 			continue
@@ -284,7 +312,7 @@ func chooseCoveringIndex(indexes []indexDefinition, criterion map[string]string)
 	return indexDefinition{}, false
 }
 
-func indexCoversCriterion(idx indexDefinition, criterion map[string]string) bool {
+func indexCoversCriterion(idx indexDefinition, criterion map[string]any) bool {
 	covered := make(map[string]struct{}, len(idx.Fields)+len(idx.Conditions))
 	for _, field := range idx.Fields {
 		covered[field.JsonKey] = struct{}{}
@@ -302,12 +330,12 @@ func indexCoversCriterion(idx indexDefinition, criterion map[string]string) bool
 	return true
 }
 
-func criterionImpliesIndexConditions(idx indexDefinition, criterion map[string]string) bool {
+func criterionImpliesIndexConditions(idx indexDefinition, criterion map[string]any) bool {
 	for _, condition := range idx.Conditions {
 		if condition.Operator != "" && condition.Operator != "=" {
 			return false
 		}
-		if criterion[condition.Key] != condition.Value {
+		if value, ok := criterionEquality(criterion, condition.Key); !ok || value != condition.Value {
 			return false
 		}
 	}

@@ -71,7 +71,7 @@ func TestFoundationDBSaveGetCCCAndIndexes(t *testing.T) {
 			},
 			Metadata: map[string]any{},
 		},
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
@@ -167,9 +167,10 @@ func TestFoundationDBSaveGetCCCAndIndexes(t *testing.T) {
 			Data:      map[string]any{"order_id": "ord-1", "customer_id": "cust-1"},
 			Metadata:  map[string]any{},
 		},
-	}, "test", &notExists, &eventstore.Query{Criteria: []*eventstore.Criterion{
+	}, "test", []*eventstore.ConsistencyObservation{{Query: &eventstore.Query{Criteria: []*eventstore.Criterion{
 		{Tags: []*eventstore.Tag{{Key: "order_id", Value: "ord-1"}}},
-	}})
+	}}, Position: &notExists}},
+	)
 	if statuscode.CodeOf(err) != statuscode.AlreadyExists {
 		t.Fatalf("expected ALREADY_EXISTS conflict, got %v", err)
 	}
@@ -182,9 +183,10 @@ func TestFoundationDBSaveGetCCCAndIndexes(t *testing.T) {
 			Data:      map[string]any{"note": "x"},
 			Metadata:  map[string]any{},
 		},
-	}, "test", &notExists, &eventstore.Query{Criteria: []*eventstore.Criterion{
+	}, "test", []*eventstore.ConsistencyObservation{{Query: &eventstore.Query{Criteria: []*eventstore.Criterion{
 		{Tags: []*eventstore.Tag{{Key: "uncovered_key", Value: "v"}}},
-	}})
+	}}, Position: &notExists}},
+	)
 	if statuscode.CodeOf(err) != statuscode.FailedPrecondition {
 		t.Fatalf("expected FAILED_PRECONDITION for unindexed consistency condition, got %v", err)
 	}
@@ -205,7 +207,7 @@ func TestFoundationDBSaveGetCCCAndIndexes(t *testing.T) {
 	}
 }
 
-func TestFoundationDBAdminAndPublishingState(t *testing.T) {
+func TestFoundationDBAdminState(t *testing.T) {
 	backend := newTestBackend(t)
 
 	missing, err := backend.GetProjectorLastPosition(context.Background(), "missing-projector")
@@ -235,16 +237,6 @@ func TestFoundationDBAdminAndPublishingState(t *testing.T) {
 		t.Fatalf("expected user id %q, got %q", user.Id, got.Id)
 	}
 
-	if err := backend.InsertLastPublishedEvent(context.Background(), "test", 4, 4); err != nil {
-		t.Fatalf("InsertLastPublishedEvent returned error: %v", err)
-	}
-	pos, err := backend.GetLastPublishedEventPosition(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("GetLastPublishedEventPosition returned error: %v", err)
-	}
-	if pos.CommitPosition != 4 || pos.PreparePosition != 4 {
-		t.Fatalf("unexpected published position: %v", &pos)
-	}
 }
 
 func TestFoundationDBUsernameMustBeUnique(t *testing.T) {
@@ -282,7 +274,7 @@ func TestFoundationDBCanceledContextFailsFast(t *testing.T) {
 		EventType: "Canceled",
 		Data:      map[string]any{"id": "1"},
 		Metadata:  map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 	if statuscode.CodeOf(err) != statuscode.Canceled {
 		t.Fatalf("Save with canceled context got %v, want CANCELED", err)
 	}
@@ -324,7 +316,7 @@ func TestFoundationDBPagingFromPosition(t *testing.T) {
 				Metadata:  map[string]any{},
 			}
 		}
-		if _, _, err := backend.Save(ctx, events, "test", nil, nil); err != nil {
+		if _, _, err := backend.Save(ctx, events, "test", nil); err != nil {
 			t.Fatalf("Save batch %d: %v", i, err)
 		}
 	}
@@ -413,7 +405,7 @@ func TestFoundationDBCCCSuccessAndStaleExpected(t *testing.T) {
 		EventType: "Created",
 		Data:      map[string]any{"agg_id": "agg-1"},
 		Metadata:  map[string]any{},
-	}}, "test", &notExists, criteria)
+	}}, "test", []*eventstore.ConsistencyObservation{{Query: criteria, Position: &notExists}})
 	if err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
@@ -428,7 +420,7 @@ func TestFoundationDBCCCSuccessAndStaleExpected(t *testing.T) {
 		EventType: "Updated",
 		Data:      map[string]any{"agg_id": "agg-1"},
 		Metadata:  map[string]any{},
-	}}, "test", &current, criteria); err != nil {
+	}}, "test", []*eventstore.ConsistencyObservation{{Query: criteria, Position: &current}}); err != nil {
 		t.Fatalf("Save with correct expected position: %v", err)
 	}
 
@@ -437,7 +429,7 @@ func TestFoundationDBCCCSuccessAndStaleExpected(t *testing.T) {
 		EventType: "Updated",
 		Data:      map[string]any{"agg_id": "agg-1"},
 		Metadata:  map[string]any{},
-	}}, "test", &current, criteria); statuscode.CodeOf(err) != statuscode.AlreadyExists {
+	}}, "test", []*eventstore.ConsistencyObservation{{Query: criteria, Position: &current}}); statuscode.CodeOf(err) != statuscode.AlreadyExists {
 		t.Fatalf("expected ALREADY_EXISTS for stale expected position, got %v", err)
 	}
 }
@@ -471,14 +463,14 @@ func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
 	accountTx, accountGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
 		EventId: uuid.NewString(), EventType: "AccountOpened",
 		Data: map[string]any{"account_id": "a-1"}, Metadata: map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	customerTx, customerGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
 		EventId: uuid.NewString(), EventType: "CustomerRegistered",
 		Data: map[string]any{"customer_id": "c-1"}, Metadata: map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +514,7 @@ func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
 	accountTx, accountGID, err = backend.Save(ctx, []eventstore.EventWithMapTags{{
 		EventId: uuid.NewString(), EventType: "AccountOpened",
 		Data: map[string]any{"account_id": "a-1"}, Metadata: map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +537,7 @@ func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
 	_, _, err = backend.Save(ctx, []eventstore.EventWithMapTags{{
 		EventId: uuid.NewString(), EventType: "CustomerUpdated",
 		Data: map[string]any{"customer_id": "c-1"}, Metadata: map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +558,7 @@ func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
 	transferTx, transferGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
 		EventId: uuid.NewString(), EventType: "TransferRecorded",
 		Data: map[string]any{"transfer_id": "t-1"}, Metadata: map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +602,7 @@ func TestFoundationDBValidatesEveryQueryObservation(t *testing.T) {
 	}
 
 	api := grpcapi.AdaptEventStore(eventstore.NewEventStoreServer(
-		nil, backend, nil, nil, nil, eventstore.EventStreamConfig{}, backend.logger,
+		nil, backend, nil, nil, nil, backend.logger,
 	))
 	rpcConsistency := []*grpcapi.ConsistencyObservation{
 		{
@@ -661,7 +653,7 @@ func TestFoundationDBConcurrentMultiObservationOnlyOneWins(t *testing.T) {
 	guardTx, guardGID, err := backend.Save(ctx, []eventstore.EventWithMapTags{{
 		EventId: uuid.NewString(), EventType: "Guard",
 		Data: map[string]any{"guard_id": "stable"}, Metadata: map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +752,7 @@ func TestFoundationDBGetEventsCountPaged(t *testing.T) {
 			EventType: "Counted",
 			Data:      map[string]any{"n": strconv.Itoa(i)},
 			Metadata:  map[string]any{},
-		}}, "test", nil, nil); err != nil {
+		}}, "test", nil); err != nil {
 			t.Fatalf("Save %d: %v", i, err)
 		}
 	}
@@ -782,7 +774,7 @@ func TestFoundationDBRecreatedIndexUsesFreshGeneration(t *testing.T) {
 		EventType: "AccountOpened",
 		Data:      map[string]any{"account_id": "acct-1"},
 		Metadata:  map[string]any{},
-	}}, "test", nil, nil); err != nil {
+	}}, "test", nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -851,7 +843,7 @@ func TestFoundationDBTotalOrderUnderConcurrency(t *testing.T) {
 						Metadata:  map[string]any{},
 					}
 				}
-				if _, _, err := backend.Save(ctx, events, "test", nil, nil); err != nil {
+				if _, _, err := backend.Save(ctx, events, "test", nil); err != nil {
 					errs <- err
 					return
 				}

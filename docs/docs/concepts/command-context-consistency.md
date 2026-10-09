@@ -137,50 +137,13 @@ when the decision genuinely requires history, but the application must finish
 paging through the queried context before using its greatest matching
 position.
 
-## Before and after
+## Client write methods
 
-The deprecated API could protect only one query:
-
-```json
-{
-  "boundary": "shipping",
-  "query": {
-    "expected_position": {"commit_position": 42, "prepare_position": 3},
-    "subsetQuery": {
-      "criteria": [
-        {"tags": [{"key": "scopes.shipmentId", "value": "shipment-9"}]}
-      ]
-    }
-  },
-  "events": [{}]
-}
-```
-
-The replacement makes the invariant explicit and supports every context the command read:
-
-```json
-{
-  "boundary": "shipping",
-  "events": [{}],
-  "consistency": [
-    {
-      "query": {
-        "criteria": [
-          {"tags": [{"key": "scopes.shipmentId", "value": "shipment-9"}]}
-        ]
-      },
-      "position": {"commit_position": 42, "prepare_position": 3}
-    }
-  ]
-}
-```
-
-`SaveEvents` and `SaveQuery` remain wire-compatible but are deprecated. The server translates a V1 request into one V2 observation and executes the same implementation. New applications should use `SaveEventsV2`.
-
-The translation creates an observation only when V1 contains a non-empty
-`subsetQuery`. A legacy `expected_position` without that query never acted as a
-stream revision and remains an unconditional append. V2 removes that ambiguous
-shape: absence is asserted with an explicit query paired with `{-1, -1}`.
+`SaveEventsV2` carries every query observation used by the command. Clients also
+retain `SaveEvents` for decisions based on one query. Its `subsetQuery` and
+`expected_position` become one observation in the canonical write RPC. A missing
+position with a non-empty query means `(-1, -1)`; a missing or empty query means
+an unconditional append. Pair every complete query with its observed position.
 
 ## Conflict behavior
 

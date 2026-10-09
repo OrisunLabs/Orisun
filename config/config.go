@@ -42,9 +42,7 @@ type AppConfig struct {
 		}
 	}
 
-	PollingPublisher struct {
-		BatchSize uint32
-	}
+	SubscriptionIdleThreshold time.Duration
 
 	Logging LoggingConfig
 
@@ -204,9 +202,6 @@ type NatsConfig struct {
 	MaxPayload             int32
 	MaxConnections         int
 	StoreDir               string
-	EventStreamMaxBytes    int64
-	EventStreamMaxMsgs     int64
-	EventStreamMaxAge      time.Duration
 	PublishAsyncMaxPending int
 	Cluster                NatsClusterConfig
 }
@@ -307,6 +302,10 @@ func validateConfig(config AppConfig) error {
 	}
 	if config.Auth.SessionTTL <= 0 {
 		return fmt.Errorf("ORISUN_AUTH_SESSION_TTL must be greater than zero, got %s", config.Auth.SessionTTL)
+	}
+
+	if config.SubscriptionIdleThreshold <= 0 {
+		return fmt.Errorf("ORISUN_SUBSCRIPTION_IDLE_THRESHOLD must be greater than zero, got %s", config.SubscriptionIdleThreshold)
 	}
 	return nil
 }

@@ -9,8 +9,9 @@ type Position struct {
 }
 
 type Tag struct {
-	Key   string
-	Value string
+	Key      string
+	Value    string
+	Operator string
 }
 
 type Criterion struct {
@@ -28,7 +29,7 @@ type EventToSave struct {
 	Metadata  string
 }
 
-// Event is the transport-neutral event shape used by legacy in-process
+// Event is the transport-neutral event shape used by in-process
 // command handlers. Storage backends use ReadEvent directly.
 type Event struct {
 	WriteId     string    `json:"write_id,omitempty"`
@@ -43,24 +44,6 @@ type Event struct {
 type WriteResult struct {
 	WriteId     string
 	LogPosition *Position
-}
-
-// SaveQuery is the deprecated single-query consistency shape.
-//
-// Deprecated: use ConsistencyObservation with SaveEventsV2Request.
-type SaveQuery struct {
-	ExpectedPosition *Position
-	SubsetQuery      *Query
-}
-
-// SaveEventsRequest is retained for compatibility with the deprecated
-// SaveEvents RPC.
-//
-// Deprecated: use SaveEventsV2Request.
-type SaveEventsRequest struct {
-	Boundary string
-	Query    *SaveQuery
-	Events   []*EventToSave
 }
 
 type ConsistencyObservation struct {

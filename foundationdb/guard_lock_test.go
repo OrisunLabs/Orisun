@@ -25,7 +25,7 @@ func TestFoundationDBSaveRejectsOversizedBatch(t *testing.T) {
 		EventType: "Big",
 		Data:      map[string]any{"blob": big},
 		Metadata:  map[string]any{},
-	}}, "test", nil, nil)
+	}}, "test", nil)
 
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 		t.Fatalf("expected InvalidArgument for oversized batch, got %v", err)
@@ -40,17 +40,17 @@ func TestFDBLockMutualExclusionAndRelease(t *testing.T) {
 	b := newFDBLockProvider(backend.db, backend.root, logger)
 
 	aCtx, cancelA := context.WithCancel(context.Background())
-	if err := a.Lock(aCtx, "boundary-x"); err != nil {
+	if _, err := a.acquireLock(aCtx, "boundary-x"); err != nil {
 		t.Fatalf("provider A failed to acquire: %v", err)
 	}
 
 	// A holds it: B must be refused while A is live.
-	if err := b.Lock(context.Background(), "boundary-x"); err == nil {
+	if _, err := b.acquireLock(context.Background(), "boundary-x"); err == nil {
 		t.Fatalf("provider B acquired a lock held by A")
 	}
 
 	// Re-acquire by the same owner is a no-op success (publisher loop restart).
-	if err := a.Lock(aCtx, "boundary-x"); err != nil {
+	if _, err := a.acquireLock(aCtx, "boundary-x"); err != nil {
 		t.Fatalf("provider A re-acquire failed: %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestFDBLockMutualExclusionAndRelease(t *testing.T) {
 	cancelA()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := b.Lock(context.Background(), "boundary-x"); err == nil {
+		if _, err := b.acquireLock(context.Background(), "boundary-x"); err == nil {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -75,7 +75,7 @@ func TestFDBLockLostLeaseCancelsProtectedContext(t *testing.T) {
 	a := newFDBLockProvider(backend.db, backend.root, logger)
 	b := newFDBLockProvider(backend.db, backend.root, logger)
 
-	lease, err := a.AcquireLock(context.Background(), "boundary-lost")
+	lease, err := a.acquireLock(context.Background(), "boundary-lost")
 	if err != nil {
 		t.Fatalf("provider A failed to acquire: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestFDBLockStaleReleaseDoesNotClearNewerToken(t *testing.T) {
 	logger := logging.InitializeDefaultLogger(configForTestLogger())
 
 	a := newFDBLockProvider(backend.db, backend.root, logger)
-	lease, err := a.AcquireLock(context.Background(), "boundary-stale-release")
+	lease, err := a.acquireLock(context.Background(), "boundary-stale-release")
 	if err != nil {
 		t.Fatalf("provider A failed to acquire: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestFDBLockExpiredOwnerFailoverFencesOldLease(t *testing.T) {
 	a := newFDBLockProvider(backend.db, backend.root, logger)
 	b := newFDBLockProvider(backend.db, backend.root, logger)
 
-	aLease, err := a.AcquireLock(context.Background(), "boundary-failover")
+	aLease, err := a.acquireLock(context.Background(), "boundary-failover")
 	if err != nil {
 		t.Fatalf("provider A failed to acquire: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestFDBLockExpiredOwnerFailoverFencesOldLease(t *testing.T) {
 		ExpiresUnixNano: time.Now().Add(-time.Second).UnixNano(),
 	})
 
-	bLease, err := b.AcquireLock(context.Background(), "boundary-failover")
+	bLease, err := b.acquireLock(context.Background(), "boundary-failover")
 	if err != nil {
 		t.Fatalf("provider B should acquire expired lock: %v", err)
 	}

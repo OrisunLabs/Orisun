@@ -107,13 +107,6 @@ func newJetStreamLockProvider(bucket lockKeyValue, logger logging.Logger, config
 	}
 }
 
-// Lock acquires the named lock for the lifetime of ctx. Callers that need to
-// prove ongoing ownership should use AcquireLock and its returned lease.
-func (p *JetStreamLockProvider) Lock(ctx context.Context, lockName string) error {
-	_, err := p.AcquireLock(ctx, lockName)
-	return err
-}
-
 // AcquireLock acquires a renewable, token-fenced lease. An expired lease may be
 // replaced with a revision-guarded update.
 func (p *JetStreamLockProvider) AcquireLock(ctx context.Context, lockName string) (LockLease, error) {

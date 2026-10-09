@@ -18,13 +18,12 @@ FoundationDB support is beta. It is tested for correctness and failover, but sto
 
 ## PostgreSQL
 
-PostgreSQL is the clustered backend. Multiple Orisun nodes can share one database. Publishers coordinate with PostgreSQL advisory locks so only one active publisher owns a boundary at a time. Writes also take a short per-boundary advisory lock while drawing public positions and committing, which preserves commit-ordered positions across concurrent writers.
+PostgreSQL is the clustered backend. Multiple Orisun nodes can share one database. Notification relays coordinate through renewable JetStream leases so one active relay owns a boundary at a time. Writes also take a short per-boundary advisory lock while drawing public positions and committing, which preserves commit-ordered positions across concurrent writers.
 
 PostgreSQL stores:
 
 - event log tables
 - per-boundary position state
-- publisher checkpoints
 - projector checkpoints
 - index metadata
 - admin state
@@ -38,14 +37,10 @@ The write lock is per boundary, not global. It is intentional: Command Context C
 PostgreSQL mode stores two ordering-related values:
 
 - `transaction_id`: Orisun's logical commit position, durable across PostgreSQL major upgrades and restore workflows.
-- `pg_xact_id`: PostgreSQL's internal transaction ID, used only as a current-cluster visibility marker so publishers and catch-up reads do not skip older open transactions.
+- `pg_xact_id`: PostgreSQL's internal transaction ID, used only as a current-cluster visibility marker so ascending subscription reads do not skip older open transactions.
 
-Do not use PostgreSQL internal transaction IDs as application cursors. The
-required `0.8.0` bridge release remaps older Orisun databases that exposed
-PostgreSQL transaction IDs as public commit positions; later releases no longer
-carry that one-time migration. See
-[Positions and Ordering](./positions#postgresql-transaction-ids) and
-[Deployment](../operations/deployment#postgresql-major-upgrades).
+Do not use PostgreSQL internal transaction IDs as application cursors. Older
+storage formats before `0.13.0` are rejected. See [Positions and Ordering](./positions).
 
 ## FoundationDB
 
@@ -54,12 +49,11 @@ FoundationDB is a beta clustered backend built on ordered key-value transactions
 FoundationDB stores:
 
 - event records in ordered per-boundary key ranges
-- publisher checkpoints
 - projector checkpoints
 - admin state
 - index metadata and secondary index keys
-- watch signal keys for publisher wake-ups
-- token-fenced publisher lease locks
+- watch signal keys for notification relay wake-ups
+- token-fenced notification relay lease locks
 
 ```bash
 go build -tags foundationdb ./cmd/orisun-fdb
@@ -86,12 +80,11 @@ SQLite is a complete single-node implementation, not a development-only fallback
 - event log tables
 - index metadata
 - admin state
-- publisher checkpoints
 - projector checkpoints
 - JSON criteria queries
 - the same CCC save semantics as PostgreSQL
 
-SQLite creates one event-log database file and one metadata database file per boundary in `ORISUN_SQLITE_DIR`. `{boundary}_metadata.db` stores publisher checkpoints, projector checkpoints, admin users, and count caches for that boundary. Keeping derived operational state out of the boundary event files prevents publisher/projector writes from contending with the event writer.
+SQLite creates one event-log database file and one metadata database file per boundary in `ORISUN_SQLITE_DIR`. `{boundary}_metadata.db` stores projector checkpoints, admin users, count caches for that boundary. Keeping derived operational state out of the boundary event files prevents projector writes from contending with the event writer.
 
 ```bash
 ORISUN_BACKEND=sqlite
@@ -112,7 +105,7 @@ Choose SQLite when a single active node is acceptable and simplicity matters. It
 
 ## Boundary State
 
-A boundary is a logical domain. Boundaries isolate event logs, indexes, publisher checkpoints, and projector checkpoints. The admin boundary contains the event-sourced boundary catalog. Use the Admin `CreateBoundary` RPC for both new and existing physical storage; set `existed_before_catalog` when adopting storage that predates the catalog definition. Active servers and embedded stores provision and begin publishing the boundary without a restart.
+A boundary is a logical domain. Boundaries isolate event logs, indexes, notification subjects, and projector checkpoints. The admin boundary contains the event-sourced boundary catalog. Use the Admin `CreateBoundary` RPC for both new and existing physical storage. Active servers and embedded stores provision and begin publishing the boundary without a restart.
 
 PostgreSQL maps boundaries to schemas. `ORISUN_PG_ADMIN_SCHEMA` identifies the
 admin boundary's schema:
@@ -123,9 +116,8 @@ ORISUN_PG_ADMIN_SCHEMA=admin
 
 Application boundary placements are durable catalog state. New PostgreSQL
 boundaries specify their schema in the command placement and do not need an
-environment mapping. Existing installations from before 0.8.0 must upgrade
-through 0.8.0 so its legacy `ORISUN_PG_SCHEMAS` importer can create that
-catalog. SQLite maps each catalogued boundary to files:
+environment mapping. Existing storage must use the current format. SQLite maps
+each catalogued boundary to files:
 
 ```text
 /var/lib/orisun/sqlite/orders.db
@@ -157,9 +149,8 @@ an event replay:
 5. Start consumers from target positions and move traffic. Source positions
    are not portable because the target assigns new positions.
 
-`CreateBoundary` is not a cross-backend data-copy operation. Setting
-`existed_before_catalog` only records that compatible storage is already
-present; it does not copy events.
+`CreateBoundary` validates and initializes the recorded placement. It does not
+copy events between backends or convert older storage formats.
 
 Do not replay the source admin boundary as application data. Create the target
 application boundaries through its own Admin service so its catalog

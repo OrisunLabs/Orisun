@@ -46,14 +46,6 @@ func AdaptEventStoreWithServerInfo(eventStore *orisun.EventStore, info ServerRun
 	}
 }
 
-func (a *EventStoreAdapter) SaveEvents(ctx context.Context, req *SaveEventsRequest) (*WriteResult, error) {
-	response, err := a.eventStore.SaveEvents(ctx, saveEventsRequestFromProto(req))
-	if err != nil {
-		return nil, grpcstatus.FromError(err)
-	}
-	return writeResultToProto(response), nil
-}
-
 func (a *EventStoreAdapter) SaveEventsV2(ctx context.Context, req *SaveEventsV2Request) (*WriteResult, error) {
 	response, err := a.eventStore.SaveEventsV2(ctx, saveEventsV2RequestFromProto(req))
 	if err != nil {
@@ -155,23 +147,6 @@ func (a *EventStoreAdapter) GetIndex(ctx context.Context, req *GetIndexRequest) 
 		return nil, grpcstatus.FromError(err)
 	}
 	return &GetIndexResponse{Index: indexDefinitionToProto(response.Index)}, nil
-}
-
-func saveEventsRequestFromProto(req *SaveEventsRequest) *orisun.SaveEventsRequest {
-	if req == nil {
-		return nil
-	}
-	result := &orisun.SaveEventsRequest{
-		Boundary: req.Boundary,
-		Events:   eventsToSaveFromProto(req.Events),
-	}
-	if req.Query != nil {
-		result.Query = &orisun.SaveQuery{
-			ExpectedPosition: domainPositionFromProto(req.Query.ExpectedPosition),
-			SubsetQuery:      domainQueryFromProto(req.Query.SubsetQuery),
-		}
-	}
-	return result
 }
 
 func saveEventsV2RequestFromProto(req *SaveEventsV2Request) *orisun.SaveEventsV2Request {
@@ -429,7 +404,7 @@ func domainCriteriaFromProto(criteria []*Criterion) []*orisun.Criterion {
 			if tag == nil {
 				continue
 			}
-			result[index].Tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value}
+			result[index].Tags[tagIndex] = &orisun.Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result
@@ -449,7 +424,7 @@ func coreQueryFromProto(query *Query) coreeventstore.Query {
 			if tag == nil {
 				continue
 			}
-			result.Criteria[index].Tags[tagIndex] = coreeventstore.Tag{Key: tag.Key, Value: tag.Value}
+			result.Criteria[index].Tags[tagIndex] = coreeventstore.Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result
@@ -462,7 +437,7 @@ func criterionToProto(criterion *orisun.Criterion) *Criterion {
 	result := &Criterion{Tags: make([]*Tag, len(criterion.Tags))}
 	for index, tag := range criterion.Tags {
 		if tag != nil {
-			result.Tags[index] = &Tag{Key: tag.Key, Value: tag.Value}
+			result.Tags[index] = &Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator}
 		}
 	}
 	return result

@@ -76,18 +76,17 @@ func ensureJetStreamStreamIsProperlySetup(ctx context.Context, js jetstream.JetS
 }
 
 type Backend struct {
-	SaveEvents            orisun.EventsSaver
-	GetEvents             orisun.EventsRetriever
-	LockProvider          orisun.LockProvider
-	AdminDB               common.DB
-	EventPublishing       orisun.EventPublishingTracker
-	SignalProvider        func(string) orisun.EventSignal
-	ProvisionBoundary     boundaryprovisioning.ProvisionBoundary
-	InstallBoundary       boundaryprovisioning.InstallBoundary
-	BootstrapBoundary     *boundarymodel.Definition
-	PreexistingAdminStore bool
-	Start                 func(context.Context)
-	Close                 func(context.Context)
+	SaveEvents        orisun.EventsSaver
+	GetEvents         orisun.EventsRetriever
+	LockProvider      orisun.LockProvider
+	AdminDB           common.DB
+	SignalProvider    func(string) orisun.EventSignal
+	ProvisionBoundary boundaryprovisioning.ProvisionBoundary
+	InstallBoundary   boundaryprovisioning.InstallBoundary
+	BootstrapBoundary *boundarymodel.Definition
+
+	Start func(context.Context)
+	Close func(context.Context)
 }
 
 type BackendInitializer func(context.Context, c.AppConfig, jetstream.JetStream, l.Logger) (Backend, error)
@@ -157,14 +156,13 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 	}
 
 	signalProvider := backend.SignalProvider
-	if signalProvider == nil {
-		signalProvider = func(boundary string) orisun.EventSignal {
-			return orisun.NewPollingSignal(1 * time.Second)
-		}
-	}
-	pollingManager := orisun.StartEventPolling(ctx, config, backend.LockProvider, backend.GetEvents, js, backend.EventPublishing, signalProvider, AppLogger)
-	if err := pollingManager.StartBoundary(config.Admin.Boundary); err != nil {
-		AppLogger.Fatalf("Failed to start admin boundary publisher: %v", err)
+	notificationManager := orisun.StartNotificationRelays(ctx, backend.LockProvider, js.Conn(), signalProvider, AppLogger)
+	defer func() {
+		cancel()
+		notificationManager.Stop()
+	}()
+	if err := notificationManager.StartBoundary(config.Admin.Boundary); err != nil {
+		AppLogger.Fatalf("Failed to start admin boundary notification relay: %v", err)
 	}
 	provisionedBoundaries := map[string]struct{}{config.Admin.Boundary: {}}
 	var provisionedBoundariesMu sync.Mutex
@@ -176,14 +174,6 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 			backend.GetEvents,
 			eventStore.SubscribeToAllEvents,
 		)
-		if err := createboundary.RequireMigratedCatalog(
-			ctx,
-			backend.PreexistingAdminStore,
-			config.Admin.Boundary,
-			boundaryEvents,
-		); err != nil {
-			AppLogger.Fatalf("PostgreSQL catalog upgrade check failed: %v", err)
-		}
 		provisionPhysicalBoundary := func(provisionCtx context.Context, definition boundarymodel.Definition) error {
 			return backend.ProvisionBoundary(provisionCtx, definition)
 		}
@@ -191,7 +181,7 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 			if err := backend.InstallBoundary(installCtx, definition); err != nil {
 				return err
 			}
-			if err := pollingManager.StartBoundary(definition.Name); err != nil {
+			if err := notificationManager.StartBoundary(definition.Name); err != nil {
 				return err
 			}
 			provisionedBoundariesMu.Lock()
@@ -354,7 +344,7 @@ func Run(ctx context.Context, config c.AppConfig, AppLogger l.Logger, initialize
 		backend.AdminDB.DeleteUser,
 		backend.AdminDB.GetUserById,
 		eventStore.SubscribeToAllEvents,
-		eventStore.SaveEvents,
+		eventStore.SaveEventsV2,
 		eventStore.GetEvents,
 		AppLogger,
 	)
@@ -410,7 +400,7 @@ func createDefaultUser(ctx context.Context, adminBoundary string, eventstore *or
 		"changeit",
 		[]orisun.Role{orisun.RoleAdmin},
 		adminBoundary,
-		eventstore.SaveEvents,
+		eventstore.SaveEventsV2,
 		eventstore.GetEvents,
 		logger,
 		nil,
@@ -821,8 +811,11 @@ func startGRPCServer(
 		grpc.MaxConcurrentStreams(config.Grpc.MaxConcurrentStreams),
 		grpc.MaxRecvMsgSize(config.Grpc.MaxReceiveMessageSize),
 		grpc.MaxSendMsgSize(config.Grpc.MaxSendMessageSize),
-		grpc.InitialWindowSize(config.Grpc.InitialWindowSize),
-		grpc.InitialConnWindowSize(config.Grpc.InitialConnWindowSize),
+		// Preserve the fixed-window behavior of our configured sizes from
+		// gRPC 1.84. Initial*WindowSize now enables dynamic sizing; its BDP
+		// estimator can shrink these windows and emit invalid WINDOW_UPDATEs.
+		grpc.StaticStreamWindowSize(config.Grpc.InitialWindowSize),
+		grpc.StaticConnWindowSize(config.Grpc.InitialConnWindowSize),
 		grpc.WriteBufferSize(config.Grpc.WriteBufferSize),
 		grpc.ReadBufferSize(config.Grpc.ReadBufferSize),
 	)
@@ -841,7 +834,7 @@ func startGRPCServer(
 		config.Admin.Boundary,
 		admin.GRPCAdminDependencies{
 			GetEvents:            eventStore.GetEvents,
-			SaveEvents:           eventStore.SaveEvents,
+			SaveEvents:           eventStore.SaveEventsV2,
 			ListAdminUsers:       adminDB.ListAdminUsers,
 			GetUserCount:         adminDB.GetUsersCount,
 			GetEventCount:        adminDB.GetEventsCount,

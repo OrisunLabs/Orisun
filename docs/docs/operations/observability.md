@@ -43,8 +43,8 @@ a read-only query against the admin boundary. A failed probe changes the whole
 server plus the EventStore and Admin service statuses to `NOT_SERVING`.
 Readiness returns to `SERVING` automatically when both probes recover.
 
-Health does not yet evaluate individual boundary lifecycle failures, publisher
-lag, or publisher ownership; monitor those signals separately.
+Health does not yet evaluate individual boundary lifecycle failures, subscription
+lag, or notification relay ownership; monitor those signals separately.
 
 Kubernetes can use its native gRPC probe:
 
@@ -118,8 +118,8 @@ Operationally useful log lines include:
 - effective `GOMAXPROCS`, `GOMEMLIMIT`, and `GOGC` at startup,
 - admin boundary bootstrap and catalog replay,
 - boundary provisioning failures and independent retry attempts,
-- publisher boundary-lock acquisition and contention in clustered deployments,
-- publisher checkpoint progress and any publish errors.
+- notification relay boundary-lease contention in clustered deployments,
+- subscription/projector checkpoint progress, backend read failures, and notification publish errors.
 
 Use `DEBUG` to trace authentication, subscription handover, and per-call detail; keep `INFO` or higher in production.
 
@@ -144,6 +144,6 @@ Leave pprof disabled in production unless you are actively profiling, and never 
 - **Boundary readiness** is the set of `PROVISIONING` or `FAILED` entries from
   `Admin/ListBoundaries`. Alert on definitions that stay non-active and include
   `last_error`, `placement`, and `status_position` in diagnostics.
-- **Publisher lag** measures the gap between committed and published positions. Investigate with the [Troubleshooting](./troubleshooting#publisher-lag) steps.
-- **Catch-up vs live** tells you whether subscribers are repeatedly falling out of live delivery. If they are, the JetStream retention window may be too small for their pace. See [Delivery Guarantees](../concepts/delivery-guarantees#jetstream-retention-is-in-memory).
+- **Subscription lag** measures the gap between committed and delivered positions. Investigate with the [Troubleshooting](./troubleshooting#subscription-lag) steps.
+- **Idle recovery latency** depends on backend query cost, handler speed, and the configured idle threshold. See [Delivery Guarantees](../concepts/delivery-guarantees#transient-notification-transport).
 - **Consistency conflicts** show a high `ALREADY_EXISTS` rate, which is a domain hotspot, not a storage error. Confirm that the queries describe the intended invariants before narrowing them. An [index](../concepts/indexing) improves query cost but does not reduce genuine contention.

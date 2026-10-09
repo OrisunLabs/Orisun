@@ -305,3 +305,7 @@ func (v *revokingCredentialsValidator) RevokeUserSessions(userID string) int {
 	v.revokedUserIDs = append(v.revokedUserIDs, userID)
 	return 1
 }
+
+func (*revokingCredentialsValidator) VerifyCredentials(context.Context, string, string) (orisun.User, error) {
+	return orisun.User{}, nil
+}

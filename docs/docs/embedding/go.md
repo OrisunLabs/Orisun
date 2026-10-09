@@ -14,13 +14,10 @@ go get github.com/OrisunLabs/Orisun@main
 ```
 
 For production, pin the exact release version that contains the APIs you use
-instead of leaving a branch selector in `go.mod`. The latest tagged server
-release is `v0.10.0`, which predates `SaveEventsV2`.
+instead of leaving a branch selector in `go.mod`. The `v0.13.0` release supports `SaveEventsV2`.
 
-If you are upgrading from `v0.7.0`, follow the
-[0.7.0 to 0.8.0 upgrade guide](../operations/upgrading-0.7-to-0.8#embedded-go-changes)
-for the generated-type import move, subscription callback change, and boundary
-catalog migration.
+Startup upgrades storage from `0.13.0`. Older formats are rejected;
+see the [storage upgrade policy](../operations/upgrading-event-envelope).
 
 Backend-specific embedding packages keep deployments explicit:
 
@@ -218,17 +215,15 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 }
 ```
 
-Use `CreateBoundary` with `ExistedBeforeCatalog` for physical storage that
-already exists:
+Use `CreateBoundary` to attach restored storage in the current format:
 
 ```go
 existing, err := store.CreateBoundary(ctx, boundarymodel.Definition{
-	Name:                 "legacy_orders",
+	Name:                 "restored_orders",
 	Description:          "Existing order event log",
-	ExistedBeforeCatalog: true,
 	Placement: boundarymodel.Placement{
 		Backend:   "postgres",
-		Namespace: "legacy",
+		Namespace: "orders",
 	},
 })
 if err != nil {
@@ -238,7 +233,7 @@ _ = existing // wait for ACTIVE
 ```
 
 The definition is returned as `PROVISIONING`; the provisioner opens the
-existing storage, applies migrations idempotently, and then activates it.
+existing storage, validates the storage format, and then activates it.
 Duplicate create commands return an already-exists error because every
 successful command must produce exactly one definition event.
 
@@ -261,10 +256,8 @@ PostgreSQL uses `ORISUN_PG_ADMIN_SCHEMA` only to locate the admin boundary;
 application schema placements come from the catalog. SQLite and FoundationDB
 also install application boundaries only from catalog definitions.
 
-An existing PostgreSQL installation from before 0.8.0 must run 0.8.0 first
-with its complete `ORISUN_PG_SCHEMAS` mapping. That bridge release imports the
-legacy physical boundaries before a later embedded version stops accepting the
-mapping list.
+Startup upgrades storage from `0.13.0` without rewriting event
+documents. Older formats are rejected; historical boundary mappings are not imported.
 
 ## Reading events in-process
 

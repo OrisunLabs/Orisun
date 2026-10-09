@@ -3,6 +3,7 @@ package sqlite
 import (
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/OrisunLabs/Orisun/orisun"
+	"reflect"
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
 )
@@ -95,7 +96,7 @@ func criterionContains(criterion, subset map[string]any) bool {
 		return false
 	}
 	for key, value := range subset {
-		if got, ok := criterion[key]; !ok || got != value {
+		if got, ok := criterion[key]; !ok || !reflect.DeepEqual(got, value) {
 			return false
 		}
 	}

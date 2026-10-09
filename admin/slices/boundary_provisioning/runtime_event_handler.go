@@ -5,7 +5,7 @@ import (
 
 	boundarycatalog "github.com/OrisunLabs/Orisun/admin/slices/boundary_catalog"
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
@@ -44,10 +44,10 @@ func (h *BoundaryRuntimeEventHandler) Handle(ctx context.Context, event coreeven
 	if h == nil || h.adminBoundary == "" || h.retriever == nil || h.install == nil || h.activate == nil {
 		return statuscode.New(statuscode.Internal, "boundary runtime event handler is not configured")
 	}
-	if event.EventType != adminevents.EventTypeBoundaryActivated {
+	if event.EventType != boundaryevents.EventTypeBoundaryActivated {
 		return statuscode.Errorf(statuscode.InvalidArgument, "unsupported boundary runtime event %q", event.EventType)
 	}
-	var activated adminevents.BoundaryActivated
+	var activated boundaryevents.BoundaryActivated
 	if err := json.Unmarshal([]byte(event.Data), &activated); err != nil {
 		return statuscode.Errorf(statuscode.Internal, "decode %s: %v", event.EventType, err)
 	}
@@ -76,10 +76,9 @@ func (h *BoundaryRuntimeEventHandler) Handle(ctx context.Context, event coreeven
 		return statuscode.Errorf(statuscode.FailedPrecondition, "boundary %q is not active", boundary.Name)
 	}
 	definition := boundarymodel.Definition{
-		Name:                 boundary.Name,
-		Description:          boundary.Description,
-		Placement:            boundary.Placement,
-		ExistedBeforeCatalog: boundary.ExistedBeforeCatalog,
+		Name:        boundary.Name,
+		Description: boundary.Description,
+		Placement:   boundary.Placement,
 	}
 	if err := h.install(ctx, definition); err != nil {
 		return err

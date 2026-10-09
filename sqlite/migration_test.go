@@ -2,9 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	eventstore "github.com/OrisunLabs/Orisun/orisun"
 
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
@@ -35,7 +38,7 @@ func TestMigrationsStampFreshDatabase(t *testing.T) {
 	if err := applyMigrations(conn); err != nil {
 		t.Fatalf("apply event migrations: %v", err)
 	}
-	if got, want := connSchemaVersion(t, conn), len(eventMigrations); got != want {
+	if got, want := connSchemaVersion(t, conn), eventSchemaVersion; got != want {
 		t.Fatalf("user_version = %d, want %d", got, want)
 	}
 
@@ -54,80 +57,8 @@ func TestMigrationsStampFreshDatabase(t *testing.T) {
 	}
 }
 
-func TestMigrationsAdoptPreVersioningDatabase(t *testing.T) {
-	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "legacy.db"))
-
-	// Simulate a database created before versioning: baseline schema present,
-	// user_version still 0, existing rows in place.
-	if err := sqlitex.ExecuteScript(conn, eventDDL, nil); err != nil {
-		t.Fatalf("create legacy schema: %v", err)
-	}
-	err := sqlitex.Execute(conn,
-		`INSERT INTO orisun_es_event (transaction_id, global_id, event_id, data) VALUES (1, 1, 'e-1', '{"eventType":"Legacy"}')`,
-		nil)
-	if err != nil {
-		t.Fatalf("insert legacy row: %v", err)
-	}
-	if got := connSchemaVersion(t, conn); got != 0 {
-		t.Fatalf("pre-migration user_version = %d, want 0", got)
-	}
-
-	if err := applyMigrations(conn); err != nil {
-		t.Fatalf("apply event migrations: %v", err)
-	}
-	if got, want := connSchemaVersion(t, conn), len(eventMigrations); got != want {
-		t.Fatalf("user_version = %d, want %d", got, want)
-	}
-
-	var count int64
-	err = sqlitex.Execute(conn, "SELECT COUNT(*) FROM orisun_es_event", &sqlitex.ExecOptions{
-		ResultFunc: func(stmt *sqlite.Stmt) error {
-			count = stmt.ColumnInt64(0)
-			return nil
-		}})
-	if err != nil {
-		t.Fatalf("count rows: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("legacy row count = %d, want 1", count)
-	}
-}
-
-func TestEnsureBoundaryIndexesOrderByPositionUpgradesLegacyIndex(t *testing.T) {
-	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "legacy-index.db"))
-	if err := applyMigrations(conn); err != nil {
-		t.Fatalf("apply event migrations: %v", err)
-	}
-	if err := sqlitex.Execute(conn,
-		`CREATE INDEX stream_idx ON orisun_es_event (json_extract(data, '$."stream_id"'))`, nil); err != nil {
-		t.Fatalf("create legacy index: %v", err)
-	}
-	if err := sqlitex.Execute(conn,
-		`INSERT INTO orisun_boundary_index_metadata (name, fields, conditions, combinator)
-		 VALUES ('stream', '[{"JsonKey":"stream_id","ValueType":"text"}]', '[]', 'AND')`, nil); err != nil {
-		t.Fatalf("insert legacy metadata: %v", err)
-	}
-
-	if err := ensureBoundaryIndexesOrderByPosition(conn); err != nil {
-		t.Fatalf("upgrade legacy index: %v", err)
-	}
-	if err := ensureBoundaryIndexesOrderByPosition(conn); err != nil {
-		t.Fatalf("repeat index upgrade: %v", err)
-	}
-
-	var ddl string
-	if err := sqlitex.Execute(conn,
-		"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'stream_idx'",
-		&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
-			ddl = stmt.ColumnText(0)
-			return nil
-		}}); err != nil {
-		t.Fatalf("read upgraded DDL: %v", err)
-	}
-	if !sqliteIndexOrdersByPosition(ddl) {
-		t.Fatalf("legacy index was not upgraded: %s", ddl)
-	}
-}
+// Simulate a database created before versioning: baseline schema present,
+// user_version still 0, existing rows in place.
 
 func TestMigrationsRefuseNewerSchema(t *testing.T) {
 	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "future.db"))
@@ -139,58 +70,19 @@ func TestMigrationsRefuseNewerSchema(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error opening database with future schema version")
 	}
-	if !strings.Contains(err.Error(), "newer than this binary") {
+	if !strings.Contains(err.Error(), "unsupported database schema") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestMigrationStepFailureRollsBackAtomically(t *testing.T) {
-	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "partial.db"))
+// Second statement fails after the first succeeds: the whole step,
+// including the version bump, must roll back.
 
-	steps := []migrationStep{
-		{sql: "CREATE TABLE step_one (id INTEGER PRIMARY KEY);"},
-		// Second statement fails after the first succeeds: the whole step,
-		// including the version bump, must roll back.
-		{sql: "CREATE TABLE step_two (id INTEGER PRIMARY KEY);\nCREATE TABLE step_one (id INTEGER PRIMARY KEY);"},
-	}
-	err := applyVersionedMigrations(conn, steps)
-	if err == nil {
-		t.Fatal("expected step 2 to fail")
-	}
-	if !strings.Contains(err.Error(), "migration step 2") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := connSchemaVersion(t, conn); got != 1 {
-		t.Fatalf("user_version = %d, want 1 (step 2 rolled back)", got)
-	}
-
-	var stepTwoExists bool
-	qerr := sqlitex.Execute(conn,
-		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'step_two'",
-		&sqlitex.ExecOptions{ResultFunc: func(*sqlite.Stmt) error {
-			stepTwoExists = true
-			return nil
-		}})
-	if qerr != nil {
-		t.Fatalf("query sqlite_master: %v", qerr)
-	}
-	if stepTwoExists {
-		t.Fatal("step_two table exists despite failed step")
-	}
-
-	// A rerun with the step fixed resumes from where it left off.
-	steps[1] = migrationStep{sql: "CREATE TABLE step_two (id INTEGER PRIMARY KEY);"}
-	if err := applyVersionedMigrations(conn, steps); err != nil {
-		t.Fatalf("rerun after fix: %v", err)
-	}
-	if got := connSchemaVersion(t, conn); got != 2 {
-		t.Fatalf("user_version = %d, want 2", got)
-	}
-}
+// A rerun with the step fixed resumes from where it left off.
 
 func TestOpenBoundaryPoolsStampsSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
-	bp, err := OpenBoundaryPools(context.Background(), dir, "verstamp", "verstamp")
+	bp, err := OpenBoundaryPools(context.Background(), dir, "verstamp")
 	if err != nil {
 		t.Fatalf("open pools: %v", err)
 	}
@@ -201,7 +93,173 @@ func TestOpenBoundaryPoolsStampsSchemaVersion(t *testing.T) {
 		t.Fatalf("take read conn: %v", err)
 	}
 	defer bp.Read.Put(conn)
-	if got, want := connSchemaVersion(t, conn), len(eventMigrations); got != want {
+	if got, want := connSchemaVersion(t, conn), eventSchemaVersion; got != want {
 		t.Fatalf("user_version = %d, want %d", got, want)
+	}
+}
+
+func TestStorageRejectsOlderFormatsWithoutChangingData(t *testing.T) {
+	for _, version := range []int{0, 1, 5} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "old.db"))
+			if err := sqlitex.ExecuteScript(conn, fmt.Sprintf("CREATE TABLE orisun_es_event(data TEXT); INSERT INTO orisun_es_event VALUES ('original'); PRAGMA user_version=%d;", version), nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := applyMigrations(conn); err == nil {
+				t.Fatal("older storage was accepted")
+			}
+			if got := connSchemaVersion(t, conn); got != version {
+				t.Fatalf("version changed to %d", got)
+			}
+			err := sqlitex.Execute(conn, "SELECT data FROM orisun_es_event", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+				if stmt.ColumnText(0) != "original" {
+					t.Fatal("data changed")
+				}
+				return nil
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSchemaInitializationFailureRollsBack(t *testing.T) {
+	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "failed.db"))
+	if err := initializeSchema(conn, "CREATE TABLE example(id INTEGER); INVALID SQL;", eventSchemaVersion); err == nil {
+		t.Fatal("expected failure")
+	}
+	if got := connSchemaVersion(t, conn); got != 0 {
+		t.Fatalf("version changed to %d", got)
+	}
+	var count int64
+	if err := sqlitex.ExecuteTransient(conn, "SELECT COUNT(*) FROM sqlite_schema WHERE name='example'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error { count = stmt.ColumnInt64(0); return nil }}); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("partial schema remained")
+	}
+	if err := applyMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStorageUpgradesV013WithoutRewritingDocuments(t *testing.T) {
+	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "previous.db"))
+	if err := sqlitex.ExecuteScript(conn, eventDDL+`
+ INSERT INTO orisun_es_write VALUES(10, '[]');
+ INSERT INTO orisun_es_event(data) VALUES
+ ('{"__eventId":"a","__eventType":"Created","__commitPosition":11,"__preparePosition":10,"__writeId":"11:10","__dateCreated":"2026-10-09T00:00:00Z","__metadata":{},"account":"a"}'),
+ ('{"__eventId":"b","__eventType":"Historical","__commitPosition":1,"__preparePosition":0,"__writeId":null,"__dateCreated":"2026-10-08T00:00:00Z","__metadata":{},"account":"b"}');
+ CREATE INDEX custom_account ON orisun_es_event(json_extract(data, '$.account'));
+ UPDATE orisun_es_seq SET next_id=100;
+ INSERT INTO orisun_boundary_index_metadata(name,fields,conditions,combinator) VALUES('managed_account','[{"JsonKey":"account","ValueType":"text"}]','[]','AND');
+ PRAGMA user_version=6;`, nil); err != nil {
+		t.Fatal(err)
+	}
+	ddl, _, err := buildSQLiteBoundaryIndexDDL("managed_account", []eventstore.BoundaryIndexField{{JsonKey: "account", ValueType: "text"}}, nil, "AND")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlitex.ExecuteTransient(conn, ddl, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlitex.ExecuteTransient(conn, "SELECT sql FROM sqlite_schema WHERE name='managed_account_idx'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		ddl = stmt.ColumnText(0)
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var before []string
+	read := func(out *[]string) error {
+		return sqlitex.ExecuteTransient(conn, "SELECT data FROM orisun_es_event ORDER BY global_id", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error { *out = append(*out, stmt.ColumnText(0)); return nil }})
+	}
+	if err := read(&before); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := applyMigrations(conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if connSchemaVersion(t, conn) != eventSchemaVersion {
+		t.Fatal("version not upgraded")
+	}
+	if err := sqlitex.ExecuteTransient(conn, "SELECT sql FROM sqlite_schema WHERE name='managed_account_idx'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		if stmt.ColumnText(0) != ddl {
+			t.Fatal("managed index changed")
+		}
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var after []string
+	if err := read(&after); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(before, "\n") != strings.Join(after, "\n") {
+		t.Fatal("documents changed")
+	}
+	if err := sqlitex.ExecuteTransient(conn, "SELECT next_id FROM orisun_es_seq", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		if stmt.ColumnInt64(0) != 100 {
+			t.Fatal("sequence changed")
+		}
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlitex.ExecuteTransient(conn, "SELECT consistency FROM orisun_es_write WHERE write_id=10", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		if stmt.ColumnText(0) != "[]" {
+			t.Fatal("context changed")
+		}
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlitex.ExecuteTransient(conn, "SELECT count(*) FROM sqlite_schema WHERE name='custom_account'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		if stmt.ColumnInt64(0) != 1 {
+			t.Fatal("index lost")
+		}
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMetadataUpgradesV013(t *testing.T) {
+	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "metadata.db"))
+	if err := sqlitex.ExecuteScript(conn, metadataDDL+`
+ CREATE TABLE orisun_last_published_event_position(position INTEGER);
+ INSERT INTO projector_checkpoint VALUES('id', 'projection', 11, 10);
+ PRAGMA user_version=1;`, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := applyMetadataMigrations(conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if connSchemaVersion(t, conn) != metadataSchemaVersion {
+		t.Fatal("version not upgraded")
+	}
+	if err := sqlitex.ExecuteTransient(conn, "SELECT commit_position, prepare_position FROM projector_checkpoint", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		if stmt.ColumnInt64(0) != 11 || stmt.ColumnInt64(1) != 10 {
+			t.Fatal("projector cursor changed")
+		}
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlitex.ExecuteTransient(conn, "SELECT count(*) FROM sqlite_schema WHERE name='orisun_last_published_event_position'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		if stmt.ColumnInt64(0) != 0 {
+			t.Fatal("publisher state remains")
+		}
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
 	}
 }

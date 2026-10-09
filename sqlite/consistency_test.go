@@ -19,7 +19,7 @@ func TestLatestCriteriaPositionMatchesOrderedReads(t *testing.T) {
 		mustEvent(t, "Fact", map[string]any{"reference": "b", "value": true, "quoted'key": "it's"}, nil),
 		mustEvent(t, "Other", map[string]any{"value": nil}, nil),
 	}
-	_, _, err := saver.Save(t.Context(), events, gcBoundary, nil, nil)
+	_, _, err := saver.Save(t.Context(), events, gcBoundary, nil)
 	require.NoError(t, err)
 	criterion := func(key, value string) orisun.ReadCriterion {
 		return gcReadCriterion(orisun.ReadTag{Key: key, Value: value})
@@ -97,9 +97,8 @@ func TestRedundantCriteriaDoNotSuppressValidation(t *testing.T) {
 	for _, criteria := range [][]orisun.ReadCriterion{{broad, invalid}, {invalid, broad}} {
 		req := sequenceRequest(t, "Rejected")
 		req.consistency = gcConsistency(orisun.NotExistsPosition(), criteria...)
-		prepareGCWriteContexts(t, []*sqliteSaveRequest{req})
-		saver.runFlush(gcBoundary, pool, []*sqliteSaveRequest{req})
-		require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf((<-req.result).err))
+		_, _, err := saver.SavePrepared(t.Context(), req.inserts, gcBoundary, req.consistency)
+		require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf(err))
 	}
 	require.EqualValues(t, 1, readSeqNextID(t, pool))
 }

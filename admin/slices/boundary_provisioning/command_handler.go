@@ -7,7 +7,7 @@ import (
 
 	boundarycatalog "github.com/OrisunLabs/Orisun/admin/slices/boundary_catalog"
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
@@ -66,8 +66,8 @@ func ProvisionBoundaryCommandHandler(
 				appender,
 				command.Metadata,
 				model,
-				adminevents.EventTypeBoundaryActivated,
-				adminevents.BoundaryActivated{Boundary: command.Definition.Name},
+				boundaryevents.EventTypeBoundaryActivated,
+				boundaryevents.BoundaryActivated{Boundary: command.Definition.Name},
 			)
 			if statuscode.CodeOf(appendErr) != statuscode.AlreadyExists {
 				if appendErr != nil {
@@ -98,8 +98,8 @@ func ProvisionBoundaryCommandHandler(
 			appender,
 			command.Metadata,
 			model,
-			adminevents.EventTypeBoundaryFailed,
-			adminevents.BoundaryProvisioningFailed{Boundary: command.Definition.Name, Error: provisionErr.Error()},
+			boundaryevents.EventTypeBoundaryFailed,
+			boundaryevents.BoundaryProvisioningFailed{Boundary: command.Definition.Name, Error: provisionErr.Error()},
 		); appendErr != nil && statuscode.CodeOf(appendErr) != statuscode.AlreadyExists {
 			return ProvisionBoundaryResult{}, fmt.Errorf("provision boundary %q: %v; record failure: %w", command.Definition.Name, provisionErr, appendErr)
 		}
@@ -125,7 +125,7 @@ func loadContext(ctx context.Context, adminBoundary, name string, retriever Late
 
 	var definition *coreeventstore.ReadEvent
 	for _, match := range latest.Matches {
-		if match.Found && match.Event.EventType == adminevents.EventTypeBoundaryCreated {
+		if match.Found && match.Event.EventType == boundaryevents.EventTypeBoundaryCreated {
 			event := match.Event
 			definition = &event
 			break
@@ -137,7 +137,7 @@ func loadContext(ctx context.Context, adminBoundary, name string, retriever Late
 
 	events := []coreeventstore.ReadEvent{*definition}
 	for _, match := range latest.Matches {
-		if !match.Found || match.Event.EventType == adminevents.EventTypeBoundaryCreated {
+		if !match.Found || match.Event.EventType == boundaryevents.EventTypeBoundaryCreated {
 			continue
 		}
 		// Outcomes written before the current definition belong to a removed
@@ -204,8 +204,7 @@ func appendOutcome(
 			Data:      dataJSON,
 			Metadata:  string(metadataJSON),
 		}},
-		ExpectedPosition: model.position,
-		Subset:           model.query,
+		Consistency: []coreeventstore.ConsistencyObservation{{Query: model.query, Position: *model.position}},
 	})
 	if err != nil {
 		return boundarymodel.Boundary{}, err
@@ -213,12 +212,12 @@ func appendOutcome(
 	position := appendResult.Position
 	boundary := *model.boundary
 	boundary.StatusPosition = &position
-	if eventType == adminevents.EventTypeBoundaryActivated {
+	if eventType == boundaryevents.EventTypeBoundaryActivated {
 		boundary.Status = boundarymodel.StatusActive
 		boundary.LastError = ""
 	} else {
 		boundary.Status = boundarymodel.StatusFailed
-		if failed, ok := data.(adminevents.BoundaryProvisioningFailed); ok {
+		if failed, ok := data.(boundaryevents.BoundaryProvisioningFailed); ok {
 			boundary.LastError = failed.Error
 		}
 	}
@@ -237,9 +236,9 @@ func validateDefinition(definition boundarymodel.Definition) error {
 
 func lifecycleCriteria(name string) []coreeventstore.Criterion {
 	eventTypes := []string{
-		adminevents.EventTypeBoundaryCreated,
-		adminevents.EventTypeBoundaryActivated,
-		adminevents.EventTypeBoundaryFailed,
+		boundaryevents.EventTypeBoundaryCreated,
+		boundaryevents.EventTypeBoundaryActivated,
+		boundaryevents.EventTypeBoundaryFailed,
 	}
 	criteria := make([]coreeventstore.Criterion, len(eventTypes))
 	for i, eventType := range eventTypes {

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
@@ -15,11 +15,11 @@ import (
 type CommandMetadata map[string]any
 
 type CreateBoundaryCommand struct {
-	Name                 string
-	Description          string
-	Placement            boundarymodel.Placement
-	ExistedBeforeCatalog bool
-	Metadata             CommandMetadata
+	Name        string
+	Description string
+	Placement   boundarymodel.Placement
+
+	Metadata CommandMetadata
 }
 
 type CreateBoundaryResult struct {
@@ -60,42 +60,40 @@ func CreateBoundaryCommandHandler(
 	if err != nil {
 		return CreateBoundaryResult{}, statuscode.Errorf(statuscode.Internal, "create boundary event id: %v", err)
 	}
-	data, err := eventData(adminevents.BoundaryCreated{
-		Boundary:             definition.Name,
-		Description:          definition.Description,
-		Placement:            definition.Placement,
-		ExistedBeforeCatalog: definition.ExistedBeforeCatalog,
+	data, err := eventData(boundaryevents.BoundaryCreated{
+		Boundary:    definition.Name,
+		Description: definition.Description,
+		Placement:   definition.Placement,
 	})
 	if err != nil {
-		return CreateBoundaryResult{}, statuscode.Errorf(statuscode.Internal, "prepare %s data: %v", adminevents.EventTypeBoundaryCreated, err)
+		return CreateBoundaryResult{}, statuscode.Errorf(statuscode.Internal, "prepare %s data: %v", boundaryevents.EventTypeBoundaryCreated, err)
 	}
 	metadata, err := json.Marshal(metadataWithQuery(command.Metadata, model.query))
 	if err != nil {
-		return CreateBoundaryResult{}, statuscode.Errorf(statuscode.Internal, "prepare %s metadata: %v", adminevents.EventTypeBoundaryCreated, err)
+		return CreateBoundaryResult{}, statuscode.Errorf(statuscode.Internal, "prepare %s metadata: %v", boundaryevents.EventTypeBoundaryCreated, err)
 	}
 	appendResult, err := appender.Append(ctx, coreeventstore.AppendRequest{
 		Boundary: adminBoundary,
 		Events: []coreeventstore.EventToAppend{{
 			EventID:   eventID.String(),
-			EventType: adminevents.EventTypeBoundaryCreated,
+			EventType: boundaryevents.EventTypeBoundaryCreated,
 			Data:      data,
 			Metadata:  string(metadata),
 		}},
-		ExpectedPosition: model.position,
-		Subset:           model.query,
+		Consistency: []coreeventstore.ConsistencyObservation{{Query: model.query, Position: *model.position}},
 	})
 	if err != nil {
 		return CreateBoundaryResult{}, err
 	}
 	position := appendResult.Position
 	return CreateBoundaryResult{Boundary: boundarymodel.Boundary{
-		Name:                 definition.Name,
-		Description:          definition.Description,
-		Placement:            definition.Placement,
-		Status:               boundarymodel.StatusProvisioning,
-		ExistedBeforeCatalog: definition.ExistedBeforeCatalog,
-		DefinitionPosition:   &position,
-		StatusPosition:       &coreeventstore.Position{CommitPosition: position.CommitPosition, PreparePosition: position.PreparePosition},
+		Name:        definition.Name,
+		Description: definition.Description,
+		Placement:   definition.Placement,
+		Status:      boundarymodel.StatusProvisioning,
+
+		DefinitionPosition: &position,
+		StatusPosition:     &coreeventstore.Position{CommitPosition: position.CommitPosition, PreparePosition: position.PreparePosition},
 	}}, nil
 }
 
@@ -136,9 +134,9 @@ func loadContext(ctx context.Context, adminBoundary, name string, retriever Late
 
 func normalize(command CreateBoundaryCommand) (boundarymodel.Definition, error) {
 	definition := boundarymodel.Definition{
-		Name:                 strings.TrimSpace(command.Name),
-		Description:          strings.TrimSpace(command.Description),
-		ExistedBeforeCatalog: command.ExistedBeforeCatalog,
+		Name:        strings.TrimSpace(command.Name),
+		Description: strings.TrimSpace(command.Description),
+
 		Placement: boundarymodel.Placement{
 			Backend:   strings.TrimSpace(command.Placement.Backend),
 			Namespace: strings.TrimSpace(command.Placement.Namespace),
@@ -155,7 +153,7 @@ func normalize(command CreateBoundaryCommand) (boundarymodel.Definition, error) 
 
 func definitionCriteria(name string) []coreeventstore.Criterion {
 	return []coreeventstore.Criterion{
-		{Tags: []coreeventstore.Tag{{Key: "boundary", Value: name}, {Key: "__eventType", Value: adminevents.EventTypeBoundaryCreated}}},
+		{Tags: []coreeventstore.Tag{{Key: "boundary", Value: name}, {Key: "__eventType", Value: boundaryevents.EventTypeBoundaryCreated}}},
 	}
 }
 

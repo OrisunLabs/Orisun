@@ -3,6 +3,7 @@
 package foundationdb
 
 import (
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	"slices"
 	"testing"
 
@@ -24,9 +25,9 @@ func TestFoundationDBSystemIndexesCoverBoundaryDefinitionReplay(t *testing.T) {
 
 func TestFoundationDBBoundaryProvisioningIsIdempotentAndInstallsSeparately(t *testing.T) {
 	backend := newTestBackend(t)
-	definition := eventstore.BoundaryDefinition{
+	definition := boundarymodel.Definition{
 		Name:      "sales",
-		Placement: eventstore.BoundaryPlacement{Backend: "foundationdb", Namespace: backend.root},
+		Placement: boundarymodel.Placement{Backend: "foundationdb", Namespace: backend.root},
 	}
 	if err := backend.ProvisionBoundary(t.Context(), definition); err != nil {
 		t.Fatalf("ProvisionBoundary() error = %v", err)
@@ -47,9 +48,9 @@ func TestFoundationDBBoundaryProvisioningIsIdempotentAndInstallsSeparately(t *te
 
 func TestFoundationDBBoundaryProvisioningRejectsWrongRoot(t *testing.T) {
 	backend := newTestBackend(t)
-	err := backend.ProvisionBoundary(t.Context(), eventstore.BoundaryDefinition{
+	err := backend.ProvisionBoundary(t.Context(), boundarymodel.Definition{
 		Name:      "sales",
-		Placement: eventstore.BoundaryPlacement{Backend: "foundationdb", Namespace: "other"},
+		Placement: boundarymodel.Placement{Backend: "foundationdb", Namespace: "other"},
 	})
 	if err == nil {
 		t.Fatal("ProvisionBoundary() error = nil")

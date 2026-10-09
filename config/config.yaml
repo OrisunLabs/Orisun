@@ -5,7 +5,7 @@ backend:
 
 # SQLite backend settings (used when backend.type=sqlite).
 # Each boundary gets its own event-log file at {dir}/{boundary}.db.
-# Publisher checkpoints, projector checkpoints, admin users, and count caches
+# Projector checkpoints, admin users, and count caches
 # live in {dir}/{boundary}_metadata.db to keep control-plane writes off each
 # boundary's event writer lock.
 sqlite:
@@ -22,7 +22,7 @@ sqlite:
   tempStore: ${ORISUN_SQLITE_TEMP_STORE:MEMORY}
   # Coalesce SQLite publisher wake-ups after commits. This prioritizes draining
   # write bursts before the publisher starts read/publish/checkpoint work.
-  # 0s restores immediate wake-ups; periodic polling still guarantees no skips.
+  # 0s sends commit wake-ups immediately; idle watchdog hints recover missed signals.
   publisherWakeDelay: ${ORISUN_SQLITE_PUBLISHER_WAKE_DELAY:5ms}
   # Group-commit write batcher (the only SQLite write path). Larger batches
   # amortize fsync further but hold the single write connection longer and
@@ -114,12 +114,6 @@ nats:
   port: ${ORISUN_NATS_PORT:4224}
   maxPayload: ${ORISUN_NATS_MAX_PAYLOAD:1048576}
   storeDir: ${ORISUN_NATS_STORE_DIR:./data/orisun/nats} # storeDir is the directory where NATS server will store its data, will default to /var/lib/orisun/nats in docker
-  # Event-delivery JetStream bounds (per-boundary stream, in-memory).
-  # MaxBytes caps memory; oldest messages evicted when limit hit.
-  # MaxAge sets retention overlap window for catch-up subscribers (must exceed catch-up grace).
-  eventStreamMaxBytes: ${ORISUN_NATS_EVENT_STREAM_MAX_BYTES:536870912}  # 512MB
-  eventStreamMaxMsgs: ${ORISUN_NATS_EVENT_STREAM_MAX_MSGS:-1}
-  eventStreamMaxAge: ${ORISUN_NATS_EVENT_STREAM_MAX_AGE:5m}
   # Cap of in-flight PublishAsync acks for async publish paths.
   publishAsyncMaxPending: ${ORISUN_NATS_PUBLISH_ASYNC_MAX_PENDING:8192}
   cluster:
@@ -131,8 +125,7 @@ nats:
     enabled: ${ORISUN_NATS_CLUSTER_ENABLED:false}
     timeout: ${ORISUN_NATS_CLUSTER_TIMEOUT:1800s}
     routes: ${ORISUN_NATS_CLUSTER_ROUTES:`nats://0.0.0.0:6223,nats://0.0.0.0:6224`}
-pollingPublisher:
-  batchSize: ${ORISUN_POLLING_PUBLISHER_BATCH_SIZE:1000}
+subscriptionIdleThreshold: ${ORISUN_SUBSCRIPTION_IDLE_THRESHOLD:10s}
 logging:
   level: ${ORISUN_LOGGING_LEVEL:INFO}
 

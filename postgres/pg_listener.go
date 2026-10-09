@@ -282,7 +282,22 @@ func (l *PGNotifyListener) reconnect(ctx context.Context) error {
 		oldConn.Close(ctx)
 
 		l.logger.Info("PG LISTEN reconnected and re-listened on all channels")
+		l.wakeRegisteredBoundaries()
 		return nil
+	}
+}
+
+// Notifications received during a disconnected LISTEN session cannot be
+// replayed. Wake every registered relay after restoring the session; each
+// subscriber's independent reconciliation remains the recovery guarantee.
+func (l *PGNotifyListener) wakeRegisteredBoundaries() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, signal := range l.signals {
+		select {
+		case signal <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -296,19 +311,18 @@ func (l *PGNotifyListener) listenedBoundaries() []string {
 	return boundaries
 }
 
-func (l *PGNotifyListener) Signal(boundary string, catchupInterval time.Duration) orisun.EventSignal {
+func (l *PGNotifyListener) Signal(boundary string) orisun.EventSignal {
 	l.mu.Lock()
 	ch, ok := l.signals[boundary]
 	l.mu.Unlock()
 
 	if !ok {
-		// Unknown boundary — fall back to polling.
-		return orisun.NewPollingSignal(catchupInterval)
+		// Only registered boundaries have a notification signal.
+		return nil
 	}
 
 	return &pgNotifySignal{
-		notifyCh:      ch,
-		catchupTicker: time.NewTicker(catchupInterval),
+		notifyCh: ch,
 	}
 }
 
@@ -323,8 +337,7 @@ func (l *PGNotifyListener) Close(ctx context.Context) {
 }
 
 type pgNotifySignal struct {
-	notifyCh      chan struct{}
-	catchupTicker *time.Ticker
+	notifyCh chan struct{}
 }
 
 func (s *pgNotifySignal) Wait(ctx context.Context) error {
@@ -333,11 +346,7 @@ func (s *pgNotifySignal) Wait(ctx context.Context) error {
 		return ctx.Err()
 	case <-s.notifyCh:
 		return nil
-	case <-s.catchupTicker.C:
-		return nil
 	}
 }
 
-func (s *pgNotifySignal) Stop() {
-	s.catchupTicker.Stop()
-}
+func (s *pgNotifySignal) Stop() {}

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -433,7 +433,7 @@ func TestE2E_Postgres_CatalogBoundarySurvivesRestart(t *testing.T) {
 	suite.createBoundary(t, boundary, "postgres", schema)
 
 	ctx := createAuthenticatedContext("admin", "changeit")
-	beforeRestart := requireActiveBoundary(t, suite, ctx, boundary, "postgres", schema, false)
+	beforeRestart := requireActiveBoundary(t, suite, ctx, boundary, "postgres", schema)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
 
 	appendBoundaryEvent(t, suite, ctx, boundary, "OrderConfirmed", map[string]any{"orderId": "legacy-order-1"})
@@ -444,7 +444,7 @@ func TestE2E_Postgres_CatalogBoundarySurvivesRestart(t *testing.T) {
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
 
-	afterRestart := requireActiveBoundary(t, suite, ctx, boundary, "postgres", schema, false)
+	afterRestart := requireActiveBoundary(t, suite, ctx, boundary, "postgres", schema)
 	requireSamePosition(t, beforeRestart.DefinitionPosition, afterRestart.DefinitionPosition)
 	requireSamePosition(t, beforeRestart.StatusPosition, afterRestart.StatusPosition)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
@@ -462,7 +462,7 @@ func TestE2E_SQLite_CatalogBoundarySurvivesRestart(t *testing.T) {
 	suite.createBoundary(t, boundary, "sqlite", boundary)
 
 	ctx := createAuthenticatedContext("admin", "changeit")
-	beforeRestart := requireActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary, false)
+	beforeRestart := requireActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
 
 	appendBoundaryEvent(t, suite, ctx, boundary, "OrderConfirmed", map[string]any{"orderId": "legacy-order-1"})
@@ -473,7 +473,7 @@ func TestE2E_SQLite_CatalogBoundarySurvivesRestart(t *testing.T) {
 	suite.waitForGRPCServer(t)
 	suite.createGRPCClient(t)
 
-	afterRestart := requireActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary, false)
+	afterRestart := requireActiveBoundary(t, suite, ctx, boundary, "sqlite", boundary)
 	requireSamePosition(t, beforeRestart.DefinitionPosition, afterRestart.DefinitionPosition)
 	requireSamePosition(t, beforeRestart.StatusPosition, afterRestart.StatusPosition)
 	require.Equal(t, boundaryCatalogEventCounts{created: 1, activated: 1}, catalogEventCounts(t, suite, ctx, boundary))
@@ -492,7 +492,6 @@ func requireActiveBoundary(
 	boundary,
 	backend,
 	namespace string,
-	existedBeforeCatalog bool,
 ) *pb.BoundaryInfo {
 	t.Helper()
 	adminClient := pb.NewAdminClient(suite.grpcConn)
@@ -506,7 +505,6 @@ func requireActiveBoundary(
 		return info.Status == pb.BoundaryLifecycleStatus_BOUNDARY_LIFECYCLE_STATUS_ACTIVE
 	}, 10*time.Second, 25*time.Millisecond)
 	require.Equal(t, boundary, info.Name)
-	require.Equal(t, existedBeforeCatalog, info.ExistedBeforeCatalog)
 	require.Equal(t, backend, info.Placement.Backend)
 	require.Equal(t, namespace, info.Placement.Namespace)
 	require.NotNil(t, info.DefinitionPosition)
@@ -537,9 +535,9 @@ func catalogEventCounts(
 			continue
 		}
 		switch event.EventType {
-		case adminevents.EventTypeBoundaryCreated:
+		case boundaryevents.EventTypeBoundaryCreated:
 			counts.created++
-		case adminevents.EventTypeBoundaryActivated:
+		case boundaryevents.EventTypeBoundaryActivated:
 			counts.activated++
 		}
 	}

@@ -21,7 +21,7 @@ const gcBoundary = "test"
 func newGCTestSaver(t *testing.T) (*SqliteSaveEvents, *BoundaryPools, func()) {
 	t.Helper()
 	dir := t.TempDir()
-	bp, err := OpenBoundaryPools(context.Background(), dir, gcBoundary, gcBoundary)
+	bp, err := OpenBoundaryPools(context.Background(), dir, gcBoundary)
 	if err != nil {
 		t.Fatalf("open pools: %v", err)
 	}
@@ -119,7 +119,7 @@ func blockWorkerThenQueue(t *testing.T, saver *SqliteSaveEvents, bp *BoundaryPoo
 	go func() {
 		_, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 			mustEvent(t, "Blocker", map[string]any{"role": "blocker"}, map[string]any{}),
-		}, gcBoundary, nil, nil)
+		}, gcBoundary, nil)
 		blockerDone <- err
 	}()
 	// The blocker is inside its (stalled) flush once the single-flush counter ticks.
@@ -140,7 +140,7 @@ func blockWorkerThenQueue(t *testing.T, saver *SqliteSaveEvents, bp *BoundaryPoo
 
 func TestGroupCommit_ConfigPlumbing(t *testing.T) {
 	dir := t.TempDir()
-	bp, err := OpenBoundaryPools(context.Background(), dir, gcBoundary, gcBoundary)
+	bp, err := OpenBoundaryPools(context.Background(), dir, gcBoundary)
 	if err != nil {
 		t.Fatalf("open pools: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestGroupCommit_CoalescesConcurrentSavesIntoOneFlush(t *testing.T) {
 				defer wg.Done()
 				tx, gid, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 					mustEvent(t, "Coalesced", map[string]any{"idx": strconv.Itoa(i)}, map[string]any{}),
-				}, gcBoundary, nil, nil)
+				}, gcBoundary, nil)
 				outcomes[i] = saveOutcome{tx, gid, err}
 			}(i)
 		}
@@ -259,7 +259,7 @@ func TestGroupCommit_ResultsRouteToTheRightCallers(t *testing.T) {
 				defer wg.Done()
 				tx, gid, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 					mustEvent(t, "Routed", map[string]any{"router_key": strconv.Itoa(i)}, map[string]any{}),
-				}, gcBoundary, nil, nil)
+				}, gcBoundary, nil)
 				outcomes[i] = saveOutcome{tx, gid, err}
 			}(i)
 		}
@@ -308,13 +308,15 @@ func TestGroupCommit_InBatchConflictEarlierWinsLaterAlreadyExists(t *testing.T) 
 			defer wg.Done()
 			_, _, errB = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "B", map[string]any{"agg": "conflict-1"}, map[string]any{}),
-			}, gcBoundary, nil, criteria) // expects not-exists
+			}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria, Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+			) // expects not-exists
 		}()
 		go func() {
 			defer wg.Done()
 			_, _, errC = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "C", map[string]any{"agg": "conflict-1"}, map[string]any{}),
-			}, gcBoundary, nil, criteria) // expects not-exists
+			}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria, Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+			) // expects not-exists
 		}()
 	})
 	wg.Wait()
@@ -352,7 +354,8 @@ func TestGroupCommit_InBatchSameExpectedPositionOnlyOneWins(t *testing.T) {
 	}}
 	_, gid, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "Seed", map[string]any{"agg": "same-expected-in-batch"}, map[string]any{}),
-	}, gcBoundary, nil, criteria)
+	}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria, Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+	)
 	if err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
@@ -366,13 +369,13 @@ func TestGroupCommit_InBatchSameExpectedPositionOnlyOneWins(t *testing.T) {
 			defer wg.Done()
 			_, _, errB = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "B", map[string]any{"agg": "same-expected-in-batch"}, map[string]any{}),
-			}, gcBoundary, expected, criteria)
+			}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria, Position: expected}})
 		}()
 		go func() {
 			defer wg.Done()
 			_, _, errC = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "C", map[string]any{"agg": "same-expected-in-batch"}, map[string]any{}),
-			}, gcBoundary, expected, criteria)
+			}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria, Position: expected}})
 		}()
 	})
 	wg.Wait()
@@ -414,7 +417,7 @@ func TestGroupCommit_CancelledWhileQueuedIsDroppedWithoutAllocatingIDs(t *testin
 		go func() {
 			_, _, errB = saver.Save(ctxB, []eventstore.EventWithMapTags{
 				mustEvent(t, "B", map[string]any{"who": "b"}, map[string]any{}),
-			}, gcBoundary, nil, nil)
+			}, gcBoundary, nil)
 			close(bDone)
 		}()
 		wg.Add(1)
@@ -422,7 +425,7 @@ func TestGroupCommit_CancelledWhileQueuedIsDroppedWithoutAllocatingIDs(t *testin
 			defer wg.Done()
 			_, _, errC = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "C", map[string]any{"who": "c"}, map[string]any{}),
-			}, gcBoundary, nil, nil)
+			}, gcBoundary, nil)
 		}()
 		// Cancel B only after both requests are queued behind the blocker.
 		waitUntil(t, "both requests queued", func() bool { return len(saver.queues[gcBoundary]) == 2 })
@@ -458,7 +461,7 @@ func TestGroupCommit_BatchLimitsAreRespected(t *testing.T) {
 				defer wg.Done()
 				_, _, errs[i] = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 					mustEvent(t, "Limited", map[string]any{"idx": strconv.Itoa(i)}, map[string]any{}),
-				}, gcBoundary, nil, nil)
+				}, gcBoundary, nil)
 			}(i)
 		}
 	})
@@ -495,7 +498,7 @@ func TestGroupCommit_EventBatchLimitCarriesOverflowToNextFlush(t *testing.T) {
 				defer wg.Done()
 				_, _, errs[i] = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 					mustEvent(t, "EventLimited", map[string]any{"idx": strconv.Itoa(i)}, map[string]any{}),
-				}, gcBoundary, nil, nil)
+				}, gcBoundary, nil)
 			}(i)
 		}
 	})
@@ -532,13 +535,13 @@ func TestGroupCommit_PanicDuringFlushReturnsInternalAndWorkerSurvives(t *testing
 			defer wg.Done()
 			_, _, errB = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "B", map[string]any{"who": "b"}, map[string]any{}),
-			}, gcBoundary, nil, nil)
+			}, gcBoundary, nil)
 		}()
 		go func() {
 			defer wg.Done()
 			_, _, errC = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "C", map[string]any{"who": "c"}, map[string]any{}),
-			}, gcBoundary, nil, nil)
+			}, gcBoundary, nil)
 		}()
 	})
 	wg.Wait()
@@ -553,7 +556,7 @@ func TestGroupCommit_PanicDuringFlushReturnsInternalAndWorkerSurvives(t *testing
 	saver.gcTestFlushHook = nil
 	if _, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "After", map[string]any{"who": "after"}, map[string]any{}),
-	}, gcBoundary, nil, nil); err != nil {
+	}, gcBoundary, nil); err != nil {
 		t.Fatalf("save after panic: %v", err)
 	}
 	// Only blocker + follow-up persisted; the panicked batch allocated nothing.
@@ -566,7 +569,7 @@ func TestGroupCommit_NotifierFiresAfterBatchedCommit(t *testing.T) {
 	saver, bp, cleanup := newGCTestSaver(t)
 	defer cleanup()
 	// Hour-long tick interval: Wait below only returns via an actual Notify.
-	notifier := NewSqliteEventNotifier(time.Hour)
+	notifier := NewSqliteEventNotifier()
 	saver.notifier = notifier
 	signal := notifier.Signal(gcBoundary)
 	defer signal.Stop()
@@ -579,7 +582,7 @@ func TestGroupCommit_NotifierFiresAfterBatchedCommit(t *testing.T) {
 				defer wg.Done()
 				if _, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 					mustEvent(t, "Notify", map[string]any{"idx": strconv.Itoa(i)}, map[string]any{}),
-				}, gcBoundary, nil, nil); err != nil {
+				}, gcBoundary, nil); err != nil {
 					t.Errorf("save %d: %v", i, err)
 				}
 			}(i)
@@ -607,13 +610,13 @@ func TestGroupCommit_ShutdownFailsQueuedRequestsAndRejectsNewOnes(t *testing.T) 
 			defer wg.Done()
 			_, _, errB = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "B", map[string]any{"who": "b"}, map[string]any{}),
-			}, gcBoundary, nil, nil)
+			}, gcBoundary, nil)
 		}()
 		go func() {
 			defer wg.Done()
 			_, _, errC = saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "C", map[string]any{"who": "c"}, map[string]any{}),
-			}, gcBoundary, nil, nil)
+			}, gcBoundary, nil)
 		}()
 		waitUntil(t, "both requests queued", func() bool { return len(saver.queues[gcBoundary]) == 2 })
 		go func() {
@@ -634,7 +637,7 @@ func TestGroupCommit_ShutdownFailsQueuedRequestsAndRejectsNewOnes(t *testing.T) 
 	}
 	if _, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "D", map[string]any{"who": "d"}, map[string]any{}),
-	}, gcBoundary, nil, nil); statuscode.CodeOf(err) != statuscode.Unavailable {
+	}, gcBoundary, nil); statuscode.CodeOf(err) != statuscode.Unavailable {
 		t.Fatalf("expected Unavailable for new save after close, got %v", err)
 	}
 	if next := readSeqNextID(t, bp); next != 2 {
@@ -650,7 +653,7 @@ func TestGroupCommit_ClosedPoolFailsCleanlyWithoutHangingTheWorker(t *testing.T)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_, _, err := saver.Save(ctx, []eventstore.EventWithMapTags{
 			mustEvent(t, "X", map[string]any{"i": strconv.Itoa(i)}, map[string]any{}),
-		}, gcBoundary, nil, nil)
+		}, gcBoundary, nil)
 		cancel()
 		if statuscode.CodeOf(err) != statuscode.Internal {
 			t.Fatalf("save %d: expected Internal on closed pool, got %v", i, err)
@@ -660,7 +663,7 @@ func TestGroupCommit_ClosedPoolFailsCleanlyWithoutHangingTheWorker(t *testing.T)
 }
 
 func TestGroupCommit_SequentialResultsAndPositions(t *testing.T) {
-	type saveFn func(ctx context.Context, events []eventstore.EventWithMapTags, boundary string, pos *eventstore.Position, query *eventstore.Query) (string, int64, error)
+	type saveFn func(ctx context.Context, events []eventstore.EventWithMapTags, boundary string, observations []*eventstore.ConsistencyObservation) (string, int64, error)
 
 	runSequence := func(save saveFn) []saveOutcome {
 		criteria := func(agg string) *eventstore.Query {
@@ -672,20 +675,22 @@ func TestGroupCommit_SequentialResultsAndPositions(t *testing.T) {
 		// 1: plain save, 2: CCC first write, 3: stale CCC (conflict), 4: multi-event batch.
 		tx, gid, err := save(context.Background(), []eventstore.EventWithMapTags{
 			mustEvent(t, "Plain", map[string]any{"k": "v"}, map[string]any{}),
-		}, gcBoundary, nil, nil)
+		}, gcBoundary, nil)
 		out = append(out, saveOutcome{tx, gid, err})
 		tx, gid, err = save(context.Background(), []eventstore.EventWithMapTags{
 			mustEvent(t, "First", map[string]any{"agg": "a1"}, map[string]any{}),
-		}, gcBoundary, nil, criteria("a1"))
+		}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria("a1"), Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+		)
 		out = append(out, saveOutcome{tx, gid, err})
 		tx, gid, err = save(context.Background(), []eventstore.EventWithMapTags{
 			mustEvent(t, "Stale", map[string]any{"agg": "a1"}, map[string]any{}),
-		}, gcBoundary, nil, criteria("a1"))
+		}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria("a1"), Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+		)
 		out = append(out, saveOutcome{tx, gid, err})
 		tx, gid, err = save(context.Background(), []eventstore.EventWithMapTags{
 			mustEvent(t, "M1", map[string]any{"m": "1"}, map[string]any{}),
 			mustEvent(t, "M2", map[string]any{"m": "2"}, map[string]any{}),
-		}, gcBoundary, nil, nil)
+		}, gcBoundary, nil)
 		out = append(out, saveOutcome{tx, gid, err})
 		return out
 	}
@@ -721,7 +726,7 @@ func TestGroupCommit_ConcurrentBurstAllCommitGapFree(t *testing.T) {
 			defer wg.Done()
 			_, gid, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 				mustEvent(t, "Burst", map[string]any{"idx": strconv.Itoa(i)}, map[string]any{}),
-			}, gcBoundary, nil, nil)
+			}, gcBoundary, nil)
 			errs[i], gids[i] = err, gid
 		}(i)
 	}
@@ -757,14 +762,15 @@ func TestGroupCommit_ConcurrentSameExpectedPositionAcrossFlushesOnlyOneWins(t *t
 	}}
 	_, gid, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "Seed", map[string]any{"agg": "same-expected-across-flushes"}, map[string]any{}),
-	}, gcBoundary, nil, criteria)
+	}, gcBoundary, []*eventstore.ConsistencyObservation{{Query: criteria, Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+	)
 	if err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
 	expected := &eventstore.Position{CommitPosition: gid, PreparePosition: gid}
 	_, guardGID, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "Guard", map[string]any{"guard": "stable"}, map[string]any{}),
-	}, gcBoundary, nil, nil)
+	}, gcBoundary, nil)
 	if err != nil {
 		t.Fatalf("guard save: %v", err)
 	}

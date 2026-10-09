@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,14 +94,42 @@ func buildCriteriaSQL(criteria []map[string]any) (string, error) {
 	return strings.Join(orParts, " OR "), nil
 }
 
-// renderCriterionPredicate owns CCC equality for reads and writes. Index metadata
-// must never change which events a content query observes.
+// renderCriterionPredicate owns content-query comparison for reads and CCC.
+// Index metadata must never change which events a content query observes.
 func renderCriterionPredicate(key string, value any) (string, error) {
-	lit, err := sqlValueLiteral(value)
-	if err != nil {
-		return "", fmt.Errorf("criteria key %q: %w", key, err)
+	switch value.(type) {
+	case []eventstore.TagPredicate, []any:
+	default:
+		// Scalar entries retain the existing equality representation.
+		lit, err := sqlValueLiteral(value)
+		if err != nil {
+			return "", fmt.Errorf("criteria key %q: %w", key, err)
+		}
+		return sqliteJSONScalarTextExpr(key) + " = " + lit, nil
 	}
-	return sqliteJSONScalarTextExpr(key) + " = " + lit, nil
+	predicates, err := eventstore.DecodeTagPredicates(value)
+	if err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, len(predicates))
+	for _, predicate := range predicates {
+		op, err := eventstore.TagSQLOperator(predicate.Operator)
+		if err != nil {
+			return "", err
+		}
+		lit, err := sqlValueLiteral(predicate.Value)
+		if err != nil {
+			return "", err
+		}
+		expr := sqliteJSONScalarTextExpr(key)
+		if op == "=" || op == "<>" {
+			parts = append(parts, expr+" "+op+" "+lit)
+		} else {
+			path := jsonPathLiteral(key)
+			parts = append(parts, fmt.Sprintf("(CASE json_type(data, %s) WHEN 'text' THEN (%s COLLATE BINARY %s %s) WHEN 'integer' THEN (orisun_compare_number(data -> %s, %s) %s 0) WHEN 'real' THEN (orisun_compare_number(data -> %s, %s) %s 0) ELSE 0 END)", path, expr, op, lit, path, lit, op, path, lit, op))
+		}
+	}
+	return "(" + strings.Join(parts, " AND ") + ")", nil
 }
 
 // sqliteJSONScalarTextExpr mirrors PG's `data->>'key'` text rendering: booleans
@@ -185,27 +214,10 @@ func sqliteBooleanArg(v any) any {
 }
 
 func criteriaAsList(query *eventstore.Query) []map[string]any {
-	out := make([]map[string]any, 0, len(query.Criteria))
-	for _, c := range query.Criteria {
-		anded := make(map[string]any, len(c.Tags))
-		for _, t := range c.Tags {
-			anded[t.Key] = t.Value
-		}
-		out = append(out, anded)
-	}
-	return out
+	return eventstore.EncodeQueryCriteria(query)
 }
-
 func readCriteriaAsList(criteria []eventstore.ReadCriterion) []map[string]any {
-	out := make([]map[string]any, len(criteria))
-	for index, criterion := range criteria {
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
-		out[index] = anded
-	}
-	return out
+	return eventstore.EncodeReadCriteria(criteria)
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +458,12 @@ func newSqliteGetEventsWithRegistry(registry *BoundaryRegistry, logger logging.L
 }
 
 func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEventsRequest) (eventstore.ReadEventBatch, error) {
+	if req == nil {
+		return nil, statuscode.New(statuscode.InvalidArgument, "get events request is required")
+	}
+	if err := eventstore.ValidateQuery(req.Query); err != nil {
+		return nil, err
+	}
 	pool, ok := s.registry.eventPool(req.Boundary)
 	if !ok {
 		return nil, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", req.Boundary)
@@ -500,7 +518,7 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 	}
 
 	q := fmt.Sprintf(
-		"SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE CAST(transaction_id AS TEXT) || ':' || CAST(write_id AS TEXT) END "+
+		"SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, json_extract(data, '$.__writeId') "+
 			"FROM orisun_es_event WHERE %s ORDER BY transaction_id %s, global_id %s LIMIT %d",
 		whereSQL, dirSQL, dirSQL, count,
 	)
@@ -531,6 +549,9 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 // sees the same database state. Independent client reads cannot substitute —
 // an event committing between them can hide below the observed max position.
 func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventstore.LatestByCriteriaQuery) (eventstore.LatestByCriteriaBatch, error) {
+	if err := eventstore.ValidateReadCriteria(query.Criteria); err != nil {
+		return eventstore.LatestByCriteriaBatch{}, err
+	}
 	pool, ok := s.registry.eventPool(query.Boundary)
 	if !ok {
 		return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "unknown boundary: %s", query.Boundary)
@@ -559,10 +580,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 	}
 	found := false
 	for i, criterion := range query.Criteria {
-		anded := make(map[string]any, len(criterion.Tags))
-		for _, tag := range criterion.Tags {
-			anded[tag.Key] = tag.Value
-		}
+		anded := eventstore.EncodeCriterion(criterion.Tags)
 		if len(anded) == 0 {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "criterion has no tags")
 		}
@@ -570,7 +588,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 		if buildErr != nil {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "invalid criteria: %v", buildErr)
 		}
-		q := "SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, CASE WHEN write_id IS NULL THEN '' ELSE CAST(transaction_id AS TEXT) || ':' || CAST(write_id AS TEXT) END " +
+		q := "SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, json_extract(data, '$.__writeId') " +
 			"FROM orisun_es_event WHERE " + where +
 			" ORDER BY transaction_id DESC, global_id DESC LIMIT 1"
 
@@ -1347,7 +1365,6 @@ type DatabaseRuntime struct {
 	GetEvents         eventstore.EventsRetriever
 	LockProvider      eventstore.LockProvider
 	AdminDB           common.DB
-	EventPublishing   eventstore.EventPublishingTracker
 	SignalProvider    func(string) eventstore.EventSignal
 	ProvisionBoundary func(context.Context, boundarymodel.Definition) error
 	InstallBoundary   func(context.Context, boundarymodel.Definition) error
@@ -1367,7 +1384,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 		return nil, errors.New("sqlite lock provider is nil")
 	}
 	if !sqliteCfg.InMemory {
-		if err := ensureDir(sqliteCfg.Dir); err != nil {
+		if err := os.MkdirAll(sqliteCfg.Dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create sqlite dir: %w", err)
 		}
 	}
@@ -1376,7 +1393,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	if err := validateIdentifier(adminBoundary); err != nil {
 		return nil, fmt.Errorf("invalid admin boundary %q: %w", adminBoundary, err)
 	}
-	bp, err := OpenBoundaryPoolsWithConfig(ctx, sqliteCfg, adminBoundary, adminBoundary)
+	bp, err := OpenBoundaryPoolsWithConfig(ctx, sqliteCfg, adminBoundary)
 	if err != nil {
 		return nil, err
 	}
@@ -1389,7 +1406,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	}
 	metadataPools := map[string]*BoundaryPools{adminBoundary: mp}
 	registry := NewBoundaryRegistry(pools, metadataPools)
-	notifier := NewSqliteEventNotifierWithWakeDelay(time.Second, sqliteCfg.PublisherWakeDelay)
+	notifier := NewSqliteEventNotifierWithWakeDelay(sqliteCfg.PublisherWakeDelay)
 	saver, err := newSqliteSaveEventsWithRegistry(registry, logger, sqliteCfg.GroupCommit)
 	if err != nil {
 		closeAll(pools)
@@ -1399,7 +1416,6 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 	saver.notifier = notifier
 	getter := newSqliteGetEventsWithRegistry(registry, logger)
 	admin := newSqliteAdminDBWithRegistry(registry, adminCfg.Boundary, logger)
-	publishing := newSqliteEventPublishingWithRegistry(registry, logger)
 	provisioner := NewSqliteBoundaryProvisioner(sqliteCfg, adminCfg, registry, saver)
 
 	go func() {
@@ -1414,7 +1430,7 @@ func InitializeSqliteDatabaseRuntimeWithLockProvider(
 
 	return &DatabaseRuntime{
 		SaveEvents: saver, GetEvents: getter, LockProvider: lockProvider,
-		AdminDB: admin, EventPublishing: publishing, SignalProvider: notifier.Signal,
+		AdminDB: admin, SignalProvider: notifier.Signal,
 		ProvisionBoundary: provisioner.ProvisionBoundary,
 		InstallBoundary:   provisioner.InstallBoundary,
 	}, nil

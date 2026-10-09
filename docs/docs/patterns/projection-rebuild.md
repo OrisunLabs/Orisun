@@ -28,7 +28,7 @@ A rebuild is a catch-up subscription that starts from the beginning position and
 2. **Reset the target** by truncating or dropping the read model so re-applied events rebuild cleanly.
 3. **Subscribe from the start** with `after_position` `{0, 0}`. This is the beginning cursor for reads and subscriptions; see [Positions](../concepts/positions#empty-and-beginning-positions).
 4. **Apply idempotently** because delivery is at least once, and a rebuild may revisit events. Deduplicate by `event_id`.
-5. **Checkpoint after each side effect is durable**, then transition to live delivery. The subscription switches to JetStream once catch-up drains, so the rebuilt model continues without a gap.
+5. **Checkpoint after each side effect is durable**, then transition to live delivery. The subscription continues reading the backend as new events arrive, triggered by boundary hints and subscription-owned idle watchdog hints.
 
 ## Example
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
@@ -23,12 +23,11 @@ func TestCreateBoundaryCommandHandlerEmitsBoundaryCreatedWithCCCContext(t *testi
 	}, "orisun_admin", saver, retriever)
 	require.NoError(t, err)
 	require.Equal(t, "orders", result.Boundary.Name)
-	require.False(t, result.Boundary.ExistedBeforeCatalog)
 	require.Equal(t, &coreeventstore.Position{CommitPosition: 17, PreparePosition: 9}, result.Boundary.DefinitionPosition)
 	require.Equal(t, &coreeventstore.Position{CommitPosition: -1, PreparePosition: -1}, saver.expected)
 	require.Equal(t, subsetQuery(definitionCriteria("orders")), saver.query)
 	require.Len(t, saver.events, 1)
-	require.Equal(t, adminevents.EventTypeBoundaryCreated, saver.events[0].EventType)
+	require.Equal(t, boundaryevents.EventTypeBoundaryCreated, saver.events[0].EventType)
 
 	var data map[string]any
 	require.NoError(t, json.Unmarshal([]byte(saver.events[0].Data), &data))
@@ -41,27 +40,10 @@ func TestCreateBoundaryCommandHandlerEmitsBoundaryCreatedWithCCCContext(t *testi
 	require.NotEmpty(t, metadata["query"])
 }
 
-func TestCreateBoundaryCommandHandlerRecordsExistingStorage(t *testing.T) {
-	retriever := &fakeRetriever{batch: emptyBatch()}
-	saver := &fakeSaver{position: coreeventstore.Position{CommitPosition: 17, PreparePosition: 9}}
-	result, err := CreateBoundaryCommandHandler(t.Context(), CreateBoundaryCommand{
-		Name:                 "orders",
-		Placement:            boundarymodel.Placement{Backend: "postgres", Namespace: "public"},
-		ExistedBeforeCatalog: true,
-	}, "orisun_admin", saver, retriever)
-	require.NoError(t, err)
-	require.True(t, result.Boundary.ExistedBeforeCatalog)
-
-	var data adminevents.BoundaryCreated
-	require.NoError(t, json.Unmarshal([]byte(saver.events[0].Data), &data))
-	require.True(t, data.ExistedBeforeCatalog)
-}
-
 func TestCreateBoundaryCommandHandlerRejectsExistingBoundaryWithoutEvent(t *testing.T) {
-	existing := readEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
-		Boundary:             "orders",
-		Placement:            boundarymodel.Placement{Backend: "postgres", Namespace: "public"},
-		ExistedBeforeCatalog: true,
+	existing := readEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
+		Boundary:  "orders",
+		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "public"},
 	}, 4, 5)
 	batch := emptyBatch()
 	batch.Matches[0] = coreeventstore.LatestCriterionMatch{Event: existing, Found: true}
@@ -84,7 +66,7 @@ type fakeSaver struct {
 }
 
 func (s *fakeSaver) Append(_ context.Context, request coreeventstore.AppendRequest) (coreeventstore.AppendResult, error) {
-	s.events, s.expected, s.query = request.Events, request.ExpectedPosition, request.Subset
+	s.events, s.expected, s.query = request.Events, &request.Consistency[0].Position, request.Consistency[0].Query
 	return coreeventstore.AppendResult{Position: s.position}, nil
 }
 

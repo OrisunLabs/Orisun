@@ -83,8 +83,7 @@ Operational notes:
 - Back up every `{boundary}.db` file, every `{boundary}_metadata.db` file, and the NATS store directory if live delivery retention matters during restore.
 - Treat the admin boundary files as mandatory: its event log contains the
   boundary catalog. Restoring application files without the matching admin
-  boundary requires an explicit `CreateBoundary` call with
-  `existed_before_catalog` before those files are usable.
+  boundary requires an explicit `CreateBoundary` call before those files are usable.
 
 ## Scaling SQLite
 
@@ -98,7 +97,7 @@ Each boundary file already runs WAL mode with a read pool sized to `runtime.NumC
 - keep `ORISUN_SQLITE_DIR` on local NVMe, never on NFS or other network filesystems (file locking is unreliable there)
 - raise `LimitNOFILE` and give the node enough memory for the page cache
 
-The per-boundary write ceiling is fundamental: one writer per file, and the publisher requires total order per boundary. This same per-boundary ordering ceiling exists in PostgreSQL mode; SQLite just reaches it sooner.
+The per-boundary write ceiling is fundamental: one writer per file, and subscription reads require stable position order per boundary. This same per-boundary ordering ceiling exists in PostgreSQL mode; SQLite just reaches it sooner.
 
 ### 2. Shard by boundary
 
@@ -113,8 +112,7 @@ Each node remains a normal standalone SQLite deployment. There is no shared stor
 1. Stop the source node and run a final WAL checkpoint.
 2. Copy `{boundary}.db` and `{boundary}_metadata.db` into the target node's
    `ORISUN_SQLITE_DIR`.
-3. Start the target and call `CreateBoundary` with
-   `existed_before_catalog: true`, backend `sqlite`, and a namespace equal to
+3. Start the target and call `CreateBoundary` with backend `sqlite` and a namespace equal to
    the boundary name.
 4. Wait for `GetBoundary` to report `ACTIVE`, then update routing.
 
@@ -130,7 +128,7 @@ The gap in a single-node deployment is availability, not throughput. Two complem
 
 **[Litestream](https://litestream.io)** continuously replicates SQLite WAL segments to S3-compatible storage. It runs as a sidecar, needs no Orisun changes, and gives a recovery point of seconds. Replicate every `{boundary}.db` and `{boundary}_metadata.db` in `ORISUN_SQLITE_DIR`. Recovery is a restore-and-restart: minutes of downtime, near-zero data loss. This should be the baseline for any production SQLite deployment.
 
-**[LiteFS](https://fly.io/docs/litefs/)** replicates the files to warm standby machines with lease-based primary election, cutting failover from minutes to seconds. Run Orisun only on the current primary: Orisun is not read-only-aware (publishers and checkpoints write continuously), so a second Orisun process must not run against a replica copy. Standbys hold warm files; on failover, the new primary starts Orisun. LiteFS adds operational moving parts (FUSE, a lease backend), so adopt it only when restore-time recovery is too slow.
+**[LiteFS](https://fly.io/docs/litefs/)** replicates the files to warm standby machines with lease-based primary election, cutting failover from minutes to seconds. Run Orisun only on the current primary: Orisun is not read-only-aware (event and projector writes require an active writer), so a second Orisun process must not run against a replica copy. Standbys hold warm files; on failover, the new primary starts Orisun. LiteFS adds operational moving parts (FUSE, a lease backend), so adopt it only when restore-time recovery is too slow.
 
 Do not copy live database files with `cp` or filesystem snapshots alone; under WAL a bare file copy can be torn. Use Litestream, the SQLite backup API, or stop the node first.
 
@@ -179,13 +177,12 @@ Recommended upgrade sequence:
 
 Current releases clear stale `pg_xact_id` values when a restored database or
 new cluster has restarted its transaction-ID range. PostgreSQL transaction IDs
-therefore do not need to be preserved for Orisun correctness. The older event
-shape, logical-position, and checkpoint migrations are intentionally confined
-to the required `0.8.0` bridge release.
+therefore do not need to be preserved for Orisun correctness. The immediately preceding storage version upgrades automatically without rewriting
+event documents, positions, or projector checkpoints. Older formats are rejected.
 
 ## Clustered PostgreSQL
 
-Clustered mode uses PostgreSQL, embedded NATS clustering, and one active publisher per boundary.
+Clustered mode uses PostgreSQL, embedded NATS clustering, and one active notification relay per boundary.
 
 Each node should share:
 
@@ -202,13 +199,13 @@ Each node should have unique:
 - `ORISUN_NATS_SERVER_NAME`
 - `ORISUN_NATS_STORE_DIR`
 
-Minimum recommendation: three nodes for JetStream quorum.
+Core NATS routes transient hints across the cluster without notification replicas. JetStream remains enabled for leases and admin messaging; use at least three nodes for a production cluster.
 
-Expected publisher behavior:
+Expected notification relay behavior:
 
-- The node that owns a boundary logs successful lock acquisition.
+- One node holds the boundary relay lease and forwards backend signals as hints.
 - Other nodes may log lock contention for that boundary.
-- If the owner exits, another node resumes from the PostgreSQL checkpoint.
+- If the owner exits, another node acquires the lease and emits an initial hint. Subscription idle watchdogs publish hints if no notifications arrive; healthy NATS is required.
 
 ## FoundationDB topology
 
@@ -231,7 +228,7 @@ A FoundationDB deployment has three independently scalable tiers:
        └───────────────────────────────────────┘
 ```
 
-**Orisun tier.** Orisun nodes are effectively stateless with this backend: all durable state lives in FoundationDB. NATS JetStream is the live-delivery buffer; publisher ownership, checkpoints, indexes, users, and projector state live in FoundationDB. Scale horizontally behind any gRPC load balancer. One publisher per boundary self-elects through an FDB lease lock and fails over automatically. Run at least three Orisun nodes when NATS clustering is enabled, with the same shared/unique variable split as [Clustered PostgreSQL](#clustered-postgresql) (minus the PostgreSQL variables, plus `ORISUN_FDB_CLUSTER_FILE`).
+**Orisun tier.** Orisun nodes are effectively stateless with this backend: all durable state lives in FoundationDB. Core NATS carries empty hints; relay ownership, indexes, users, and projector state live in FoundationDB. Scale horizontally behind any gRPC load balancer. One notification relay per boundary self-elects through an FDB lease lock and fails over automatically. Run at least three Orisun nodes when NATS clustering is enabled, with the same shared/unique variable split as [Clustered PostgreSQL](#clustered-postgresql) (minus the PostgreSQL variables, plus `ORISUN_FDB_CLUSTER_FILE`).
 
 **FoundationDB tier by size:**
 
@@ -288,16 +285,17 @@ Effective values are logged at startup.
 | --- | --- | --- |
 | gRPC request message size | `ORISUN_GRPC_MAX_RECEIVE_MESSAGE_SIZE` (default 64 MB) | Caps one gRPC request, including `SaveEventsV2`; it therefore bounds event payload plus consistency observations. Split very large batches. |
 | Event `data` / `metadata` | JSON string per field | No separate field cap; the whole request must fit the message-size limit above. |
-| Publisher read batch | `ORISUN_POLLING_PUBLISHER_BATCH_SIZE` (default 1000) | Events drained per publisher read cycle. Raise for high write volume, lower to smooth memory. |
+| Subscription read batch | 100 events | Inclusive forward reads discard the cursor event; memory remains bounded per subscription. |
 | `GetEvents` page | `count` per request, server-capped at 10000 | Page with `from_position`; see [Positions and Ordering](../concepts/positions#positions-and-paging). |
-| Live retention (per boundary) | `ORISUN_NATS_EVENT_STREAM_MAX_BYTES` (512 MB), `_MAX_MSGS`, `_MAX_AGE` (5m) | In-memory live buffer only. Size for your slowest subscriber, not for durability. |
+| Notification buffering (per subscription) | NATS client defaults; one pending drain wake-up | Core NATS retains no history. Recovery reads the backend. |
+| Subscription idle watchdog | `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` (default 1s) | Positive silence threshold since the last received hint. At expiry publish a NATS hint, which triggers a backend drain. |
 
 Sizing guidance:
 
 - Keep batches comfortably under the configured gRPC receive limit. For bulk imports, chunk into many ordered, unconditional `SaveEventsV2` calls.
 - Reuse one official client/channel per target for hot writes. The Node and Java clients set Orisun's high-throughput gRPC defaults and cache auth tokens after the first authenticated response.
 - For bursty writers, cap concurrent `SaveEventsV2` calls on that one client around 512-1024 in flight. Launching every pending write at once adds client-side HTTP/2 stream and scheduler overhead without improving the single-boundary write ceiling.
-- Set retention age above the slowest subscriber's expected lag and above the catch-up handover grace (~10s).
+- Measure backend read load as subscription counts grow. Notification retention does not determine recovery or subscriber lag.
 - Subscribers that routinely fall out of the live window are served from durable storage; this is correct but increases read load. Scale retention or subscriber throughput accordingly.
 
 ## Security Checklist
@@ -306,3 +304,16 @@ Sizing guidance:
 - Enable gRPC TLS in production-facing deployments.
 - Protect PostgreSQL credentials and NATS cluster credentials.
 - Use network policy or firewall rules for PostgreSQL, gRPC, and NATS cluster routes.
+
+## Notification transport
+
+Deploy one server version across a cluster. Stop older subscriptions and publishers
+before starting this runtime. Core NATS carries transient boundary hints; subscriptions
+read ordered events from durable storage and retain their own cursors. There is no
+notification JetStream event stream, publisher checkpoint, or backup polling loop.
+
+Fresh storage initializes directly. The immediately preceding storage version
+upgrades automatically; older formats are rejected. Follow the
+[storage upgrade policy](./upgrading-event-envelope) for the supported source versions
+and the export/import procedure for older deployments. A current-format backup preserves positions and write contexts;
+reconnect subscriptions using those retained positions after restoring the catalog.

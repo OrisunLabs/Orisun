@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -14,7 +15,9 @@ import (
 
 type provisioningTestLock struct{}
 
-func (provisioningTestLock) Lock(context.Context, string) error { return nil }
+func (provisioningTestLock) AcquireLock(ctx context.Context, _ string) (orisun.LockLease, error) {
+	return testContextLease{ctx: ctx}, nil
+}
 
 func TestSqliteBoundaryProvisionerMakesBoundaryAvailableToRuntime(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
@@ -31,9 +34,9 @@ func TestSqliteBoundaryProvisionerMakesBoundaryAvailableToRuntime(t *testing.T) 
 	)
 	require.NoError(t, err)
 
-	definition := orisun.BoundaryDefinition{
+	definition := boundarymodel.Definition{
 		Name:      "sales",
-		Placement: orisun.BoundaryPlacement{Backend: "sqlite", Namespace: "sales"},
+		Placement: boundarymodel.Placement{Backend: "sqlite", Namespace: "sales"},
 	}
 	require.NoError(t, runtime.ProvisionBoundary(ctx, definition))
 	var wg sync.WaitGroup
@@ -80,8 +83,19 @@ func TestSqliteBoundaryProvisionerRejectsNamespaceMismatch(t *testing.T) {
 		registry,
 		saver,
 	)
-	err = provisioner.ProvisionBoundary(t.Context(), orisun.BoundaryDefinition{
-		Name: "sales", Placement: orisun.BoundaryPlacement{Backend: "sqlite", Namespace: "other"},
+	err = provisioner.ProvisionBoundary(t.Context(), boundarymodel.Definition{
+		Name: "sales", Placement: boundarymodel.Placement{Backend: "sqlite", Namespace: "other"},
 	})
 	require.Error(t, err)
 }
+
+type testContextLease struct{ ctx context.Context }
+
+func (l testContextLease) Context() context.Context { return l.ctx }
+func (l testContextLease) Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return l.ctx.Err()
+}
+func (l testContextLease) Release() {}

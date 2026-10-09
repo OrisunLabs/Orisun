@@ -33,17 +33,17 @@ durable backend log      boundary catalog in
 and checkpoints          the admin boundary
         |                      |
         v                      v
-checkpointed publisher   provisioning + local
+boundary signal relay    provisioning + local
         |                 runtime installation
         v
 embedded JetStream
         |
         v
-catch-up/live subscriptions and projectors
+backend-draining subscriptions and projectors
 ```
 
 The PostgreSQL, SQLite, or FoundationDB event log is the durable source of
-truth. JetStream is an in-memory live-delivery buffer. Process-local registries,
+truth. Core NATS carries empty boundary hints. Every subscription event is read from the backend. Process-local registries,
 activation gates, listeners, and caches are rebuilt or repopulated state; they
 must not be required to recover durable data.
 
@@ -54,12 +54,12 @@ Several invariants shape the implementation:
   each process before that process accepts requests for it.
 - Positions are totally ordered within a boundary. Their encoding is
   backend-specific and should be treated as opaque.
-- A publisher reads a stable committed prefix and never publishes a later
-  event ahead of an earlier event in the same boundary.
-- Publishing is at least once. A crash can cause duplicates, but the durable
-  checkpoint prevents skips.
-- Wake-up signals improve latency; checkpoints and repeated reads provide
-  correctness.
+- Each subscription reads a stable committed prefix and delivers matching events
+  in ascending position order through one reader.
+- Delivery is at least once. Applications persist their own successful progress;
+  subscription idle watchdogs publish NATS hints to recover missed signals.
+- Wake-up signals improve latency; backend cursors and repeated reads provide
+  recovery.
 
 ## Runtime composition
 
@@ -95,8 +95,8 @@ runtime resource. Creation deliberately separates those two concerns.
 3. Every server establishes the same exclusive `boundary-provisioning`
    catch-up subscription. Its distributed subscription lease elects one active
    provisioning controller.
-4. That controller provisions storage, applies migrations, and ensures the
-   boundary's JetStream stream. It then appends either `BoundaryActivated` or
+4. That controller validates and initializes storage. Notification
+   subjects require no provisioning. It then appends either `BoundaryActivated` or
    `BoundaryProvisioningFailed`.
 5. Every process also owns a uniquely named runtime subscription. On an
    activation event it installs the boundary into that process's backend
@@ -130,9 +130,8 @@ boundary list.
 | FoundationDB | A boundary maps to tuple-encoded key ranges under the configured Orisun root. |
 
 The admin boundary is bootstrapped so it can contain the catalog that activates
-all other boundaries. PostgreSQL and SQLite can migrate supported pre-catalog
-storage through the normal command path. FoundationDB is beta and has no
-legacy catalog-discovery path.
+all other boundaries. Existing storage must use the current schema. Startup
+rejects older formats and installs active placements from catalog definitions.
 
 ## `SaveEventsV2`: one contract, three concurrency models
 
@@ -330,78 +329,63 @@ indexable predicates. Production workloads should still create indexes for the
 fields used by their CCC contexts and reads. See [Indexing](./concepts/indexing)
 and the [`CreateIndex` API](./api/eventstore#createindex).
 
-## Publishing: durable checkpoint, ephemeral wake-up
+## Boundary notification relays
 
-The polling manager starts one local publisher contender for each installed
-boundary. A distributed lease selects one active publisher for that boundary:
+The notification manager starts one local relay contender per installed
+boundary. PostgreSQL and SQLite runtimes use revision-fenced JetStream KV
+leases; FoundationDB uses a token-fenced renewable lease in FoundationDB.
+SQLite still permits only one Orisun node. The PostgreSQL advisory write lock
+serializes position assignment and is separate from relay ownership.
 
-- PostgreSQL and SQLite runtimes use the revision-fenced JetStream KV lease
-  provider. SQLite still runs only one Orisun node.
-- FoundationDB uses a token-fenced, renewable lease stored in FoundationDB.
+A relay registers its backend signal, emits an initial empty hint, then forwards
+coalesced signals to `ORISUN_NOTIFICATIONS___<boundary>.changed.v1`. It checks
+its lease before publishing and retains pending work during context-aware,
+bounded publish backoff. It has no event retriever or checkpoint dependency.
+A relay never makes a successful durable write depend on NATS availability.
 
-The PostgreSQL advisory lock described in the write path is not publisher
-ownership; it only serializes write-position assignment.
-
-After acquiring its lease, the publisher:
-
-1. loads the durable per-boundary checkpoint;
-2. reads events after it in ascending position order;
-3. verifies that the entire fetched batch is strictly advancing before
-   publishing any of it;
-4. publishes events sequentially and waits for each JetStream acknowledgement;
-5. writes the final batch position to the durable backend; and
-6. repeats until drained, then waits for a signal or polling interval.
-
-The ownership lease is checked before publishing and before advancing the
-checkpoint. Per-boundary work is sequential by position, so a publisher never
-publishes a partial valid prefix followed by an invalid or non-advancing tail.
-
-### Why delivery is at least once
-
-JetStream publish and backend checkpoint storage are separate operations. If a
-publisher crashes after JetStream accepts an event but before the checkpoint
-commits, its successor resumes from the older checkpoint and publishes that
-event again. This produces a duplicate rather than a gap. Consumers should
-deduplicate by `event_id`.
-
-The checkpoint is advanced only after every event in the batch is
-acknowledged. A publish failure therefore never records progress past an
-unpublished event.
-
-### Signals are latency hints
-
-| Backend | Publisher wake-up |
+| Backend | Relay wake-up |
 | --- | --- |
-| PostgreSQL | Boundary-specific `LISTEN/NOTIFY` |
-| SQLite | In-process coalesced notification |
-| FoundationDB | Watch on a boundary signal key |
+| PostgreSQL | Boundary-specific `LISTEN/NOTIFY`, plus a wake after reconnect |
+| SQLite | In-process coalesced notification after commit |
+| FoundationDB | Watch on a transactionally updated boundary signal key |
+| Backend notifications disabled | No relay signal; subscription idle watchdogs publish NATS hints |
 
-Every backend also falls back to polling. Losing or coalescing a signal can
-delay a read, but cannot lose an event because the next pass starts from the
-durable checkpoint.
+## Backend-driven subscriptions
 
-## Catch-up subscriptions and live handover
+A subscription validates its boundary and query, acquires its subscriber-name
+lease, and registers a Core NATS listener before its initial read. Registration
+is flushed with a bounded deadline; failures retry listener
+registration with bounded backoff. Hints record no event progress. NATS restores
+listeners on reconnect. After registration and every reconnect, publish a
+boundary hint; only receiving it wakes the backend drain.
 
-`CatchUpSubscribeToEvents` first reads from the durable backend after the
-requested position, then attaches to the boundary's JetStream stream for live
-events. JetStream retention must cover the short catch-up-to-live handover
-window. A subscriber farther behind than the in-memory retention window still
-recovers from the durable log.
+One reader owns the event cursor and all handler calls. It passes the complete
+query to the backend and requests inclusive ascending batches of 100. Only the
+first row equal to the cursor is discarded; every remaining position must
+strictly advance. The entire batch is validated before delivering any prefix.
+The initial omitted-position lookup selects one latest match descending, then
+switches permanently to ascending reads. An empty initial result leaves a nil
+cursor for subsequent ascending reads.
 
-The full lifetime of a named subscription is protected by the same lock
-abstraction used for publisher ownership. Lease values contain a unique owner
-token and renewable expiry. Revision-fenced acquire, renew, and release
-operations prevent an expired owner from deleting or renewing a successor's
-lease.
+The cursor advances only after a successful handler call. A failed handler or
+backend read cannot advance past an undelivered event. Lease and active-boundary
+checks run before reads and deliveries. Cancellation stops notification
+reception, the idle watchdog timer, listener cleanup, and the lease.
 
-Internal subscribers receive transport-neutral event values through a
-synchronous callback. Callback completion provides backpressure; a callback
-error terminates the subscription. The gRPC streaming method adapts this path
-without moving generated message types into the core.
+A capacity-one channel records pending wake-ups. The reader consumes a wake-up
+before its read, so a hint arriving during a drain remains pending for another
+pass. A per-subscription idle watchdog tracks the last received hint and publishes
+an empty boundary hint after `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD`. Receiving that
+hint wakes the drain; publishing it never directly reads the backend. Initial
+setup and NATS reconnect publish the same hint to request a drain. Healthy NATS is required for
+live delivery. There is no periodic backend polling, timestamp handoff, or local
+payload matcher.
 
-Consumers can still see duplicates at restart, handover, or the
-publish/checkpoint boundary. They must not infer exactly-once delivery from the
-single-active-subscriber lease.
+Handlers receive transport-neutral events synchronously and provide
+backpressure. A successful gRPC send is not an application transaction
+acknowledgement. Consumers persist their own checkpoint after durable side
+effects and deduplicate replay after reconnecting or crashing. This remains
+at-least-once delivery.
 
 ## Durable and disposable state
 
@@ -410,16 +394,15 @@ single-active-subscriber lease.
 | Events | Selected backend | Source of truth, partitioned by boundary |
 | Boundary catalog | Admin boundary event log | Replayed to recover lifecycle state |
 | Index definitions and build state | Selected backend | Boundary-scoped; physical indexes or key ranges are reconciled from it |
-| Publisher checkpoint | Selected backend | Resumes delivery after restart or ownership change |
 | Projector checkpoints and projections | Selected backend | Rebuilt or resumed from durable events |
-| JetStream event stream | Embedded NATS memory | Bounded live-delivery buffer, never the durable source |
+| Core NATS notification listener | Process memory | One pending hint; recovery comes from subscription backend reads |
 | Active-boundary gate | Process memory | Rebuilt from activation replay before requests are admitted |
 | Backend boundary registry and signal listeners | Process memory | Reinstalled from the catalog on every process |
 | User lookup and other hot-path caches | Process memory | Disposable accelerators; durable admin state remains authoritative |
-| Wake-up notifications | PostgreSQL, process channels, or FDB watches | Ephemeral hints backed by polling |
+| Wake-up notifications | PostgreSQL, process channels, or FDB watches | Ephemeral hints backed by a NATS idle watchdog |
 
 This separation is intentional: a process may lose every local cache and
-listener, or JetStream may replay an acknowledged event, without losing the
+listener, or NATS may drop a hint, without losing the
 durable event history or advancing a checkpoint incorrectly.
 
 ## Failure semantics
@@ -430,9 +413,9 @@ durable event history or advancing a checkpoint incorrectly.
 | Request-local error inside a multi-request group flush | That request rolls back; later requests continue in queue order |
 | Known outer transaction rollback | No accepted request in that transaction persists |
 | Caller cancellation or connection loss around commit | Outcome may be unknown; retry idempotently |
-| Publisher crash before checkpoint | Already accepted JetStream messages can be delivered again |
-| Lost wake-up | The fallback poll reads from the durable checkpoint |
-| Publisher lease loss | The owner stops before further publish/checkpoint work; a successor resumes |
+| Subscription crash before application checkpoint | Resume from the durable application checkpoint; events can be delivered again |
+| Lost wake-up | The subscription idle watchdog publishes a NATS hint; receipt resumes the backend drain while NATS is healthy |
+| Relay lease loss | The owner stops forwarding hints; a successor acquires the lease |
 | Process-local registry or cache loss | Startup replay and backend reads rebuild disposable state |
 | Unknown or non-active boundary | Rejected before the request reaches backend storage |
 
@@ -441,7 +424,7 @@ durable event history or advancing a checkpoint incorrectly.
 | Package | Responsibility |
 | --- | --- |
 | `server/` | Backend-neutral runtime composition, lifecycle wiring, projectors, and gRPC hosting |
-| `orisun/` | EventStore core, reads, subscriptions, publisher loop, locks, and public domain values |
+| `orisun/` | EventStore core, reads, subscriptions, notification relays, locks, and public domain values |
 | `boundary/` and `admin/slices/` | Event-backed catalog model and use-case slices |
 | `postgres/` | PostgreSQL storage, group commit, migrations, indexing, checkpoints, and notifications |
 | `sqlite/` | SQLite storage, group commit, per-boundary files, indexing, checkpoints, and signals |

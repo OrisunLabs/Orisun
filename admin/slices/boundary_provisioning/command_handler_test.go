@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ func TestProvisionBoundaryCommandHandlerInvokesFunctionAndEmitsActivation(t *tes
 	require.True(t, called)
 	require.Equal(t, boundarymodel.StatusActive, result.Boundary.Status)
 	require.Len(t, saver.calls, 1)
-	require.Equal(t, adminevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
+	require.Equal(t, boundaryevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
 }
 
 func TestProvisionBoundaryCommandHandlerDoesNotProvisionWithoutDefinitionEvent(t *testing.T) {

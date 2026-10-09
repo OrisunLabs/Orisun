@@ -344,8 +344,8 @@ func (s *BenchmarkSetup) createGRPCEventStoreClient(b *testing.B, captureAuthTok
 	dialOptions := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(benchmarkGRPCMaxMessageSize)),
-		grpc.WithInitialWindowSize(benchmarkGRPCWindowSize),
-		grpc.WithInitialConnWindowSize(benchmarkGRPCWindowSize),
+		grpc.WithStaticStreamWindowSize(benchmarkGRPCWindowSize),
+		grpc.WithStaticConnWindowSize(benchmarkGRPCWindowSize),
 		grpc.WithWriteBufferSize(benchmarkGRPCWriteBufferSize),
 		grpc.WithReadBufferSize(benchmarkGRPCReadBufferSize),
 	}
@@ -706,6 +706,8 @@ func benchmarkSaveEventsBurst10000WithMaxInFlight(b *testing.B, clients []benchm
 
 	var totalEvents int64
 	var totalErrors int64
+	var firstError error
+	var errorOnce sync.Once
 
 	start := make(chan struct{})
 
@@ -738,6 +740,7 @@ func benchmarkSaveEventsBurst10000WithMaxInFlight(b *testing.B, clients []benchm
 				atomic.AddInt64(&totalEvents, 1)
 			} else {
 				atomic.AddInt64(&totalErrors, 1)
+				errorOnce.Do(func() { firstError = err })
 			}
 		})
 	}
@@ -752,8 +755,11 @@ func benchmarkSaveEventsBurst10000WithMaxInFlight(b *testing.B, clients []benchm
 	elapsed := time.Since(startTime)
 
 	b.ReportMetric(float64(totalEvents)/elapsed.Seconds(), "events/sec")
+	b.ReportMetric(float64(totalEvents), "successful/burst")
+	b.ReportMetric(float64(totalErrors), "errors/burst")
+	b.ReportMetric(float64(elapsed)/float64(time.Millisecond), "ms/burst")
 	if totalErrors > 0 {
-		b.Logf("Encountered %d errors during burst", totalErrors)
+		b.Errorf("Encountered %d errors during burst; first error: %v", totalErrors, firstError)
 	}
 }
 
@@ -900,7 +906,7 @@ func BenchmarkSaveEvents_DirectDatabase10K(b *testing.B) {
 					b.Errorf("failed to prepare event: %v", err)
 					return
 				}
-				consistency, err := orisun.LegacyConsistencyChecks(&p, consistencyCondition)
+				consistency, err := orisun.ConsistencyChecksFromObservations([]*orisun.ConsistencyObservation{{Position: &p, Query: consistencyCondition}})
 				if err != nil {
 					b.Errorf("invalid consistency: %v", err)
 					return

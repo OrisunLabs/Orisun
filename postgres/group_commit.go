@@ -485,6 +485,9 @@ func validatePostgresSaveRequest(req *postgresSaveRequest) error {
 		}
 	}
 	for _, check := range req.consistency {
+		if err := eventstore.ValidateReadCriteria(check.Criteria); err != nil {
+			return err
+		}
 		if len(check.Criteria) == 0 {
 			return errors.New("consistency query has no criteria")
 		}
@@ -498,6 +501,9 @@ func validatePostgresSaveRequest(req *postgresSaveRequest) error {
 }
 
 func (s *PostgresSaveEvents) mapSaveError(err error) error {
+	if code, _, ok := statuscode.FromError(err); ok && code != statuscode.Unknown {
+		return err
+	}
 	if strings.Contains(err.Error(), "OptimisticConcurrencyException") {
 		return statuscode.New(statuscode.AlreadyExists, err.Error())
 	}

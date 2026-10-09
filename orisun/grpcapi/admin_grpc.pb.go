@@ -19,16 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Admin_CreateBoundary_FullMethodName      = "/orisun.Admin/CreateBoundary"
-	Admin_ListBoundaries_FullMethodName      = "/orisun.Admin/ListBoundaries"
-	Admin_GetBoundary_FullMethodName         = "/orisun.Admin/GetBoundary"
-	Admin_CreateUser_FullMethodName          = "/orisun.Admin/CreateUser"
-	Admin_DeleteUser_FullMethodName          = "/orisun.Admin/DeleteUser"
-	Admin_ChangePassword_FullMethodName      = "/orisun.Admin/ChangePassword"
-	Admin_ListUsers_FullMethodName           = "/orisun.Admin/ListUsers"
-	Admin_ValidateCredentials_FullMethodName = "/orisun.Admin/ValidateCredentials"
-	Admin_GetUserCount_FullMethodName        = "/orisun.Admin/GetUserCount"
-	Admin_GetEventCount_FullMethodName       = "/orisun.Admin/GetEventCount"
+	Admin_CreateBoundary_FullMethodName             = "/orisun.Admin/CreateBoundary"
+	Admin_ListBoundaries_FullMethodName             = "/orisun.Admin/ListBoundaries"
+	Admin_GetBoundary_FullMethodName                = "/orisun.Admin/GetBoundary"
+	Admin_CreateUser_FullMethodName                 = "/orisun.Admin/CreateUser"
+	Admin_DeleteUser_FullMethodName                 = "/orisun.Admin/DeleteUser"
+	Admin_ChangePassword_FullMethodName             = "/orisun.Admin/ChangePassword"
+	Admin_SetUserBoundaryPermissions_FullMethodName = "/orisun.Admin/SetUserBoundaryPermissions"
+	Admin_ListUsers_FullMethodName                  = "/orisun.Admin/ListUsers"
+	Admin_ValidateCredentials_FullMethodName        = "/orisun.Admin/ValidateCredentials"
+	Admin_GetUserCount_FullMethodName               = "/orisun.Admin/GetUserCount"
+	Admin_GetEventCount_FullMethodName              = "/orisun.Admin/GetEventCount"
 )
 
 // AdminClient is the client API for Admin service.
@@ -45,6 +46,7 @@ type AdminClient interface {
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*CreateUserResponse, error)
 	DeleteUser(ctx context.Context, in *DeleteUserRequest, opts ...grpc.CallOption) (*DeleteUserResponse, error)
 	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
+	SetUserBoundaryPermissions(ctx context.Context, in *SetUserBoundaryPermissionsRequest, opts ...grpc.CallOption) (*SetUserBoundaryPermissionsResponse, error)
 	ListUsers(ctx context.Context, in *ListUsersRequest, opts ...grpc.CallOption) (*ListUsersResponse, error)
 	// Authentication
 	ValidateCredentials(ctx context.Context, in *ValidateCredentialsRequest, opts ...grpc.CallOption) (*ValidateCredentialsResponse, error)
@@ -121,6 +123,16 @@ func (c *adminClient) ChangePassword(ctx context.Context, in *ChangePasswordRequ
 	return out, nil
 }
 
+func (c *adminClient) SetUserBoundaryPermissions(ctx context.Context, in *SetUserBoundaryPermissionsRequest, opts ...grpc.CallOption) (*SetUserBoundaryPermissionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetUserBoundaryPermissionsResponse)
+	err := c.cc.Invoke(ctx, Admin_SetUserBoundaryPermissions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *adminClient) ListUsers(ctx context.Context, in *ListUsersRequest, opts ...grpc.CallOption) (*ListUsersResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListUsersResponse)
@@ -175,6 +187,7 @@ type AdminServer interface {
 	CreateUser(context.Context, *CreateUserRequest) (*CreateUserResponse, error)
 	DeleteUser(context.Context, *DeleteUserRequest) (*DeleteUserResponse, error)
 	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
+	SetUserBoundaryPermissions(context.Context, *SetUserBoundaryPermissionsRequest) (*SetUserBoundaryPermissionsResponse, error)
 	ListUsers(context.Context, *ListUsersRequest) (*ListUsersResponse, error)
 	// Authentication
 	ValidateCredentials(context.Context, *ValidateCredentialsRequest) (*ValidateCredentialsResponse, error)
@@ -208,6 +221,9 @@ func (UnimplementedAdminServer) DeleteUser(context.Context, *DeleteUserRequest) 
 }
 func (UnimplementedAdminServer) ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ChangePassword not implemented")
+}
+func (UnimplementedAdminServer) SetUserBoundaryPermissions(context.Context, *SetUserBoundaryPermissionsRequest) (*SetUserBoundaryPermissionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetUserBoundaryPermissions not implemented")
 }
 func (UnimplementedAdminServer) ListUsers(context.Context, *ListUsersRequest) (*ListUsersResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListUsers not implemented")
@@ -350,6 +366,24 @@ func _Admin_ChangePassword_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Admin_SetUserBoundaryPermissions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetUserBoundaryPermissionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).SetUserBoundaryPermissions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_SetUserBoundaryPermissions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).SetUserBoundaryPermissions(ctx, req.(*SetUserBoundaryPermissionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Admin_ListUsers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListUsersRequest)
 	if err := dec(in); err != nil {
@@ -452,6 +486,10 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ChangePassword",
 			Handler:    _Admin_ChangePassword_Handler,
+		},
+		{
+			MethodName: "SetUserBoundaryPermissions",
+			Handler:    _Admin_SetUserBoundaryPermissions_Handler,
 		},
 		{
 			MethodName: "ListUsers",

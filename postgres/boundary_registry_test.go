@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"github.com/OrisunLabs/Orisun/boundary"
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/OrisunLabs/Orisun/config"
-	"github.com/OrisunLabs/Orisun/orisun"
 )
 
 func TestBoundaryRegistryRegisterMakesQueriesAvailable(t *testing.T) {
@@ -26,14 +26,12 @@ func TestBoundaryRegistryRegisterMakesQueriesAvailable(t *testing.T) {
 		t.Fatal("registered boundary was not found")
 	}
 	for name, query := range map[string]string{
-		"insert requests":       entry.insertEventRequests,
-		"select events":         entry.selectEvents,
-		"select latest":         entry.selectLatest,
-		"get last published":    entry.getLastPublished,
-		"insert last published": entry.insertLastPublished,
-		"get event count":       entry.getEventCount,
-		"fallback event count":  entry.fallbackGetEventCount,
-		"save event count":      entry.saveEventCount,
+		"insert requests":      entry.insertEventRequests,
+		"select events":        entry.selectEvents,
+		"select latest":        entry.selectLatest,
+		"get event count":      entry.getEventCount,
+		"fallback event count": entry.fallbackGetEventCount,
+		"save event count":     entry.saveEventCount,
 	} {
 		if !strings.Contains(query, "tenant_data") {
 			t.Errorf("%s query does not use registered schema: %q", name, query)
@@ -89,9 +87,9 @@ func TestPostgresBoundaryProvisionerMigratesBeforeLocalRegistration(t *testing.T
 		}
 		return nil
 	})
-	definition := orisun.BoundaryDefinition{
+	definition := boundarymodel.Definition{
 		Name:      "sales",
-		Placement: orisun.BoundaryPlacement{Backend: "postgres", Namespace: "tenant_data"},
+		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "tenant_data"},
 	}
 
 	if err := provisioner.ProvisionBoundary(t.Context(), definition); err != nil {
@@ -126,9 +124,9 @@ func TestPostgresBoundaryProvisionerDoesNotRegisterFailedMigration(t *testing.T)
 	provisioner := newPostgresBoundaryProvisioner(registry, func(context.Context, string, string) error {
 		return wantErr
 	})
-	definition := orisun.BoundaryDefinition{
+	definition := boundarymodel.Definition{
 		Name:      "sales",
-		Placement: orisun.BoundaryPlacement{Backend: "postgres", Namespace: "tenant_data"},
+		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "tenant_data"},
 	}
 
 	err := provisioner.ProvisionBoundary(t.Context(), definition)
@@ -146,9 +144,9 @@ func TestPostgresBoundaryInstallerDoesNotRegisterFailedMigration(t *testing.T) {
 	provisioner := newPostgresBoundaryProvisioner(registry, func(context.Context, string, string) error {
 		return wantErr
 	})
-	definition := orisun.BoundaryDefinition{
+	definition := boundarymodel.Definition{
 		Name:      "sales",
-		Placement: orisun.BoundaryPlacement{Backend: "postgres", Namespace: "tenant_data"},
+		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "tenant_data"},
 	}
 
 	err := provisioner.InstallBoundary(t.Context(), definition)
@@ -204,9 +202,9 @@ func TestPostgresBoundaryProvisionerRejectsPlacementBeforeMigration(t *testing.T
 		return nil
 	})
 
-	definitions := []orisun.BoundaryDefinition{
-		{Name: "new_boundary", Placement: orisun.BoundaryPlacement{Backend: "sqlite", Namespace: "tenant_data"}},
-		{Name: "new_boundary", Placement: orisun.BoundaryPlacement{Backend: "postgres", Namespace: "bad-schema"}},
+	definitions := []boundarymodel.Definition{
+		{Name: "new_boundary", Placement: boundarymodel.Placement{Backend: "sqlite", Namespace: "tenant_data"}},
+		{Name: "new_boundary", Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "bad-schema"}},
 	}
 	for _, definition := range definitions {
 		if err := provisioner.ProvisionBoundary(t.Context(), definition); err == nil {
@@ -225,9 +223,9 @@ func TestPostgresBoundaryInstallerRejectsConflictingLocalPlacement(t *testing.T)
 	provisioner := newPostgresBoundaryProvisioner(registry, func(context.Context, string, string) error {
 		return nil
 	})
-	err := provisioner.InstallBoundary(t.Context(), orisun.BoundaryDefinition{
+	err := provisioner.InstallBoundary(t.Context(), boundarymodel.Definition{
 		Name:      "sales",
-		Placement: orisun.BoundaryPlacement{Backend: "postgres", Namespace: "different"},
+		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "different"},
 	})
 	if err == nil {
 		t.Fatal("InstallBoundary() conflicting placement error = nil")

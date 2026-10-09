@@ -4,50 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestReadEventMarshalJSONPreservesPublishedEnvelope(t *testing.T) {
-	event := ReadEvent{
-		EventId:         "event-1",
-		EventType:       "AccountCredited",
-		Data:            `{"amount":10}`,
-		Metadata:        `{"trace":"abc"}`,
-		CommitPosition:  42,
-		PreparePosition: 7,
-		DateCreated:     time.Unix(1_700_000_000, 123_000_000).UTC(),
-	}
-
-	packedJSON, err := json.Marshal(event)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{
-		"event_id":"event-1",
-		"event_type":"AccountCredited",
-		"data":"{\"amount\":10}",
-		"metadata":"{\"trace\":\"abc\"}",
-		"position":{"commit_position":42,"prepare_position":7},
-		"date_created":{"seconds":1700000000,"nanos":123000000}
-	}`, string(packedJSON))
-}
-
-func TestReadEventMarshalJSONProducesValidEscapedJSON(t *testing.T) {
-	events := []ReadEvent{
-		{
-			EventId:     "<event>&\"\n",
-			EventType:   "Created\u2028Again",
-			Data:        string([]byte{'{', 0xff, '}'}),
-			DateCreated: time.Unix(0, 0).UTC(),
-		},
-		{},
-	}
-	for _, event := range events {
-		packedJSON, err := json.Marshal(event)
-		require.NoError(t, err)
-		assert.True(t, json.Valid(packedJSON), string(packedJSON))
-	}
-}
 
 func TestReadEventBatchResponsePreservesRows(t *testing.T) {
 	created := time.Unix(1_700_000_000, 321).UTC()
@@ -96,44 +55,4 @@ func TestReadEventMaterializationExcludesStorageEventType(t *testing.T) {
 	assert.Equal(t, "AccountCredited", event.EventType)
 	assert.JSONEq(t, `{"accountId":"account-1"}`, event.Data)
 	assert.JSONEq(t, `{"accountId":"account-1"}`, read.Data)
-}
-
-func BenchmarkPublisherEventMarshal(b *testing.B) {
-	event := ReadEvent{
-		EventId:         "event-1",
-		EventType:       "AccountCredited",
-		Data:            `{"account_id":"account-1","amount":10}`,
-		Metadata:        `{"trace_id":"trace-1"}`,
-		CommitPosition:  42,
-		PreparePosition: 7,
-		DateCreated:     time.Unix(1_700_000_000, 123_000_000).UTC(),
-	}
-	materializedEvent := event.Event()
-
-	b.Run("packed", func(b *testing.B) {
-		b.ReportAllocs()
-		for range b.N {
-			if _, err := event.MarshalJSON(); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("materialized", func(b *testing.B) {
-		b.ReportAllocs()
-		for range b.N {
-			if _, err := json.Marshal(materializedEvent); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-}
-
-func TestReadEventWriteIDSurvivesMaterializationAndPublication(t *testing.T) {
-	event := ReadEvent{EventId: "e", WriteId: "42:7", CommitPosition: 42, PreparePosition: 7, DateCreated: time.Now().UTC()}
-	require.Equal(t, event.WriteId, event.Event().WriteId)
-	payload, err := json.Marshal(event)
-	require.NoError(t, err)
-	var fields map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(payload, &fields))
-	require.JSONEq(t, `"42:7"`, string(fields["write_id"]))
 }

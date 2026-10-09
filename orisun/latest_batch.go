@@ -3,11 +3,12 @@ package orisun
 // ReadTag is the protobuf-free criterion tag used by embedded callers and
 // storage backends.
 type ReadTag struct {
-	Key   string
-	Value string
+	Key      string
+	Value    string
+	Operator string
 }
 
-// ReadCriterion is one conjunction of equality tags. Criteria in a
+// ReadCriterion is one conjunction of tag predicates. Criteria in a
 // LatestByCriteriaQuery are independent and retain their input order.
 type ReadCriterion struct {
 	Tags []ReadTag

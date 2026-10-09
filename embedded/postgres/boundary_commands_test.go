@@ -2,22 +2,20 @@ package postgres
 
 import (
 	"context"
-	"testing"
-
-	adminevents "github.com/OrisunLabs/Orisun/admin/events"
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	"github.com/OrisunLabs/Orisun/internal/eventstoreadapter"
 	"github.com/OrisunLabs/Orisun/orisun"
 	"github.com/goccy/go-json"
+	"testing"
 )
 
 func TestEmbeddedBoundaryCommandsEmitEvents(t *testing.T) {
 	for _, test := range []struct {
-		name                 string
-		existedBeforeCatalog bool
+		name string
 	}{
 		{name: "new storage"},
-		{name: "existing storage", existedBeforeCatalog: true},
+		{name: "existing storage"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			saver := &embeddedBoundarySaver{}
@@ -30,19 +28,17 @@ func TestEmbeddedBoundaryCommandsEmitEvents(t *testing.T) {
 				),
 			}
 			boundary, err := store.CreateBoundary(t.Context(), boundarymodel.Definition{
-				Name:                 "sales",
-				Description:          "Sales domain",
-				Placement:            boundarymodel.Placement{Backend: "postgres", Namespace: "tenant_data"},
-				ExistedBeforeCatalog: test.existedBeforeCatalog,
+				Name:        "sales",
+				Description: "Sales domain",
+				Placement:   boundarymodel.Placement{Backend: "postgres", Namespace: "tenant_data"},
 			})
 			if err != nil {
 				t.Fatalf("command error = %v", err)
 			}
-			if len(saver.events) != 1 || saver.events[0].EventType != adminevents.EventTypeBoundaryCreated {
-				t.Fatalf("saved events = %#v, want one %s", saver.events, adminevents.EventTypeBoundaryCreated)
+			if len(saver.events) != 1 || saver.events[0].EventType != boundaryevents.EventTypeBoundaryCreated {
+				t.Fatalf("saved events = %#v, want one %s", saver.events, boundaryevents.EventTypeBoundaryCreated)
 			}
-			if boundary.Name != "sales" || boundary.Status != boundarymodel.StatusProvisioning ||
-				boundary.ExistedBeforeCatalog != test.existedBeforeCatalog {
+			if boundary.Name != "sales" || boundary.Status != boundarymodel.StatusProvisioning {
 				t.Fatalf("boundary = %#v", boundary)
 			}
 		})
@@ -50,22 +46,22 @@ func TestEmbeddedBoundaryCommandsEmitEvents(t *testing.T) {
 }
 
 func TestEmbeddedBoundaryCatalogQueries(t *testing.T) {
-	created, err := json.Marshal(adminevents.BoundaryCreated{
+	created, err := json.Marshal(boundaryevents.BoundaryCreated{
 		Boundary:  "sales",
 		Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "tenant_data"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	activated, err := json.Marshal(adminevents.BoundaryActivated{Boundary: "sales"})
+	activated, err := json.Marshal(boundaryevents.BoundaryActivated{Boundary: "sales"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &Store{
 		adminBoundary: "orisun_admin",
 		boundaryEvents: eventstoreadapter.New(nil, embeddedCatalogRetriever{events: orisun.ReadEventBatch{
-			{EventType: adminevents.EventTypeBoundaryCreated, Data: string(created), CommitPosition: 1, PreparePosition: 1},
-			{EventType: adminevents.EventTypeBoundaryActivated, Data: string(activated), CommitPosition: 2, PreparePosition: 2},
+			{EventType: boundaryevents.EventTypeBoundaryCreated, Data: string(created), CommitPosition: 1, PreparePosition: 1},
+			{EventType: boundaryevents.EventTypeBoundaryActivated, Data: string(activated), CommitPosition: 2, PreparePosition: 2},
 		}}, nil),
 	}
 

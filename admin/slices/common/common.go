@@ -29,7 +29,7 @@ type DB interface {
 	orisun.BoundaryIndexManager
 }
 
-type SaveEventsType = func(ctx context.Context, in *orisun.SaveEventsRequest) (resp *orisun.WriteResult, err error)
+type SaveEventsType = func(ctx context.Context, in *orisun.SaveEventsV2Request) (resp *orisun.WriteResult, err error)
 type GetEventsType = func(ctx context.Context, in *orisun.GetEventsRequest) (*orisun.GetEventsResponse, error)
 type GetProjectorLastPositionType = func(ctx context.Context, projectorName string) (*orisun.Position, error)
 type UpdateProjectorPositionType = func(ctx context.Context, projectorName string, position *orisun.Position) error

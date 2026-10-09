@@ -29,7 +29,7 @@ func TestEventStoreMetricsRecordSuccessfulCommitEventsBytesAndDuration(t *testin
 	}
 	store.metrics.Store(metrics)
 
-	_, err = store.SaveEvents(t.Context(), &SaveEventsRequest{
+	_, err = store.SaveEventsV2(t.Context(), &SaveEventsV2Request{
 		Boundary: "orders",
 		Events: []*EventToSave{
 			{
@@ -108,16 +108,11 @@ func TestEventStoreMetricsRecordCCCConflictWithoutCriterionValues(t *testing.T) 
 	}
 	store.metrics.Store(metrics)
 
-	_, err = store.SaveEvents(t.Context(), &SaveEventsRequest{
-		Boundary: "orders",
-		Query: &SaveQuery{
-			ExpectedPosition: &Position{CommitPosition: 2, PreparePosition: 3},
-			SubsetQuery: &Query{Criteria: []*Criterion{
-				{Tags: []*Tag{{Key: "customer_id", Value: "secret-customer-42"}}},
-				{Tags: []*Tag{{Key: "region", Value: "secret-region"}}},
-			}},
-		},
-		Events: []*EventToSave{{
+	_, err = store.SaveEventsV2(t.Context(), &SaveEventsV2Request{
+		Boundary: "orders", Consistency: []*ConsistencyObservation{{Position: &Position{CommitPosition: 2, PreparePosition: 3}, Query: &Query{Criteria: []*Criterion{
+			{Tags: []*Tag{{Key: "customer_id", Value: "secret-customer-42"}}},
+			{Tags: []*Tag{{Key: "region", Value: "secret-region"}}},
+		}}}}, Events: []*EventToSave{{
 			EventId:   "event-1",
 			EventType: "OrderPlaced",
 			Data:      `{}`,
@@ -174,7 +169,6 @@ func TestEventStoreMetricsAreDisabledByDefault(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		EventStreamConfig{},
 		noopLogger{},
 	)
 

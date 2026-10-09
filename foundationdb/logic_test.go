@@ -139,14 +139,14 @@ func TestChooseCoveringIndexFullCoverage(t *testing.T) {
 	}
 
 	// Criterion fully covered by the two-field index.
-	crit := map[string]string{"__eventType": "Created", "user_id": "u1"}
+	crit := map[string]any{"__eventType": "Created", "user_id": "u1"}
 	idx, ok := chooseCoveringIndex(indexes, crit)
 	if !ok || idx.Name != "by_et_user" {
 		t.Fatalf("expected by_et_user, got ok=%v name=%q", ok, idx.Name)
 	}
 
 	// Criterion references a key no index covers → no covering index.
-	crit2 := map[string]string{"__eventType": "Created", "missing": "x"}
+	crit2 := map[string]any{"__eventType": "Created", "missing": "x"}
 	if _, ok := chooseCoveringIndex(indexes, crit2); ok {
 		t.Fatal("expected no covering index for an uncovered key")
 	}
@@ -165,12 +165,12 @@ func TestIndexCoversCriterionWithEqualityConditions(t *testing.T) {
 			{Key: "status", Operator: "=", Value: "open"},
 		},
 	}
-	if !indexCoversCriterion(idx, map[string]string{"__eventType": "X", "status": "open"}) {
+	if !indexCoversCriterion(idx, map[string]any{"__eventType": "X", "status": "open"}) {
 		t.Fatal("equality condition key should count toward coverage")
 	}
 	// A range condition key does not contribute coverage.
 	idx.Conditions[0].Operator = ">"
-	if indexCoversCriterion(idx, map[string]string{"__eventType": "X", "status": "open"}) {
+	if indexCoversCriterion(idx, map[string]any{"__eventType": "X", "status": "open"}) {
 		t.Fatal("range condition key must not count as covered")
 	}
 }
@@ -283,10 +283,10 @@ func TestPrepareEventsAndRoundTrip(t *testing.T) {
 
 func TestEventMatchesCriterion(t *testing.T) {
 	data := map[string]any{"__eventType": "Created", "amount": float64(5)}
-	if !eventMatchesCriterion(data, map[string]string{"__eventType": "Created", "amount": "5"}) {
+	if !eventMatchesCriterion(data, map[string]any{"__eventType": "Created", "amount": "5"}) {
 		t.Fatal("expected criterion match")
 	}
-	if eventMatchesCriterion(data, map[string]string{"__eventType": "Other"}) {
+	if eventMatchesCriterion(data, map[string]any{"__eventType": "Other"}) {
 		t.Fatal("expected criterion mismatch")
 	}
 }

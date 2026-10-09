@@ -29,7 +29,7 @@ func newTestPools(t *testing.T) (map[string]*BoundaryPools, func()) {
 	const boundary = "test"
 	logger, _ := logging.ZapLogger("error")
 	_ = logger
-	bp, err := OpenBoundaryPools(context.Background(), dir, boundary, boundary)
+	bp, err := OpenBoundaryPools(context.Background(), dir, boundary)
 	if err != nil {
 		t.Fatalf("open pools: %v", err)
 	}
@@ -41,7 +41,7 @@ func newTestPoolsWithMetadata(t *testing.T) (map[string]*BoundaryPools, map[stri
 	t.Helper()
 	dir := t.TempDir()
 	const boundary = "test"
-	bp, err := OpenBoundaryPools(context.Background(), dir, boundary, boundary)
+	bp, err := OpenBoundaryPools(context.Background(), dir, boundary)
 	if err != nil {
 		t.Fatalf("open pools: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestSave_RoundTrip(t *testing.T) {
 		mustEvent(t, "Bar", map[string]any{"k": "v2"}, map[string]any{}),
 	}
 
-	tx, gid, err := saver.Save(ctx, events, "test", nil, nil)
+	tx, gid, err := saver.Save(ctx, events, "test", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestSave_ChunksBatchLargerThanSqliteParamLimit(t *testing.T) {
 		events[i] = mustEvent(t, "Chunked", map[string]any{"seq": i}, map[string]any{})
 	}
 
-	tx, gid, err := saver.Save(ctx, events, "test", nil, nil)
+	tx, gid, err := saver.Save(ctx, events, "test", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestSave_AddsEventTypeToData(t *testing.T) {
 			"order_id":  "order-1",
 			"eventType": "stale",
 		}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestSave_RejectsEmpty(t *testing.T) {
 
 	saver := NewSqliteSaveEvents(pools, logger)
 	defer saver.close()
-	_, _, err := saver.Save(context.Background(), nil, "test", nil, nil)
+	_, _, err := saver.Save(context.Background(), nil, "test", nil)
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
@@ -247,7 +247,7 @@ func TestSave_RejectsUnknownBoundary(t *testing.T) {
 	defer saver.close()
 	_, _, err := saver.Save(context.Background(),
 		[]eventstore.EventWithMapTags{mustEvent(t, "X", map[string]any{}, map[string]any{})},
-		"missing", nil, nil)
+		"missing", nil)
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
@@ -267,7 +267,7 @@ func TestSave_RejectsInvalidJSONStrings(t *testing.T) {
 			Data:      `{"broken":`,
 			Metadata:  map[string]any{},
 		}},
-		"test", nil, nil)
+		"test", nil)
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 		t.Fatalf("expected InvalidArgument for invalid data JSON, got %v", err)
 	}
@@ -279,7 +279,7 @@ func TestSave_RejectsInvalidJSONStrings(t *testing.T) {
 			Data:      map[string]any{},
 			Metadata:  []byte(`{"broken":`),
 		}},
-		"test", nil, nil)
+		"test", nil)
 	if statuscode.CodeOf(err) != statuscode.InvalidArgument {
 		t.Fatalf("expected InvalidArgument for invalid metadata JSON, got %v", err)
 	}
@@ -301,7 +301,8 @@ func TestSave_CCCViolation(t *testing.T) {
 	}
 	_, gid, err := saver.Save(ctx,
 		[]eventstore.EventWithMapTags{mustEvent(t, "Created", map[string]any{"agg": "a1"}, map[string]any{})},
-		"test", nil, criteria)
+		"test", []*eventstore.ConsistencyObservation{{Query: criteria, Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+	)
 	if err != nil {
 		t.Fatalf("first save: %v", err)
 	}
@@ -309,7 +310,8 @@ func TestSave_CCCViolation(t *testing.T) {
 	// Second write with a stale expectedPosition (-1,-1 / nil) should fail.
 	_, _, err = saver.Save(ctx,
 		[]eventstore.EventWithMapTags{mustEvent(t, "Updated", map[string]any{"agg": "a1"}, map[string]any{})},
-		"test", nil, criteria)
+		"test", []*eventstore.ConsistencyObservation{{Query: criteria, Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}},
+	)
 	if statuscode.CodeOf(err) != statuscode.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %v", err)
 	}
@@ -321,7 +323,7 @@ func TestSave_CCCViolation(t *testing.T) {
 	expected := &eventstore.Position{CommitPosition: gid, PreparePosition: gid}
 	_, _, err = saver.Save(ctx,
 		[]eventstore.EventWithMapTags{mustEvent(t, "Updated", map[string]any{"agg": "a1"}, map[string]any{})},
-		"test", expected, criteria)
+		"test", []*eventstore.ConsistencyObservation{{Query: criteria, Position: expected}})
 	if err != nil {
 		t.Fatalf("expected success with correct expected position, got: %v", err)
 	}
@@ -336,13 +338,13 @@ func TestSavePrepared_ValidatesEveryQueryObservation(t *testing.T) {
 
 	_, accountGID, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
 		mustEvent(t, "AccountOpened", map[string]any{"account_id": "a-1"}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, customerGID, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
 		mustEvent(t, "CustomerRegistered", map[string]any{"customer_id": "c-1"}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +374,7 @@ func TestSavePrepared_ValidatesEveryQueryObservation(t *testing.T) {
 
 	if _, _, err = saver.Save(t.Context(), []eventstore.EventWithMapTags{
 		mustEvent(t, "CustomerUpdated", map[string]any{"customer_id": "c-1"}, map[string]any{}),
-	}, "test", nil, nil); err != nil {
+	}, "test", nil); err != nil {
 		t.Fatal(err)
 	}
 	rejectedSecond, err := eventstore.PrepareEventsForSave([]eventstore.EventWithMapTags{
@@ -391,7 +393,7 @@ func TestSavePrepared_ValidatesEveryQueryObservation(t *testing.T) {
 
 	if _, _, err = saver.Save(t.Context(), []eventstore.EventWithMapTags{
 		mustEvent(t, "TransferRecorded", map[string]any{"transfer_id": "t-1"}, map[string]any{}),
-	}, "test", nil, nil); err != nil {
+	}, "test", nil); err != nil {
 		t.Fatal(err)
 	}
 	checks[1].Position = eventstore.Position{CommitPosition: customerGID + 2, PreparePosition: customerGID + 2}
@@ -410,7 +412,7 @@ func TestSavePrepared_ValidatesEveryQueryObservation(t *testing.T) {
 	}
 
 	api := grpcapi.AdaptEventStore(eventstore.NewEventStoreServer(
-		nil, saver, nil, nil, nil, eventstore.EventStreamConfig{}, logger,
+		nil, saver, nil, nil, nil, logger,
 	))
 	rpcConsistency := []*grpcapi.ConsistencyObservation{
 		{
@@ -455,13 +457,13 @@ func TestSavePrepared_UsesOnePositionForAnORQuery(t *testing.T) {
 
 	_, _, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
 		mustEvent(t, "StockAdjusted", map[string]any{"product_id": "p-1"}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, latestGID, err := saver.Save(t.Context(), []eventstore.EventWithMapTags{
 		mustEvent(t, "StockCounted", map[string]any{"product_id": "p-1"}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +486,7 @@ func TestSavePrepared_UsesOnePositionForAnORQuery(t *testing.T) {
 	}
 	if _, _, err = saver.Save(t.Context(), []eventstore.EventWithMapTags{
 		mustEvent(t, "StockAdjusted", map[string]any{"product_id": "p-1"}, map[string]any{}),
-	}, "test", nil, nil); err != nil {
+	}, "test", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = saver.SavePrepared(t.Context(), prepared, "test", []eventstore.ConsistencyCheck{check}); statuscode.CodeOf(err) != statuscode.AlreadyExists {
@@ -508,7 +510,7 @@ func TestGet_FilterByCriteria(t *testing.T) {
 		mustEvent(t, "A", map[string]any{"agg": "1"}, map[string]any{}),
 		mustEvent(t, "A", map[string]any{"agg": "2"}, map[string]any{}),
 		mustEvent(t, "A", map[string]any{"agg": "1"}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -544,7 +546,7 @@ func TestGet_FilterByUntypedScalarCriteria(t *testing.T) {
 		mustEvent(t, "A", map[string]any{"amount": 45, "active": true}, map[string]any{}),
 		mustEvent(t, "A", map[string]any{"amount": 46, "active": false}, map[string]any{}),
 		mustEvent(t, "A", map[string]any{"big": 1e10, "deleted": nil}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -592,7 +594,7 @@ func TestGet_OrderAndFromPosition(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		if _, _, err := saver.Save(ctx, []eventstore.EventWithMapTags{
 			mustEvent(t, "Ordered", map[string]any{"index": i}, map[string]any{}),
-		}, "test", nil, nil); err != nil {
+		}, "test", nil); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
@@ -653,22 +655,6 @@ func TestGet_OrderAndFromPosition(t *testing.T) {
 	}
 }
 
-func TestEventPublishing_EmptyCheckpointReturnsNotExists(t *testing.T) {
-	_, metadataPools, cleanup := newTestPoolsWithMetadata(t)
-	defer cleanup()
-	logger, _ := logging.ZapLogger("error")
-	tracker := NewSqliteEventPublishingWithMetadata(metadataPools, logger)
-
-	pos, err := tracker.GetLastPublishedEventPosition(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("get last published position: %v", err)
-	}
-	want := eventstore.NotExistsPosition()
-	if pos.CommitPosition != want.CommitPosition || pos.PreparePosition != want.PreparePosition {
-		t.Fatalf("expected not-exists position, got commit=%d prepare=%d", pos.CommitPosition, pos.PreparePosition)
-	}
-}
-
 func TestSqliteMetadataTablesAreSeparateFromBoundaryEventDB(t *testing.T) {
 	pools, metadataPools, cleanup := newTestPoolsWithMetadata(t)
 	defer cleanup()
@@ -694,7 +680,7 @@ func TestSqliteMetadataTablesAreSeparateFromBoundaryEventDB(t *testing.T) {
 			t.Fatalf("expected boundary DB to contain %s", table)
 		}
 	}
-	for _, table := range []string{"orisun_last_published_event_position", "events_count", "projector_checkpoint", "users", "users_count"} {
+	for _, table := range []string{"events_count", "projector_checkpoint", "users", "users_count"} {
 		exists, err := tableExists(boundaryConn, table)
 		if err != nil {
 			t.Fatalf("boundary table check %s: %v", table, err)
@@ -710,6 +696,16 @@ func TestSqliteMetadataTablesAreSeparateFromBoundaryEventDB(t *testing.T) {
 			t.Fatalf("expected metadata DB to contain %s", table)
 		}
 	}
+	for _, conn := range []*sqlite.Conn{boundaryConn, metadataConn} {
+		exists, err := tableExists(conn, "orisun_last_published_event_position")
+		if err != nil {
+			t.Fatalf("obsolete checkpoint table check: %v", err)
+		}
+		if exists {
+			t.Fatal("fresh boundaries must not provision publisher checkpoints")
+		}
+	}
+
 }
 
 func TestSqliteMetadataDBIsPerBoundary(t *testing.T) {
@@ -720,7 +716,7 @@ func TestSqliteMetadataDBIsPerBoundary(t *testing.T) {
 	pools := make(map[string]*BoundaryPools)
 	metadataPools := make(map[string]*BoundaryPools)
 	for _, boundary := range []string{"test", "other"} {
-		bp, err := OpenBoundaryPools(ctx, dir, boundary, "test")
+		bp, err := OpenBoundaryPools(ctx, dir, boundary)
 		if err != nil {
 			t.Fatalf("open boundary pool %s: %v", boundary, err)
 		}
@@ -736,28 +732,6 @@ func TestSqliteMetadataDBIsPerBoundary(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, boundary+"_metadata.db")); err != nil {
 			t.Fatalf("expected metadata file for %s: %v", boundary, err)
 		}
-	}
-
-	tracker := NewSqliteEventPublishingWithMetadata(metadataPools, logger)
-	if err := tracker.InsertLastPublishedEvent(ctx, "test", 10, 9); err != nil {
-		t.Fatalf("insert test publish checkpoint: %v", err)
-	}
-	if err := tracker.InsertLastPublishedEvent(ctx, "other", 20, 19); err != nil {
-		t.Fatalf("insert other publish checkpoint: %v", err)
-	}
-	testPos, err := tracker.GetLastPublishedEventPosition(ctx, "test")
-	if err != nil {
-		t.Fatalf("get test publish checkpoint: %v", err)
-	}
-	otherPos, err := tracker.GetLastPublishedEventPosition(ctx, "other")
-	if err != nil {
-		t.Fatalf("get other publish checkpoint: %v", err)
-	}
-	if testPos.CommitPosition != 10 || testPos.PreparePosition != 9 {
-		t.Fatalf("unexpected test publish position: (%d, %d)", testPos.CommitPosition, testPos.PreparePosition)
-	}
-	if otherPos.CommitPosition != 20 || otherPos.PreparePosition != 19 {
-		t.Fatalf("unexpected other publish position: (%d, %d)", otherPos.CommitPosition, otherPos.PreparePosition)
 	}
 
 	admin := NewSqliteAdminDBWithMetadata(pools, metadataPools, "test", logger)
@@ -898,7 +872,7 @@ func TestCreateDropBoundaryIndex_MetadataAndTypedCriteria(t *testing.T) {
 
 	_, _, err = saver.Save(ctx, []eventstore.EventWithMapTags{
 		mustEvent(t, "Priced", map[string]any{"amount": 45}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -1184,7 +1158,7 @@ func TestCreateDropBoundaryIndex_ValidationParity(t *testing.T) {
 			mustEvent(t, "S", map[string]any{"status": 404, "amount": 5}, map[string]any{}),
 			mustEvent(t, "S", map[string]any{"status": "404", "amount": 6}, map[string]any{}),
 			mustEvent(t, "S", map[string]any{"status": 500, "amount": 7}, map[string]any{}),
-		}, "test", nil, nil); err != nil {
+		}, "test", nil); err != nil {
 			t.Fatalf("save: %v", err)
 		}
 
@@ -1319,7 +1293,7 @@ func TestSaveNotifiesSqliteEventSignalAfterCommit(t *testing.T) {
 	defer cleanup()
 	logger, _ := logging.ZapLogger("error")
 
-	notifier := NewSqliteEventNotifier(time.Hour)
+	notifier := NewSqliteEventNotifier()
 	saver := NewSqliteSaveEvents(pools, logger)
 	defer saver.close()
 	saver.notifier = notifier
@@ -1335,7 +1309,7 @@ func TestSaveNotifiesSqliteEventSignalAfterCommit(t *testing.T) {
 
 	_, _, err := saver.Save(context.Background(), []eventstore.EventWithMapTags{
 		mustEvent(t, "Notified", map[string]any{"k": "v"}, map[string]any{}),
-	}, "test", nil, nil)
+	}, "test", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}

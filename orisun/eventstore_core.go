@@ -25,9 +25,9 @@ type EventsRetriever interface {
 	GetLatestByCriteria(ctx context.Context, query LatestByCriteriaQuery) (LatestByCriteriaBatch, error)
 }
 
-// LockProvider coordinates named work within a backend runtime.
+// LockProvider owns explicit lease lifecycles for named work.
 type LockProvider interface {
-	Lock(ctx context.Context, lockName string) error
+	AcquireLock(ctx context.Context, lockName string) (LockLease, error)
 }
 
 // LockLease proves ongoing lock ownership until it is released or lost.
@@ -35,12 +35,6 @@ type LockLease interface {
 	Context() context.Context
 	Check(ctx context.Context) error
 	Release()
-}
-
-// LockLeaseProvider exposes explicit lock lifecycles to embedded subscribers
-// and server-side publishers.
-type LockLeaseProvider interface {
-	AcquireLock(ctx context.Context, lockName string) (LockLease, error)
 }
 
 // NotExistsPosition is the optimistic-concurrency position before any event.
@@ -187,12 +181,6 @@ func prepareJSONValue(value any) (string, error) {
 		}
 		return string(encoded), nil
 	}
-}
-
-// EventPublishingTracker stores per-boundary durable publisher checkpoints.
-type EventPublishingTracker interface {
-	GetLastPublishedEventPosition(ctx context.Context, boundary string) (Position, error)
-	InsertLastPublishedEvent(ctx context.Context, boundary string, transactionID, globalID int64) error
 }
 
 // EventSignal reports that new events may be available.

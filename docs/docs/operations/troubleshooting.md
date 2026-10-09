@@ -44,7 +44,7 @@ grpcurl -H "$AUTH" \
 ```
 
 - If the definition is absent, call `CreateBoundary`; set
-  `existed_before_catalog` for storage that already exists.
+  the matching placement for storage that already uses the current format.
 - If it is `PROVISIONING`, wait; the definition event committed but the local
   runtime is not ready yet.
 - If it is `FAILED`, inspect `last_error`. Verify that backend and namespace
@@ -64,15 +64,19 @@ For SQLite, verify both `{boundary}.db` and `{boundary}_metadata.db` are in
 key ranges into the catalog; define beta-backend boundaries explicitly through
 `CreateBoundary`.
 
-## Publisher Lag
+## Subscription Lag
 
-Publisher wake-up signals are only hints. If lag persists:
+Boundary notifications are hints. If lag persists:
 
-1. Check the selected storage backend is reachable.
-2. Check NATS is healthy.
-3. Check publisher checkpoint writes are succeeding.
-4. In PostgreSQL-compatible clusters, check which node owns each boundary lock.
-5. Check polling batch size and event volume.
+1. Check the backend is reachable and the subscription query can read its stable ascending prefix.
+2. Check handler latency and application/projector checkpoint progress.
+3. Check `ORISUN_SUBSCRIPTION_IDLE_THRESHOLD` and backend read-pool contention.
+4. Check NATS health and the notification relay lease owner for latency improvements.
+5. For FoundationDB, verify each criterion selects a native range or a ready covering index.
+
+Publisher checkpoints and legacy event-stream retention no longer control
+subscription delivery. Healthy NATS is required for live delivery. Idle watchdog hints recover missed
+relay signals after the configured threshold.
 
 ## Duplicate Events
 

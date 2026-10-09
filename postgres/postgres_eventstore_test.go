@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,14 +172,11 @@ func TestSaveAndGetEvents(t *testing.T) {
 		},
 	}
 
-	position := orisun.NotExistsPosition()
 	// Save events
 	tranID, globalID, err := saveEvents.Save(
 		t.Context(),
 		events,
-		"test_boundary",
-		&position,
-		nil,
+		"test_boundary", nil,
 	)
 
 	assert.NoError(t, err)
@@ -239,32 +237,20 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
+	_, err = db.Exec(`INSERT INTO public.test_boundary_orisun_es_write(write_id,consistency) VALUES(0,'[]')`)
+	require.NoError(t, err)
+
 	_, err = db.Exec(`
 		INSERT INTO public.test_boundary_orisun_es_event
 			(data)
 		VALUES
-			(orisun_event_document(jsonb_build_object('__eventId', $1::text, '__eventType','CurrentEvent','key','first'), '{}', 2, 0, NULL, now())),
-			(orisun_event_document(jsonb_build_object('__eventId', $2::text, '__eventType','CurrentEvent','key','second'), '{}', 2, 1, NULL, now())),
-			(orisun_event_document(jsonb_build_object('__eventId', $3::text, '__eventType','CurrentEvent','key','third'), '{}', 3, 2, NULL, now()))
+			(orisun_event_document(jsonb_build_object('__eventId', $1::text, '__eventType','CurrentEvent','key','first'), '{}', 2, 0, 0, now())),
+			(orisun_event_document(jsonb_build_object('__eventId', $2::text, '__eventType','CurrentEvent','key','second'), '{}', 2, 1, 0, now())),
+			(orisun_event_document(jsonb_build_object('__eventId', $3::text, '__eventType','CurrentEvent','key','third'), '{}', 3, 2, 0, now()))
 	`, uuid.NewString(), uuid.NewString(), uuid.NewString())
 	require.NoError(t, err)
 
 	_, err = db.Exec(`SELECT setval('public.test_boundary_orisun_es_event_global_id_seq', 2, true)`)
-	require.NoError(t, err)
-
-	// Recreate the payload-bearing indexes shipped before the lean-index
-	// migration. RunDbScripts must repair these existing definitions, not only
-	// use the safe definitions for newly provisioned boundaries.
-	_, err = db.Exec(`
-		DROP INDEX public.test_boundary_idx_global_order_covering;
-		CREATE INDEX test_boundary_idx_global_order_covering
-			ON public.test_boundary_orisun_es_event (transaction_id DESC, global_id DESC)
-			INCLUDE (data);
-		DROP INDEX public.test_boundary_idx_event_order_visibility_covering;
-		CREATE INDEX test_boundary_idx_event_order_visibility_covering
-			ON public.test_boundary_orisun_es_event (transaction_id DESC, global_id DESC)
-			INCLUDE (pg_xact_id, data, metadata, date_created);
-	`)
 	require.NoError(t, err)
 
 	require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, context.Background()))
@@ -371,7 +357,6 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 
 	saveEvents := NewPostgresSaveEvents(t.Context(), db, logger, mapping)
 	getEvents := NewPostgresGetEvents(db, logger, mapping)
-	expectedPosition := &orisun.Position{CommitPosition: 3, PreparePosition: 2}
 
 	var largePayload strings.Builder
 	for range 256 {
@@ -393,9 +378,7 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 				Metadata:  `{}`,
 			},
 		},
-		"test_boundary",
-		expectedPosition,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(3), globalID)
@@ -566,8 +549,6 @@ func TestSave200EventsOneByOne(t *testing.T) {
 	saveEvents := NewPostgresSaveEvents(t.Context(), db, logger, mapping)
 	getEvents := NewPostgresGetEvents(db, logger, mapping)
 
-	expectedPosition := orisun.NotExistsPosition()
-
 	// Save 100 events one by one
 	for i := range 200 {
 		eventId, err := uuid.NewV7()
@@ -586,21 +567,15 @@ func TestSave200EventsOneByOne(t *testing.T) {
 		tranID, globalID, err := saveEvents.Save(
 			t.Context(),
 			events,
-			"test_boundary",
-			&expectedPosition,
-			nil,
+			"test_boundary", nil,
 		)
 
 		require.NoError(t, err, "Failed to save event %d", i)
 		assert.NotEmpty(t, tranID, "Transaction ID should not be empty for event %d", i)
 		assert.GreaterOrEqual(t, globalID, int64(0), "Global ID should be greater than or equal to 0 for event %d", i)
 
-		transactionIDInt, err := strconv.ParseInt(tranID, 10, 64)
+		_, err = strconv.ParseInt(tranID, 10, 64)
 		require.NoError(t, err)
-		expectedPosition = orisun.Position{
-			PreparePosition: globalID,
-			CommitPosition:  transactionIDInt,
-		}
 	}
 
 	// Verify all 100 events were saved correctly
@@ -668,9 +643,7 @@ func TestOptimisticConcurrency(t *testing.T) {
 	_, _, err = saveEvents.Save(
 		t.Context(),
 		events,
-		"test_boundary",
-		&position1,
-		&orisun.Query{
+		"test_boundary", []*orisun.ConsistencyObservation{{Query: &orisun.Query{
 			Criteria: []*orisun.Criterion{
 				{
 					Tags: []*orisun.Tag{
@@ -678,7 +651,7 @@ func TestOptimisticConcurrency(t *testing.T) {
 					},
 				},
 			},
-		},
+		}, Position: &position1}},
 	)
 	require.NoError(t, err)
 
@@ -696,9 +669,7 @@ func TestOptimisticConcurrency(t *testing.T) {
 	_, _, err = saveEvents.Save(
 		t.Context(),
 		events2,
-		"test_boundary",
-		&position2,
-		&orisun.Query{
+		"test_boundary", []*orisun.ConsistencyObservation{{Query: &orisun.Query{
 			Criteria: []*orisun.Criterion{
 				{
 					Tags: []*orisun.Tag{
@@ -706,7 +677,7 @@ func TestOptimisticConcurrency(t *testing.T) {
 					},
 				},
 			},
-		},
+		}, Position: &position2}},
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OptimisticConcurrencyException")
@@ -800,9 +771,7 @@ func TestConcurrentSaveEventsOptimisticConcurrency(t *testing.T) {
 		_, _, err := saveEvents1.Save(
 			context.Background(),
 			events1,
-			"test_boundary",
-			nil,
-			sharedStreamCondition,
+			"test_boundary", []*orisun.ConsistencyObservation{{Query: sharedStreamCondition, Position: &orisun.Position{CommitPosition: -1, PreparePosition: -1}}},
 		)
 		t.Logf("Operation 1 result: %v", err)
 		mu.Lock()
@@ -821,9 +790,7 @@ func TestConcurrentSaveEventsOptimisticConcurrency(t *testing.T) {
 		_, _, err := saveEvents2.Save(
 			context.Background(),
 			events2,
-			"test_boundary",
-			nil,
-			sharedStreamCondition,
+			"test_boundary", []*orisun.ConsistencyObservation{{Query: sharedStreamCondition, Position: &orisun.Position{CommitPosition: -1, PreparePosition: -1}}},
 		)
 		t.Logf("Operation 2 result: %v", err)
 		mu.Lock()
@@ -909,13 +876,10 @@ func TestGetEventsWithCriteria(t *testing.T) {
 		},
 	}
 
-	expectedPosition := orisun.NotExistsPosition()
-	tranId, globalId, err := saveEvents.Save(
+	tranId, _, err := saveEvents.Save(
 		t.Context(),
 		events1,
-		"test_boundary",
-		&expectedPosition,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
 
@@ -928,7 +892,7 @@ func TestGetEventsWithCriteria(t *testing.T) {
 		},
 	}
 
-	tranIdConv, err := strconv.ParseInt(tranId, 10, 64)
+	_, err = strconv.ParseInt(tranId, 10, 64)
 
 	if err != nil {
 		fmt.Printf("Error converting string to int64: %v\n", err)
@@ -937,12 +901,7 @@ func TestGetEventsWithCriteria(t *testing.T) {
 	_, _, err = saveEvents.Save(
 		t.Context(),
 		events2,
-		"test_boundary",
-		&orisun.Position{
-			PreparePosition: globalId,
-			CommitPosition:  tranIdConv,
-		},
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
 
@@ -1002,7 +961,6 @@ func TestGetEventsByGlobalPosition(t *testing.T) {
 	// Save multiple events to get different global positions
 	var globalPositions []int64
 	var transactionIDs []string
-	var lastPosition *orisun.Position
 	for i := range 5 {
 		eventId, err := uuid.NewV7()
 		require.NoError(t, err)
@@ -1018,19 +976,13 @@ func TestGetEventsByGlobalPosition(t *testing.T) {
 		transactionID, globalPos, err := saveEvents.Save(
 			ctx,
 			events,
-			"test_boundary",
-			lastPosition,
-			nil,
+			"test_boundary", nil,
 		)
 		require.NoError(t, err)
 		globalPositions = append(globalPositions, globalPos)
 		transactionIDs = append(transactionIDs, transactionID)
-		transactionIDInt, err := strconv.ParseInt(transactionID, 10, 64)
+		_, err = strconv.ParseInt(transactionID, 10, 64)
 		require.NoError(t, err)
-		lastPosition = &orisun.Position{
-			CommitPosition:  transactionIDInt,
-			PreparePosition: globalPos,
-		}
 	}
 
 	// Get events after the second event's global position
@@ -1087,7 +1039,6 @@ func TestPagination(t *testing.T) {
 	ctx := t.Context()
 
 	// Save 10 events
-	var lastPosition *orisun.Position
 	for i := range 10 {
 		eventId, err := uuid.NewV7()
 		require.NoError(t, err)
@@ -1100,20 +1051,14 @@ func TestPagination(t *testing.T) {
 			},
 		}
 
-		transactionID, globalPos, err := saveEvents.Save(
+		transactionID, _, err := saveEvents.Save(
 			ctx,
 			events,
-			"test_boundary",
-			lastPosition,
-			nil,
+			"test_boundary", nil,
 		)
 		require.NoError(t, err)
-		transactionIDInt, err := strconv.ParseInt(transactionID, 10, 64)
+		_, err = strconv.ParseInt(transactionID, 10, 64)
 		require.NoError(t, err)
-		lastPosition = &orisun.Position{
-			CommitPosition:  transactionIDInt,
-			PreparePosition: globalPos,
-		}
 	}
 
 	// Get first page (3 events)
@@ -1175,7 +1120,6 @@ func TestDirectionOrdering(t *testing.T) {
 	ctx := t.Context()
 
 	// Save 5 events
-	var lastPosition *orisun.Position
 	for i := range 5 {
 		eventId, err := uuid.NewV7()
 		require.NoError(t, err)
@@ -1188,20 +1132,14 @@ func TestDirectionOrdering(t *testing.T) {
 			},
 		}
 
-		transactionID, globalPos, err := saveEvents.Save(
+		transactionID, _, err := saveEvents.Save(
 			ctx,
 			events,
-			"test_boundary",
-			lastPosition,
-			nil,
+			"test_boundary", nil,
 		)
 		require.NoError(t, err)
-		transactionIDInt, err := strconv.ParseInt(transactionID, 10, 64)
+		_, err = strconv.ParseInt(transactionID, 10, 64)
 		require.NoError(t, err)
-		lastPosition = &orisun.Position{
-			CommitPosition:  transactionIDInt,
-			PreparePosition: globalPos,
-		}
 	}
 
 	// Get events in ascending order
@@ -1293,9 +1231,9 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 
 		registry := NewBoundaryRegistry(nil)
 		provisioner := NewPostgresBoundaryProvisioner(db, registry)
-		definition := orisun.BoundaryDefinition{
+		definition := boundarymodel.Definition{
 			Name: "test_boundary",
-			Placement: orisun.BoundaryPlacement{
+			Placement: boundarymodel.Placement{
 				Backend:   "postgres",
 				Namespace: "public",
 			},
@@ -1376,10 +1314,13 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 	})
 
 	t.Run("failed concurrent build drops invalid index and retries cleanly", func(t *testing.T) {
+		_, err = db.ExecContext(ctx, `INSERT INTO public.test_boundary_orisun_es_write(write_id,consistency) VALUES(0,'[]')`)
+		require.NoError(t, err)
+
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO public.test_boundary_orisun_es_event
 				(data)
-			VALUES (orisun_event_document(jsonb_build_object('__eventId', $1::text, 'amount','not-a-number'), '{}', 1, 0, NULL, now()))
+			VALUES (orisun_event_document(jsonb_build_object('__eventId', $1::text, 'amount','not-a-number'), '{}', 1, 0, 0, now()))
 		`, uuid.NewString())
 		require.NoError(t, err)
 
@@ -1505,8 +1446,6 @@ func TestComplexTagQueries(t *testing.T) {
 	// Save events with different tag combinations
 	eventIds := make([]string, 4)
 
-	var lastPosition *orisun.Position
-
 	// Event 1: category=A, priority=high, region=east
 	eventId1, err := uuid.NewV7()
 	require.NoError(t, err)
@@ -1518,20 +1457,14 @@ func TestComplexTagQueries(t *testing.T) {
 			Data:      "{\"data\": \"event1\", \"category\": \"A\", \"priority\": \"high\", \"region\": \"east\"}",
 		},
 	}
-	transactionID, globalPos, err := saveEvents.Save(
+	transactionID, _, err := saveEvents.Save(
 		ctx,
 		events1,
-		"test_boundary",
-		lastPosition,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
-	transactionIDInt, err := strconv.ParseInt(transactionID, 10, 64)
+	_, err = strconv.ParseInt(transactionID, 10, 64)
 	require.NoError(t, err)
-	lastPosition = &orisun.Position{
-		CommitPosition:  transactionIDInt,
-		PreparePosition: globalPos,
-	}
 
 	// Event 2: category=A, priority=low, region=west
 	eventId2, err := uuid.NewV7()
@@ -1544,20 +1477,14 @@ func TestComplexTagQueries(t *testing.T) {
 			Data:      "{\"data\": \"event2\", \"category\": \"A\", \"priority\": \"low\", \"region\": \"west\"}",
 		},
 	}
-	transactionID, globalPos, err = saveEvents.Save(
+	transactionID, _, err = saveEvents.Save(
 		ctx,
 		events2,
-		"test_boundary",
-		lastPosition,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
-	transactionIDInt, err = strconv.ParseInt(transactionID, 10, 64)
+	_, err = strconv.ParseInt(transactionID, 10, 64)
 	require.NoError(t, err)
-	lastPosition = &orisun.Position{
-		CommitPosition:  transactionIDInt,
-		PreparePosition: globalPos,
-	}
 
 	// Event 3: category=B, priority=high, region=east
 	eventId3, err := uuid.NewV7()
@@ -1570,20 +1497,14 @@ func TestComplexTagQueries(t *testing.T) {
 			Data:      "{\"data\": \"event3\", \"category\": \"B\", \"priority\": \"high\", \"region\": \"east\"}",
 		},
 	}
-	transactionID, globalPos, err = saveEvents.Save(
+	transactionID, _, err = saveEvents.Save(
 		ctx,
 		events3,
-		"test_boundary",
-		lastPosition,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
-	transactionIDInt, err = strconv.ParseInt(transactionID, 10, 64)
+	_, err = strconv.ParseInt(transactionID, 10, 64)
 	require.NoError(t, err)
-	lastPosition = &orisun.Position{
-		CommitPosition:  transactionIDInt,
-		PreparePosition: globalPos,
-	}
 
 	// Event 4: category=B, priority=low, region=west
 	eventId4, err := uuid.NewV7()
@@ -1599,10 +1520,7 @@ func TestComplexTagQueries(t *testing.T) {
 	_, _, err = saveEvents.Save(
 		ctx,
 		events4,
-		"test_boundary",
-
-		lastPosition,
-		nil,
+		"test_boundary", nil,
 	)
 	require.NoError(t, err)
 

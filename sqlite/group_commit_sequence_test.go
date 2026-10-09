@@ -24,7 +24,7 @@ func TestGroupCommitSequenceTracksOnlyAcceptedRequests(t *testing.T) {
 	dir := t.TempDir()
 	logger, err := logging.ZapLogger("error")
 	require.NoError(t, err)
-	pool, err := OpenBoundaryPools(t.Context(), dir, gcBoundary, gcBoundary)
+	pool, err := OpenBoundaryPools(t.Context(), dir, gcBoundary)
 	require.NoError(t, err)
 	saver := NewSqliteSaveEvents(map[string]*BoundaryPools{gcBoundary: pool}, logger)
 	defer func() { saver.close(); require.NoError(t, pool.Close()) }()
@@ -53,10 +53,10 @@ func TestGroupCommitSequenceTracksOnlyAcceptedRequests(t *testing.T) {
 	// Closing and reopening the database must preserve the committed cursor.
 	saver.close()
 	require.NoError(t, pool.Close())
-	pool, err = OpenBoundaryPools(t.Context(), dir, gcBoundary, gcBoundary)
+	pool, err = OpenBoundaryPools(t.Context(), dir, gcBoundary)
 	require.NoError(t, err)
 	saver = NewSqliteSaveEvents(map[string]*BoundaryPools{gcBoundary: pool}, logger)
-	_, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{mustEvent(t, "AfterRestart", nil, nil)}, gcBoundary, nil, nil)
+	_, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{mustEvent(t, "AfterRestart", nil, nil)}, gcBoundary, nil)
 	require.NoError(t, err)
 	require.EqualValues(t, 4, gid)
 }
@@ -85,7 +85,7 @@ func TestGroupCommitSequenceFailureRollsBackEntireFlush(t *testing.T) {
 	}}))
 	require.NoError(t, sqlitex.Execute(conn, "DROP TRIGGER reject_sequence", nil))
 	pool.Write.Put(conn)
-	_, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{mustEvent(t, "Retry", nil, nil)}, gcBoundary, nil, nil)
+	_, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{mustEvent(t, "Retry", nil, nil)}, gcBoundary, nil)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, gid)
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
@@ -18,11 +18,11 @@ func TestListBoundariesQueryHandlerReplaysMultiplePages(t *testing.T) {
 	for i := 0; i < int(catalogReadBatchSize/2)+1; i++ {
 		name := boundaryName(i)
 		events = append(events,
-			catalogReadEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+			catalogReadEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 				Boundary:  name,
 				Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "public"},
 			}, int64(len(events)+1)),
-			catalogReadEvent(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{Boundary: name}, int64(len(events)+2)),
+			catalogReadEvent(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{Boundary: name}, int64(len(events)+2)),
 		)
 	}
 	retriever := &catalogQueryRetriever{events: events}
@@ -46,12 +46,11 @@ func TestListBoundariesQueryHandlerReplaysMultiplePages(t *testing.T) {
 
 func TestGetBoundaryQueryHandlerFiltersAndReturnsBoundary(t *testing.T) {
 	retriever := &catalogQueryRetriever{events: coreeventstore.ReadEventBatch{
-		catalogReadEvent(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
-			Boundary:             "sales",
-			Placement:            boundarymodel.Placement{Backend: "postgres", Namespace: "legacy"},
-			ExistedBeforeCatalog: true,
+		catalogReadEvent(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
+			Boundary:  "sales",
+			Placement: boundarymodel.Placement{Backend: "postgres", Namespace: "legacy"},
 		}, 1),
-		catalogReadEvent(t, adminevents.EventTypeBoundaryFailed, adminevents.BoundaryProvisioningFailed{
+		catalogReadEvent(t, boundaryevents.EventTypeBoundaryFailed, boundaryevents.BoundaryProvisioningFailed{
 			Boundary: "sales",
 			Error:    "unavailable",
 		}, 2),
@@ -61,7 +60,7 @@ func TestGetBoundaryQueryHandlerFiltersAndReturnsBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBoundaryQueryHandler() error = %v", err)
 	}
-	if !boundary.ExistedBeforeCatalog || boundary.Status != boundarymodel.StatusFailed || boundary.LastError != "unavailable" {
+	if boundary.Status != boundarymodel.StatusFailed || boundary.LastError != "unavailable" {
 		t.Fatalf("boundary = %#v", boundary)
 	}
 	if got := retriever.queries[0].Criteria[0].Tags; len(got) != 2 || got[1].Value != "sales" {

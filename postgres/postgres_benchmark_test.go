@@ -171,7 +171,7 @@ func prepopulateStreams(
 				},
 			}
 
-			tranID, globalID, err := saveEvents.Save(ctx, events, boundary, &pos, nil)
+			tranID, globalID, err := saveEvents.Save(ctx, events, boundary, nil)
 			require.NoError(b, err, "failed to save pre-population event stream=%d event=%d", streamIdx, eventIdx)
 
 			transactionIDInt, err := parseTransactionID(tranID)
@@ -260,7 +260,7 @@ func BenchmarkConsistencyCheck_NoIndex(b *testing.B) {
 		}
 
 		pos := lastPositions[streamIdx]
-		tranID, globalID, err := saveEvents.Save(ctx, events, "bench_boundary", pos, query)
+		tranID, globalID, err := saveEvents.Save(ctx, events, "bench_boundary", []*orisun.ConsistencyObservation{{Query: query, Position: pos}})
 		require.NoError(b, err, "iteration %d failed", i)
 
 		transactionIDInt, err := parseTransactionID(tranID)
@@ -346,7 +346,7 @@ func BenchmarkConsistencyCheck_WithIndex(b *testing.B) {
 		}
 
 		pos := lastPositions[streamIdx]
-		tranID, globalID, err := saveEvents.Save(ctx, events, "bench_boundary", pos, query)
+		tranID, globalID, err := saveEvents.Save(ctx, events, "bench_boundary", []*orisun.ConsistencyObservation{{Query: query, Position: pos}})
 		require.NoError(b, err, "iteration %d failed", i)
 
 		transactionIDInt, err := parseTransactionID(tranID)
@@ -408,7 +408,7 @@ func BenchmarkPostgres_Burst10000(b *testing.B) {
 					go func() {
 						defer wg.Done()
 						<-startCh
-						if _, _, err := saveEvents.Save(ctx, []orisun.EventWithMapTags{ev}, "bench_boundary", nil, nil); err != nil {
+						if _, _, err := saveEvents.Save(ctx, []orisun.EventWithMapTags{ev}, "bench_boundary", nil); err != nil {
 							atomic.AddInt64(&fail, 1)
 							return
 						}
@@ -490,9 +490,7 @@ func BenchmarkPostgres_GroupCommitBatchSize(b *testing.B) {
 						if _, _, err := saveEvents.Save(
 							ctx,
 							[]orisun.EventWithMapTags{event},
-							"bench_boundary",
-							nil,
-							nil,
+							"bench_boundary", nil,
 						); err != nil {
 							failed.Add(1)
 							return
@@ -753,9 +751,7 @@ func benchmarkPostgresGroupCommitCCC10000(
 				if _, _, err := saveEvents.Save(
 					ctx,
 					eventBatch,
-					"bench_boundary",
-					&notExists,
-					query,
+					"bench_boundary", []*orisun.ConsistencyObservation{{Query: query, Position: &notExists}},
 				); err != nil {
 					failed.Add(1)
 					return

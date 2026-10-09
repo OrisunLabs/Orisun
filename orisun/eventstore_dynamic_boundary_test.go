@@ -17,9 +17,8 @@ import (
 func TestEventStoreEnsureBoundaryIsIdempotent(t *testing.T) {
 	js := dynamicBoundaryTestJetStream(t)
 	store := &EventStore{
-		js:           js,
-		logger:       noopLogger{},
-		streamConfig: EventStreamConfig{MaxMsgs: 25, MaxBytes: 1024, MaxAge: time.Minute},
+		js:     js,
+		logger: noopLogger{},
 	}
 
 	if err := store.EnsureBoundary(t.Context(), "sales"); err != nil {
@@ -28,17 +27,10 @@ func TestEventStoreEnsureBoundaryIsIdempotent(t *testing.T) {
 	if err := store.EnsureBoundary(t.Context(), "sales"); err != nil {
 		t.Fatalf("idempotent EnsureBoundary() error = %v", err)
 	}
-	stream, err := js.Stream(t.Context(), GetEventsNatsJetstreamStreamStreamName("sales"))
-	if err != nil {
-		t.Fatalf("get boundary stream: %v", err)
+	if _, err := js.Stream(t.Context(), "ORISUN_NOTIFICATIONS___sales"); err != jetstream.ErrStreamNotFound {
+		t.Fatalf("Core NATS boundary unexpectedly provisioned a stream: %v", err)
 	}
-	info, err := stream.Info(t.Context())
-	if err != nil {
-		t.Fatalf("get boundary stream info: %v", err)
-	}
-	if len(info.Config.Subjects) != 1 || info.Config.Subjects[0] != GetEventsSubjectName("sales") {
-		t.Fatalf("stream subjects = %#v", info.Config.Subjects)
-	}
+
 }
 
 func TestEventStoreRejectsRequestsUntilBoundaryIsActive(t *testing.T) {
@@ -52,7 +44,7 @@ func TestEventStoreRejectsRequestsUntilBoundaryIsActive(t *testing.T) {
 		t.Fatalf("EnableBoundaryActivationGate() error = %v", err)
 	}
 
-	request := &SaveEventsRequest{
+	request := &SaveEventsV2Request{
 		Boundary: "sales",
 		Events: []*EventToSave{{
 			EventId:   "event-1",
@@ -61,7 +53,7 @@ func TestEventStoreRejectsRequestsUntilBoundaryIsActive(t *testing.T) {
 			Metadata:  `{}`,
 		}},
 	}
-	if _, err := store.SaveEvents(t.Context(), request); statuscode.CodeOf(err) != statuscode.FailedPrecondition {
+	if _, err := store.SaveEventsV2(t.Context(), request); statuscode.CodeOf(err) != statuscode.FailedPrecondition {
 		t.Fatalf("SaveEvents() before activation error = %v, want FailedPrecondition", err)
 	}
 	if got := saver.calls.Load(); got != 0 {
@@ -71,7 +63,7 @@ func TestEventStoreRejectsRequestsUntilBoundaryIsActive(t *testing.T) {
 	if err := store.ActivateBoundary("sales"); err != nil {
 		t.Fatalf("ActivateBoundary() error = %v", err)
 	}
-	if _, err := store.SaveEvents(t.Context(), request); err != nil {
+	if _, err := store.SaveEventsV2(t.Context(), request); err != nil {
 		t.Fatalf("SaveEvents() after activation error = %v", err)
 	}
 	if got := saver.calls.Load(); got != 1 {
@@ -79,20 +71,17 @@ func TestEventStoreRejectsRequestsUntilBoundaryIsActive(t *testing.T) {
 	}
 }
 
-func TestEventPollingManagerStartsBoundaryOnce(t *testing.T) {
+func TestNotificationManagerStartsBoundaryOnce(t *testing.T) {
 	js := dynamicBoundaryTestJetStream(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	lockProvider := &blockingBoundaryLockProvider{entered: make(chan struct{})}
-	manager := &EventPollingManager{
-		ctx:                    ctx,
-		batchSize:              100,
-		lockProvider:           lockProvider,
-		getEvents:              unusedBoundaryRetriever{},
-		js:                     js,
-		eventPublishingTracker: unusedPublishingTracker{},
+	manager := &BoundaryNotificationManager{
+		ctx:          ctx,
+		lockProvider: lockProvider,
+		conn:         js.Conn(),
 		signalProvider: func(string) EventSignal {
-			return NewPollingSignal(time.Hour)
+			return &controlledNotificationSignal{pending: make(chan struct{}, 1)}
 		},
 		logger:  noopLogger{},
 		running: make(map[string]struct{}),
@@ -157,22 +146,16 @@ func (unusedBoundaryRetriever) GetLatestByCriteria(context.Context, LatestByCrit
 	return LatestByCriteriaBatch{}, nil
 }
 
-type unusedPublishingTracker struct{}
-
-func (unusedPublishingTracker) GetLastPublishedEventPosition(context.Context, string) (Position, error) {
-	return NotExistsPosition(), nil
-}
-
-func (unusedPublishingTracker) InsertLastPublishedEvent(context.Context, string, int64, int64) error {
-	return nil
-}
-
 func dynamicBoundaryTestJetStream(t *testing.T) jetstream.JetStream {
+	return dynamicBoundaryTestNATS(t, true)
+}
+
+func dynamicBoundaryTestNATS(t *testing.T, enableJetStream bool) jetstream.JetStream {
 	t.Helper()
 	server, err := natsserver.NewServer(&natsserver.Options{
 		ServerName: "orisun-dynamic-boundary-test",
 		Port:       -1,
-		JetStream:  true,
+		JetStream:  enableJetStream,
 		StoreDir:   t.TempDir(),
 	})
 	if err != nil {

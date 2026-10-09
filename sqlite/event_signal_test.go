@@ -8,7 +8,7 @@ import (
 )
 
 func TestSqliteEventNotifierWakeDelayCoalescesNotifications(t *testing.T) {
-	notifier := NewSqliteEventNotifierWithWakeDelay(time.Hour, 50*time.Millisecond)
+	notifier := NewSqliteEventNotifierWithWakeDelay(50 * time.Millisecond)
 	signal := notifier.Signal("test")
 	defer signal.Stop()
 

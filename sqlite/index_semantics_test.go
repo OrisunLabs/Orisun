@@ -1,15 +1,12 @@
 package sqlite
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/OrisunLabs/Orisun/logging"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
 	"github.com/stretchr/testify/require"
-	"zombiezen.com/go/sqlite"
-	"zombiezen.com/go/sqlite/sqlitex"
 )
 
 func TestIndexesPreserveCCCEqualityAcrossLifecycle(t *testing.T) {
@@ -25,7 +22,7 @@ func TestIndexesPreserveCCCEqualityAcrossLifecycle(t *testing.T) {
 			var admin *SqliteAdminDB
 			open := func() {
 				var err error
-				pool, err = OpenBoundaryPools(ctx, dir, "test", "test")
+				pool, err = OpenBoundaryPools(ctx, dir, "test")
 				require.NoError(t, err)
 				pools := map[string]*BoundaryPools{"test": pool}
 				saver = NewSqliteSaveEvents(pools, logger)
@@ -41,7 +38,7 @@ func TestIndexesPreserveCCCEqualityAcrossLifecycle(t *testing.T) {
 				events = append(events, mustEvent(t, "Observed", map[string]any{"value": value}, nil))
 			}
 			events = append(events, mustEvent(t, "Missing", map[string]any{}, nil))
-			_, _, err = saver.Save(ctx, events, "test", nil, nil)
+			_, _, err = saver.Save(ctx, events, "test", nil)
 			require.NoError(t, err)
 			cases := []struct {
 				value   string
@@ -76,7 +73,7 @@ func TestIndexesPreserveCCCEqualityAcrossLifecycle(t *testing.T) {
 							require.Equal(t, last.EventId, latest.Matches[0].Event.EventId)
 							position = eventstore.Position{CommitPosition: last.CommitPosition, PreparePosition: last.PreparePosition}
 							// A stale observation must not become acceptable when an index hides a match.
-							_, _, err = saver.Save(ctx, []eventstore.EventWithMapTags{mustEvent(t, "Rejected", map[string]any{}, nil)}, "test", nil, query)
+							_, _, err = saver.Save(ctx, []eventstore.EventWithMapTags{mustEvent(t, "Rejected", map[string]any{}, nil)}, "test", []*eventstore.ConsistencyObservation{{Query: query, Position: &eventstore.Position{CommitPosition: -1, PreparePosition: -1}}})
 							require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(err))
 						} else {
 							require.False(t, latest.Matches[0].Found)
@@ -84,7 +81,7 @@ func TestIndexesPreserveCCCEqualityAcrossLifecycle(t *testing.T) {
 						require.Equal(t, position.CommitPosition, latest.ContextCommitPosition)
 						require.Equal(t, position.PreparePosition, latest.ContextPreparePosition)
 						// The correct observation must not be rejected by numeric/boolean aliasing.
-						_, _, err = saver.Save(ctx, []eventstore.EventWithMapTags{mustEvent(t, "Accepted", map[string]any{}, nil)}, "test", &position, query)
+						_, _, err = saver.Save(ctx, []eventstore.EventWithMapTags{mustEvent(t, "Accepted", map[string]any{}, nil)}, "test", []*eventstore.ConsistencyObservation{{Query: query, Position: &position}})
 						require.NoError(t, err)
 					})
 				}
@@ -102,48 +99,6 @@ func TestIndexesPreserveCCCEqualityAcrossLifecycle(t *testing.T) {
 			verify("dropped")
 		})
 	}
-}
-
-func TestScalarTextIndexMigration(t *testing.T) {
-	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "indexes.db"))
-	require.NoError(t, applyVersionedMigrations(conn, eventMigrations[:5]))
-	require.NoError(t, sqlitex.ExecuteScript(conn, `
- INSERT INTO orisun_boundary_index_metadata(name,fields,conditions,combinator)
- VALUES ('value','[{"JsonKey":"value","ValueType":"text"}]','[{"Key":"value","Operator":"=","Value":"42"}]','AND');
- CREATE INDEX value_idx ON orisun_es_event(json_extract(data, '$."value"'), transaction_id DESC, global_id DESC) WHERE json_extract(data, '$."value"') = '42';
- CREATE INDEX manual_idx ON orisun_es_event(global_id);
- INSERT INTO orisun_es_event(data) VALUES
- ('{"__commitPosition":1,"__preparePosition":1,"__dateCreated":"2026-09-25T00:00:00Z","value":42}'),
- ('{"__commitPosition":2,"__preparePosition":2,"__dateCreated":"2026-09-25T00:00:00Z","value":"42"}');
- `, nil))
-	require.NoError(t, applyMigrations(conn))
-	verify := func() {
-		where, err := buildCriteriaSQL([]map[string]any{{"value": "42"}})
-		require.NoError(t, err)
-		var count int64
-		require.NoError(t, sqlitex.ExecuteTransient(conn, "SELECT COUNT(*) FROM orisun_es_event INDEXED BY value_idx WHERE "+where, &sqlitex.ExecOptions{ResultFunc: func(s *sqlite.Stmt) error { count = s.ColumnInt64(0); return nil }}))
-		require.EqualValues(t, 2, count)
-		require.NoError(t, sqlitex.ExecuteTransient(conn, "SELECT global_id FROM orisun_es_event INDEXED BY manual_idx", nil))
-	}
-	verify()
-	require.NoError(t, applyMigrations(conn))
-	verify()
-}
-
-func TestScalarTextIndexMigrationRollsBack(t *testing.T) {
-	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "rollback.db"))
-	require.NoError(t, applyVersionedMigrations(conn, eventMigrations[:5]))
-	require.NoError(t, sqlitex.ExecuteScript(conn, `
- INSERT INTO orisun_boundary_index_metadata(name,fields,conditions,combinator) VALUES
- ('a_valid','[{"JsonKey":"value","ValueType":"text"}]','[]','AND'),
- ('z_invalid','[{"JsonKey":"value","ValueType":"numeric"}]','[{"Key":"value","Operator":"=","Value":"invalid"}]','AND');
- CREATE INDEX a_valid_idx ON orisun_es_event(global_id);
- `, nil))
-	require.Error(t, applyMigrations(conn))
-	require.Equal(t, 5, connSchemaVersion(t, conn))
-	var ddl string
-	require.NoError(t, sqlitex.ExecuteTransient(conn, "SELECT sql FROM sqlite_schema WHERE name='a_valid_idx'", &sqlitex.ExecOptions{ResultFunc: func(s *sqlite.Stmt) error { ddl = s.ColumnText(0); return nil }}))
-	require.Equal(t, "CREATE INDEX a_valid_idx ON orisun_es_event(global_id)", ddl)
 }
 
 func TestTypedIndexPreservesDistinctContextsInGroupCommit(t *testing.T) {

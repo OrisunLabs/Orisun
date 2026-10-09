@@ -3,7 +3,6 @@ package orisun
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -34,7 +33,7 @@ type WriteContextRetriever interface {
 // storage engines. Keep each complete OR query paired with its observed position.
 type storedConsistencyObservation struct {
 	Query struct {
-		Criteria []map[string]string `json:"criteria"`
+		Criteria []map[string]any `json:"criteria"`
 	} `json:"query"`
 	Position struct {
 		TransactionID int64 `json:"transaction_id"`
@@ -46,14 +45,10 @@ func MarshalConsistency(checks []ConsistencyCheck) ([]byte, error) {
 	observations := make([]storedConsistencyObservation, len(checks))
 	for i, check := range checks {
 		o := &observations[i]
-		o.Query.Criteria = make([]map[string]string, len(check.Criteria))
-		for j, criterion := range check.Criteria {
-			tags := make(map[string]string, len(criterion.Tags))
-			for _, tag := range criterion.Tags {
-				tags[tag.Key] = tag.Value
-			}
-			o.Query.Criteria[j] = tags
+		if err := ValidateReadCriteria(check.Criteria); err != nil {
+			return nil, err
 		}
+		o.Query.Criteria = EncodeReadCriteria(check.Criteria)
 		o.Position.TransactionID = check.Position.CommitPosition
 		o.Position.GlobalID = check.Position.PreparePosition
 	}
@@ -68,15 +63,14 @@ func DecodeWriteContext(writeID string, data []byte) (*WriteContext, error) {
 	result := &WriteContext{WriteId: writeID, Consistency: make([]*ConsistencyObservation, len(stored))}
 	for i, o := range stored {
 		query := &Query{Criteria: make([]*Criterion, len(o.Query.Criteria))}
-		for j, tags := range o.Query.Criteria {
-			keys := make([]string, 0, len(tags))
-			for key := range tags {
-				keys = append(keys, key)
+		for j, fields := range o.Query.Criteria {
+			tags, err := DecodeCriterion(fields)
+			if err != nil {
+				return nil, fmt.Errorf("decode write context: %w", err)
 			}
-			sort.Strings(keys)
-			criterion := &Criterion{Tags: make([]*Tag, 0, len(keys))}
-			for _, key := range keys {
-				criterion.Tags = append(criterion.Tags, &Tag{Key: key, Value: tags[key]})
+			criterion := &Criterion{Tags: make([]*Tag, 0, len(tags))}
+			for _, tag := range tags {
+				criterion.Tags = append(criterion.Tags, &Tag{Key: tag.Key, Value: tag.Value, Operator: tag.Operator})
 			}
 			query.Criteria[j] = criterion
 		}

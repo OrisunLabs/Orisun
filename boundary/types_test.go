@@ -33,11 +33,11 @@ func TestValidateName(t *testing.T) {
 func TestBoundaryUsesNeutralPositions(t *testing.T) {
 	position := eventstore.Position{CommitPosition: 7, PreparePosition: 8}
 	value := Boundary{
-		Name:                 "orders",
-		Status:               StatusActive,
-		ExistedBeforeCatalog: true,
-		DefinitionPosition:   &position,
-		StatusPosition:       &position,
+		Name:   "orders",
+		Status: StatusActive,
+
+		DefinitionPosition: &position,
+		StatusPosition:     &position,
 	}
 	if value.DefinitionPosition != &position || value.StatusPosition != &position {
 		t.Fatalf("unexpected boundary positions: %#v", value)

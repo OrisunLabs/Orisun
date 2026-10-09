@@ -23,7 +23,7 @@ func TestWriteContextPreservesCompleteQueriesAndPositions(t *testing.T) {
 	decoded, err := DecodeWriteContext("200:50", data)
 	require.NoError(t, err)
 	require.Equal(t, "200:50", decoded.WriteId)
-	restored, err := consistencyChecksFromObservations(decoded.Consistency)
+	restored, err := ConsistencyChecksFromObservations(decoded.Consistency)
 	require.NoError(t, err)
 	// Normalization may reorder criteria; compare their semantic query identity.
 	for i, observation := range decoded.Consistency {

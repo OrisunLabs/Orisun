@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
-	adminevents "github.com/OrisunLabs/Orisun/boundary/events"
+	boundaryevents "github.com/OrisunLabs/Orisun/boundary/events"
 	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/goccy/go-json"
@@ -31,7 +31,7 @@ func TestEventHandlerProvisionsAndRecordsActivation(t *testing.T) {
 		Placement:   boundarymodel.Placement{Backend: "postgres", Namespace: "sales"},
 	}, provisioner.definitions[0])
 	require.Len(t, saver.calls, 1)
-	require.Equal(t, adminevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
+	require.Equal(t, boundaryevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
 	require.Equal(t, &coreeventstore.Position{CommitPosition: 10, PreparePosition: 2}, saver.calls[0].expectedPosition)
 	require.Equal(t, subsetQuery(lifecycleCriteria("orders")), saver.calls[0].query)
 	require.Equal(t, []string{"orders"}, global.boundaries)
@@ -50,9 +50,9 @@ func TestEventHandlerRecordsProvisioningFailure(t *testing.T) {
 	err := handler.Handle(context.Background(), definition)
 	require.ErrorIs(t, err, provisionErr)
 	require.Len(t, saver.calls, 1)
-	require.Equal(t, adminevents.EventTypeBoundaryFailed, saver.calls[0].events[0].EventType)
+	require.Equal(t, boundaryevents.EventTypeBoundaryFailed, saver.calls[0].events[0].EventType)
 
-	var data adminevents.BoundaryProvisioningFailed
+	var data boundaryevents.BoundaryProvisioningFailed
 	require.NoError(t, json.Unmarshal([]byte(saver.calls[0].events[0].Data), &data))
 	require.Equal(t, "orders", data.Boundary)
 	require.Equal(t, provisionErr.Error(), data.Error)
@@ -80,7 +80,7 @@ func TestEventHandlerReturnsActivationAppendFailure(t *testing.T) {
 
 func TestEventHandlerDoesNotReprovisionAlreadyActiveBoundary(t *testing.T) {
 	definition := createdBoundaryEvent(t, "orders", 10, 2)
-	active := lifecycleEventRead(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	active := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 11, 3)
 	retriever := &scriptedBoundaryRetriever{batches: []coreeventstore.LatestByCriteriaResult{
@@ -99,7 +99,7 @@ func TestEventHandlerDoesNotReprovisionAlreadyActiveBoundary(t *testing.T) {
 }
 
 func TestEventHandlerIgnoresOutcomeBeforeDefinition(t *testing.T) {
-	staleActive := lifecycleEventRead(t, adminevents.EventTypeBoundaryActivated, adminevents.BoundaryActivated{
+	staleActive := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryActivated, boundaryevents.BoundaryActivated{
 		Boundary: "orders",
 	}, 9, 1)
 	definition := createdBoundaryEvent(t, "orders", 10, 2)
@@ -115,14 +115,14 @@ func TestEventHandlerIgnoresOutcomeBeforeDefinition(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, provisioner.definitions, 1)
 	require.Len(t, saver.calls, 1)
-	require.Equal(t, adminevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
+	require.Equal(t, boundaryevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
 	require.Equal(t, &coreeventstore.Position{CommitPosition: 10, PreparePosition: 2}, saver.calls[0].expectedPosition)
 	require.Equal(t, []string{"orders"}, global.boundaries)
 }
 
 func TestEventHandlerPromotesFailedBoundaryAfterSuccessfulRetry(t *testing.T) {
 	definition := createdBoundaryEvent(t, "orders", 10, 2)
-	failed := lifecycleEventRead(t, adminevents.EventTypeBoundaryFailed, adminevents.BoundaryProvisioningFailed{
+	failed := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryFailed, boundaryevents.BoundaryProvisioningFailed{
 		Boundary: "orders",
 		Error:    "temporary failure",
 	}, 12, 4)
@@ -136,13 +136,13 @@ func TestEventHandlerPromotesFailedBoundaryAfterSuccessfulRetry(t *testing.T) {
 	err := handler.Handle(context.Background(), definition)
 	require.NoError(t, err)
 	require.Len(t, saver.calls, 1)
-	require.Equal(t, adminevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
+	require.Equal(t, boundaryevents.EventTypeBoundaryActivated, saver.calls[0].events[0].EventType)
 	require.Equal(t, &coreeventstore.Position{CommitPosition: 12, PreparePosition: 4}, saver.calls[0].expectedPosition)
 }
 
 func TestEventHandlerReevaluatesAfterConcurrentOutcome(t *testing.T) {
 	definition := createdBoundaryEvent(t, "orders", 10, 2)
-	failed := lifecycleEventRead(t, adminevents.EventTypeBoundaryFailed, adminevents.BoundaryProvisioningFailed{
+	failed := lifecycleEventRead(t, boundaryevents.EventTypeBoundaryFailed, boundaryevents.BoundaryProvisioningFailed{
 		Boundary: "orders",
 		Error:    "other node failed",
 	}, 11, 3)
@@ -217,10 +217,10 @@ func (s *scriptedOutcomeSaver) Append(
 		events:   request.Events,
 		boundary: request.Boundary,
 		expectedPosition: &coreeventstore.Position{
-			CommitPosition:  request.ExpectedPosition.CommitPosition,
-			PreparePosition: request.ExpectedPosition.PreparePosition,
+			CommitPosition:  request.Consistency[0].Position.CommitPosition,
+			PreparePosition: request.Consistency[0].Position.PreparePosition,
 		},
-		query: request.Subset,
+		query: request.Consistency[0].Query,
 	})
 	if len(s.errors) == 0 {
 		return coreeventstore.AppendResult{}, nil
@@ -247,11 +247,11 @@ func lifecycleBatch(events ...coreeventstore.ReadEvent) coreeventstore.LatestByC
 
 func lifecycleEventIndex(eventType string) int {
 	switch eventType {
-	case adminevents.EventTypeBoundaryCreated:
+	case boundaryevents.EventTypeBoundaryCreated:
 		return 0
-	case adminevents.EventTypeBoundaryActivated:
+	case boundaryevents.EventTypeBoundaryActivated:
 		return 1
-	case adminevents.EventTypeBoundaryFailed:
+	case boundaryevents.EventTypeBoundaryFailed:
 		return 2
 	default:
 		panic("unexpected lifecycle event type: " + eventType)
@@ -260,7 +260,7 @@ func lifecycleEventIndex(eventType string) int {
 
 func createdBoundaryEvent(t *testing.T, name string, commit, prepare int64) coreeventstore.ReadEvent {
 	t.Helper()
-	return lifecycleEventRead(t, adminevents.EventTypeBoundaryCreated, adminevents.BoundaryCreated{
+	return lifecycleEventRead(t, boundaryevents.EventTypeBoundaryCreated, boundaryevents.BoundaryCreated{
 		Boundary:    name,
 		Description: "Orders context",
 		Placement:   boundarymodel.Placement{Backend: "postgres", Namespace: "sales"},
