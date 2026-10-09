@@ -34,11 +34,7 @@ use the export/import procedure below.
 Do not change version markers to bypass validation. The marker certifies the
 physical schema and document format; changing it does not convert the data.
 
-## Older stores and removed backends
-
-FoundationDB is removed in this release. It has no current runtime or in-place
-upgrade path. Export application events using its previous server binary and
-import them into PostgreSQL or SQLite with the procedure below.
+## Older stores
 
 For an older deployment, retain its backup and use its matching binary to export
 application events. Initialize a fresh store with this release, create boundaries

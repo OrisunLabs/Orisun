@@ -8,7 +8,7 @@ slug: /
 Orisun is an open-source event database for decisions that must stay correct as facts change. It preserves complete event history and lets applications declare the events a command depends on. Orisun commits the resulting events only if that declared context is still current, then delivers matching committed events sequentially within each subscription.
 
 These pages describe the breaking changes after `0.13.0`: notifications use
-Core NATS hints, FoundationDB is removed, and storage upgrades automatically
+Core NATS hints and storage upgrades automatically
 from `0.13.0`; older storage formats are rejected. If you are reading **Next**,
 these changes are unreleased. Select **0.13.0** in the version menu when running
 that preceding release.

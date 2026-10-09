@@ -8,10 +8,11 @@
   consistency observations before appending. Each observation binds one
   complete OR query to its latest matching position.
 
-### Deprecated
+### Breaking Changes
 
-- Deprecated `SaveEvents` and `SaveQuery`. The server translates `SaveEvents`
-  into the V2 model and uses the same write implementation.
+- `SaveEventsV2` is the sole server write RPC. Updated Go, Node, and Java
+  clients retain their single-query `SaveEvents` methods and translate them
+  to the canonical RPC.
 
 ## 0.10.0 - 2026-07-30
 
