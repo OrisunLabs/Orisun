@@ -287,6 +287,5 @@ notification JetStream event stream, publisher checkpoint, or backup polling loo
 Fresh storage initializes directly. The immediately preceding storage version
 upgrades automatically; older formats are rejected. Follow the
 [storage upgrade policy](./upgrading-event-envelope) for the supported source versions
-and the export/import procedure for older deployments. FoundationDB is no longer
-a supported backend; retain the old binary to export its application events. A current-format backup preserves positions and write contexts;
+and the export/import procedure for older deployments. A current-format backup preserves positions and write contexts;
 reconnect subscriptions using those retained positions after restoring the catalog.
