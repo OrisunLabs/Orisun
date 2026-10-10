@@ -18,6 +18,9 @@ func TestTagOperatorsContract(t *testing.T) {
 	defer saver.close()
 	getter := NewSqliteGetEvents(pools, logger)
 	storagecontract.TagOperators(t, saver, getter, getter, "test")
+	t.Run("matrix", func(t *testing.T) {
+		storagecontract.TagOperatorMatrix(t, saver, getter, getter, "test")
+	})
 }
 
 func TestTagOperatorsSurviveReopen(t *testing.T) {

@@ -113,11 +113,15 @@ func TagOperators(t *testing.T, saver orisun.EventsSaver, reader orisun.EventsRe
 		}
 	})
 	// Invalid operators must fail before a read or consistency write can ignore them.
-	bad := orisun.ReadTag{Key: "value", Value: "10", Operator: "LIKE"}
-	_, err = reader.GetBatch(t.Context(), &orisun.GetEventsRequest{Boundary: boundary, Count: 1, Query: &orisun.Query{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: bad.Key, Value: bad.Value, Operator: bad.Operator}}}}}})
-	require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf(err))
-	_, err = reader.GetLatestByCriteria(t.Context(), orisun.LatestByCriteriaQuery{Boundary: boundary, Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{bad}}}})
-	require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf(err))
-	_, _, err = saver.SavePrepared(t.Context(), prepared, boundary, []orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{bad}}}, Position: orisun.NotExistsPosition()}})
-	require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf(err))
+	for i, operator := range []string{"LIKE", "EQ", "GT", "=", ">=", " eq", "eq ", "gt; SELECT 1", "\x00"} {
+		t.Run("invalid_operator_"+strconv.Itoa(i), func(t *testing.T) {
+			bad := orisun.ReadTag{Key: "value", Value: "10", Operator: operator}
+			_, err := reader.GetBatch(t.Context(), &orisun.GetEventsRequest{Boundary: boundary, Count: 1, Query: &orisun.Query{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: bad.Key, Value: bad.Value, Operator: bad.Operator}}}}}})
+			require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf(err))
+			_, err = reader.GetLatestByCriteria(t.Context(), orisun.LatestByCriteriaQuery{Boundary: boundary, Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{bad}}}})
+			require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf(err))
+			_, _, err = saver.SavePrepared(t.Context(), prepared, boundary, []orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{bad}}}, Position: orisun.NotExistsPosition()}})
+			require.Equal(t, statuscode.InvalidArgument, statuscode.CodeOf(err))
+		})
+	}
 }
