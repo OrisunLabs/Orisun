@@ -25,4 +25,7 @@ func TestTagOperatorsContract(t *testing.T) {
 	defer saver.close()
 	getter := NewPostgresGetEvents(db, logger, mapping)
 	storagecontract.TagOperators(t, saver, getter, getter, "test_boundary")
+	t.Run("matrix", func(t *testing.T) {
+		storagecontract.TagOperatorMatrix(t, saver, getter, getter, "test_boundary")
+	})
 }
