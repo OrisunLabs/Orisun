@@ -1,0 +1,371 @@
+---
+title: Go Embedding
+description: Run Orisun directly inside a Go service.
+---
+
+Go services can embed Orisun directly instead of running the gRPC server as a separate process.
+
+This guide describes the selected documentation version. `v0.13.0` already
+supports `SaveEventsV2`; notification simplification and backend removal are
+changes after that release. For **Next**, build against the exact source revision
+you intend to run:
+
+```bash
+go get 'github.com/OrisunLabs/Orisun@<revision>'
+```
+
+For production, pin the exact release version that contains the APIs you use
+instead of leaving a branch selector in `go.mod`. The `v0.13.0` release supports `SaveEventsV2`.
+
+Startup upgrades storage from `0.13.0`. Older formats are rejected;
+see the [storage upgrade policy](../operations/upgrading-event-envelope).
+
+Backend-specific embedding packages keep deployments explicit:
+
+- `embedded/postgres` imports the PostgreSQL backend.
+- `embedded/sqlite` imports the SQLite backend.
+- Neither package needs the unused backend.
+
+Use embedding when Orisun should be part of your service process. Use the standalone server when you want a separate operational boundary and language-agnostic gRPC access.
+
+## PostgreSQL Embedding
+
+```go
+import (
+	"context"
+
+	embeddedpg "github.com/OrisunLabs/Orisun/embedded/postgres"
+	"github.com/OrisunLabs/Orisun/config"
+	"github.com/OrisunLabs/Orisun/logging"
+)
+
+func start(ctx context.Context) (*embeddedpg.Store, error) {
+	cfg := config.InitializeConfig()
+	cfg.Backend.Type = "postgres"
+	logger := logging.InitializeDefaultLogger(cfg.Logging)
+	return embeddedpg.Start(ctx, cfg, logger)
+}
+```
+
+By default, embedded stores start embedded NATS JetStream in the same process.
+Use the store's NATS handles when your host process wants direct access without connecting to a NATS URL:
+
+```go
+nc := store.NATSConnection()
+js := store.JetStream()
+```
+
+To use an existing JetStream-enabled NATS server instead:
+
+```go
+store, err := embeddedpg.Start(
+	ctx,
+	cfg,
+	logger,
+	embeddedpg.WithNATSURL("nats://localhost:4222"),
+)
+```
+
+If your service already owns a NATS connection or JetStream handle, pass it directly:
+
+```go
+store, err := embeddedpg.Start(ctx, cfg, logger, embeddedpg.WithNATSConnection(conn))
+store, err = embeddedpg.Start(ctx, cfg, logger, embeddedpg.WithJetStream(js))
+```
+
+## SQLite Embedding
+
+```go
+import (
+	"context"
+
+	embeddedsqlite "github.com/OrisunLabs/Orisun/embedded/sqlite"
+	"github.com/OrisunLabs/Orisun/config"
+	"github.com/OrisunLabs/Orisun/logging"
+)
+
+func start(ctx context.Context) (*embeddedsqlite.Store, error) {
+	cfg := config.InitializeConfig()
+	cfg.Backend.Type = "sqlite"
+	cfg.Nats.Cluster.Enabled = false
+	logger := logging.InitializeDefaultLogger(cfg.Logging)
+	return embeddedsqlite.Start(ctx, cfg, logger)
+}
+```
+
+SQLite embedding supports the same NATS options:
+
+```go
+store, err := embeddedsqlite.Start(
+	ctx,
+	cfg,
+	logger,
+	embeddedsqlite.WithNATSURL("nats://localhost:4222"),
+)
+```
+
+SQLite remains single-node only. Keep `cfg.Nats.Cluster.Enabled = false`.
+
+## Embedded boundary management
+
+The examples below use:
+
+```go
+import (
+	"context"
+	"fmt"
+	"time"
+
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
+)
+```
+
+Use `CreateBoundary` when the embedded runtime should create the physical
+storage:
+
+```go
+created, err := store.CreateBoundary(ctx, boundarymodel.Definition{
+	Name:        "orders",
+	Description: "Order lifecycle events",
+	Placement: boundarymodel.Placement{
+		Backend:   "sqlite",
+		Namespace: "orders",
+	},
+})
+if err != nil {
+	return err
+}
+_ = created // the initial status is PROVISIONING
+```
+
+For PostgreSQL use backend `postgres` and a schema namespace. SQLite requires the
+namespace to equal the boundary name.
+
+Creation is asynchronous because the method first emits a durable definition
+event. Poll `GetBoundary` before using the boundary:
+
+```go
+for {
+	boundary, err := store.GetBoundary(ctx, "orders")
+	if err != nil {
+		return err
+	}
+	switch boundary.Status {
+	case boundarymodel.StatusActive:
+		// Shared provisioning completed; the local runtime may still be installing.
+		// Retry a brief FAILED_PRECONDITION from event operations.
+		goto ready
+	case boundarymodel.StatusFailed:
+		// Provisioning is retried automatically; expose the current cause.
+		return fmt.Errorf("provision orders: %s", boundary.LastError)
+	}
+	if err := sleepContext(ctx, 100*time.Millisecond); err != nil {
+		return err
+	}
+}
+
+ready:
+```
+
+Here `sleepContext` is any context-aware delay used by the host application.
+Avoid an unbounded `time.Sleep` loop during shutdown.
+
+```go
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+```
+
+Use `CreateBoundary` to attach restored storage in the current format:
+
+```go
+existing, err := store.CreateBoundary(ctx, boundarymodel.Definition{
+	Name:        "orders",
+	Description:          "Existing order event log",
+	Placement: boundarymodel.Placement{
+		Backend:   "postgres",
+		Namespace: "orders",
+	},
+})
+if err != nil {
+	return err
+}
+_ = existing // wait for ACTIVE
+```
+
+The definition is returned as `PROVISIONING`; the provisioner opens the
+existing storage, validates the storage format, and then activates it.
+Duplicate create commands return an already-exists error because every
+successful command must produce exactly one definition event.
+
+Inspect the complete event-rebuilt catalog with:
+
+```go
+boundaries, err := store.ListBoundaries(ctx)
+if err != nil {
+	return err
+}
+boundary, err := store.GetBoundary(ctx, "orders")
+if err != nil {
+	return err
+}
+use(boundaries, boundary)
+```
+
+At startup, embedded stores replay catalog definitions into the local runtime.
+PostgreSQL uses `ORISUN_PG_ADMIN_SCHEMA` only to locate the admin boundary;
+application schema placements come from the catalog. SQLite
+also installs application boundaries only from catalog definitions.
+
+Startup upgrades storage from `0.13.0` without rewriting event
+documents. Older formats are rejected; historical boundary mappings are not imported.
+
+## Reading events in-process
+
+Embedded reads skip protobuf materialization. `GetEvents` returns a packed `ReadEventBatch` whose events carry scalar `CommitPosition` and `PreparePosition` fields and a `time.Time` `DateCreated`:
+
+```go
+batch, err := store.GetEvents(ctx, &orisun.GetEventsRequest{
+	Boundary: "orders",
+	Count:    100,
+})
+if err != nil {
+	return err
+}
+for _, e := range batch {
+	process(e.EventType, e.Data, e.CommitPosition, e.PreparePosition)
+}
+```
+
+Embedded backend reads default `Count: 0` to 1,000 and clamp counts to 10,000.
+`FromPosition` is inclusive; for larger reads request at least two rows, discard
+only the first row equal to the previous cursor, and continue from the last
+returned position. See [paging](../concepts/positions#positions-and-paging).
+
+For carried-state command contexts, `GetLatestByCriteria` takes a `LatestByCriteriaQuery` and returns a `LatestByCriteriaBatch`. Matches align positionally with the input criteria and expose a `Found` flag:
+
+```go
+latest, err := store.GetLatestByCriteria(ctx, orisun.LatestByCriteriaQuery{
+	Boundary: "orders",
+	Criteria: []orisun.ReadCriterion{
+		{Tags: []orisun.ReadTag{
+			{Key: "__eventType", Value: "OrderPlaced"},
+			{Key: "orderId", Value: "o-1"},
+		}},
+	},
+})
+if err != nil {
+	return err
+}
+if latest.Matches[0].Found {
+	decideFrom(latest.Matches[0].Event)
+}
+```
+
+For the next `SaveEventsV2`, construct one `ConsistencyObservation` from the same complete query and a `Position` containing `latest.ContextCommitPosition` and `latest.ContextPreparePosition`. The position belongs to the whole OR query:
+
+```go
+_, err = store.SaveEventsV2(
+	ctx,
+	[]orisun.EventWithMapTags{{
+		EventId:   "018f2d5e-0002-7000-8000-000000000002",
+		EventType: "OrderConfirmed",
+		Data: map[string]any{
+			"orderId": "o-1",
+		},
+		Metadata: map[string]any{},
+	}},
+	"orders",
+	[]*orisun.ConsistencyObservation{{
+		Query: &orisun.Query{Criteria: []*orisun.Criterion{{
+			Tags: []*orisun.Tag{
+				{Key: "__eventType", Value: "OrderPlaced"},
+				{Key: "orderId", Value: "o-1"},
+			},
+		}}},
+		Position: &orisun.Position{
+			CommitPosition:  latest.ContextCommitPosition,
+			PreparePosition: latest.ContextPreparePosition,
+		},
+	}},
+)
+```
+
+Supply more observations when the command performed more independent complete
+reads. Pass `nil` as the final argument only for a deliberately unconditional
+append.
+
+The public gRPC API uses generated protobuf request and response types. These
+packed read types apply only to in-process callers.
+
+## Embedded Subscriptions
+
+Embedded subscriptions use the transport-neutral `eventstore` model and an
+ordered callback. They do not expose a protobuf event stream:
+
+```go
+import (
+	"context"
+
+	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
+)
+
+after := coreeventstore.BeginningPosition()
+err := store.SubscribeToEvents(
+	ctx,
+	coreeventstore.SubscribeRequest{
+		Boundary:       "orders",
+		SubscriberName: "orders-projection",
+		AfterPosition:  &after,
+	},
+	func(ctx context.Context, event coreeventstore.ReadEvent) error {
+		return project(ctx, event)
+	},
+)
+```
+
+The callback runs synchronously and receives events in subscription order.
+Returning `nil` advances delivery to the next event. Returning an error stops
+the subscription and propagates the error to `SubscribeToEvents`; canceling the
+context also stops the subscription. Keep the callback bounded, or deliberately
+use it to apply backpressure while updating a projection and its checkpoint.
+
+## Embedded Index Management
+
+Embedded stores expose boundary index management directly. Applications do not need to expose Admin to create JSON expression indexes.
+
+```go
+err := store.CreateBoundaryIndex(
+	ctx,
+	"orders",
+	"customer_id",
+	[]orisun.BoundaryIndexField{
+		{JsonKey: "customer_id", ValueType: "text"},
+	},
+	nil,
+	orisun.IndexCombinatorAND,
+)
+```
+
+## Capabilities
+
+Embedded stores expose the same high-level behavior as the server:
+
+- save events
+- query events
+- subscribe to events
+- create and import boundaries
+- list and inspect boundary lifecycle state
+- create and drop boundary indexes
+- deliver ordered events from durable backend reads
+
+## Shutdown
+
+Call the store's close method during service shutdown so database pools, NATS resources, and background loops can stop cleanly. Orisun closes NATS resources it creates, but it does not close caller-owned connections or JetStream handles passed with `WithNATSConnection` or `WithJetStream`.
