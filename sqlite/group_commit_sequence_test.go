@@ -30,7 +30,7 @@ func TestGroupCommitSequenceTracksOnlyAcceptedRequests(t *testing.T) {
 	defer func() { saver.close(); require.NoError(t, pool.Close()) }()
 	conn, err := pool.Write.Take(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, sqlitex.Execute(conn, `CREATE TRIGGER reject_event BEFORE INSERT ON orisun_es_event WHEN json_extract(NEW.data,'$.__eventType') = 'Reject' BEGIN SELECT RAISE(ABORT,'rejected event'); END`, nil))
+	require.NoError(t, sqlitex.Execute(conn, `CREATE TRIGGER reject_event BEFORE INSERT ON orisun_es_event WHEN NEW.event_type = 'Reject' BEGIN SELECT RAISE(ABORT,'rejected event'); END`, nil))
 	pool.Write.Put(conn)
 	first := sequenceRequest(t, "Observed", "Other")
 	rejected := sequenceRequest(t, "RolledBack", "Reject")

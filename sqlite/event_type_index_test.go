@@ -14,19 +14,18 @@ import (
 // Use the production read/CCC renderer to prove the built-in index remains
 // usable for both absent event types and runtime-keyed membership lookups.
 func TestBuiltInEventTypeIndexForFreshAndUpgradedStorage(t *testing.T) {
-	for _, version := range []int{0, 6, 7} {
+	for _, version := range []int{0, 6, 7, 8} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "events.db"))
 			if version != 0 {
-				oldDDL := strings.Replace(eventDDL, eventTypeOrderIndexDDL, "CREATE INDEX idx_event_type_order ON orisun_es_event(json_extract(data, '$.__eventType'), transaction_id DESC, global_id DESC);", 1)
-				if err := sqlitex.ExecuteScript(conn, oldDDL+fmt.Sprintf("PRAGMA user_version=%d;", version), nil); err != nil {
+				if err := sqlitex.ExecuteScript(conn, legacyEventDDL+fmt.Sprintf("PRAGMA user_version=%d;", version), nil); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if err := applyMigrations(conn); err != nil {
 				t.Fatal(err)
 			}
-			if err := sqlitex.ExecuteScript(conn, `INSERT INTO orisun_es_write VALUES(1, '[]'); INSERT INTO orisun_es_event(data) VALUES('{"__eventId":"id","__eventType":"Posted","__commitPosition":1,"__preparePosition":1,"__writeId":"1:1","__dateCreated":"2026-10-12T00:00:00Z","__metadata":{},"accountBalances.account-a.accountCreatedId":"account-a"}');`, nil); err != nil {
+			if err := sqlitex.ExecuteScript(conn, `INSERT INTO orisun_es_write VALUES(1, '[]'); INSERT INTO orisun_es_event(global_id,transaction_id,write_id,event_id,event_type,date_created,metadata,data) VALUES(1,1,1,'id','Posted','2026-10-12T00:00:00Z','{}','{"accountBalances.account-a.accountCreatedId":"account-a"}');`, nil); err != nil {
 				t.Fatal(err)
 			}
 			for _, kind := range []string{"Posted", "Absent"} {

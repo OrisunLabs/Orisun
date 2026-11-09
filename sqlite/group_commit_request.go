@@ -6,12 +6,12 @@ import (
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
 )
 
-// preparedSQLiteSave owns parsed event documents and compiled checks. The caller's
+// preparedSQLiteSave owns event rows and compiled checks. The caller's
 // context is retained solely to preserve cancellation before each request's
 // turn; it never controls the shared transaction's lifetime.
 type preparedSQLiteSave struct {
 	ctx             context.Context
-	inserts         []preparedEventDocument
+	inserts         []preparedEventRow
 	consistencyJSON string
 	preparedChecks  []preparedConsistencyCheck
 }
@@ -27,5 +27,5 @@ func prepareSQLiteSave(ctx context.Context, inserts eventstore.PreparedEventBatc
 	if err != nil {
 		return preparedSQLiteSave{}, err
 	}
-	return preparedSQLiteSave{ctx: ctx, inserts: prepareEventDocuments(inserts), consistencyJSON: string(data), preparedChecks: prepareConsistencyChecks(checks)}, nil
+	return preparedSQLiteSave{ctx: ctx, inserts: prepareEventRows(inserts), consistencyJSON: string(data), preparedChecks: prepareConsistencyChecks(checks)}, nil
 }

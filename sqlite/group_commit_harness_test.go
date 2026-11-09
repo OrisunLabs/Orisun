@@ -20,7 +20,7 @@ type sqliteTestRequest struct {
 }
 
 func (r *sqliteTestRequest) prepared() preparedSQLiteSave {
-	return preparedSQLiteSave{ctx: r.ctx, inserts: prepareEventDocuments(r.inserts), consistencyJSON: r.consistencyJSON, preparedChecks: r.preparedChecks}
+	return preparedSQLiteSave{ctx: r.ctx, inserts: prepareEventRows(r.inserts), consistencyJSON: r.consistencyJSON, preparedChecks: r.preparedChecks}
 }
 func (s *SqliteSaveEvents) runTestFlush(boundary string, _ *BoundaryPools, requests []*sqliteTestRequest) {
 	inputs := make([]preparedSQLiteSave, len(requests))

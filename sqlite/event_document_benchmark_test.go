@@ -26,7 +26,7 @@ func BenchmarkSqliteInsertDocuments(b *testing.B) {
 				for i := range events {
 					events[i] = orisun.PreparedEvent{EventId: fmt.Sprint(i), EventType: "Fact", DataJSON: fmt.Sprintf(`{"payload":%q}`, strings.Repeat("x", size)), MetadataJSON: "{}"}
 				}
-				prepared := prepareEventDocuments(events)
+				prepared := prepareEventRows(events)
 				b.ReportAllocs()
 				b.ResetTimer()
 				for n := 0; n < b.N; n++ {

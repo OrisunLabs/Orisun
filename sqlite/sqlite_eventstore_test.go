@@ -137,7 +137,7 @@ func TestSave_ChunksBatchLargerThanSqliteParamLimit(t *testing.T) {
 	getter := NewSqliteGetEvents(pools, logger)
 	ctx := context.Background()
 
-	batchSize := sqliteMaxEventsPerInsert*2 + 3
+	batchSize := 2001
 	events := make([]eventstore.EventWithMapTags, batchSize)
 	for i := range events {
 		events[i] = mustEvent(t, "Chunked", map[string]any{"seq": i}, map[string]any{})
