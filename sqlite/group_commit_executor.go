@@ -66,17 +66,14 @@ func (s *SqliteSaveEvents) executeTransaction(
 	}
 	defer endFn(&flushErr)
 
-	var nextID int64
-	if err := sqlitex.Execute(conn, "SELECT next_id FROM orisun_es_seq WHERE id = 1", &sqlitex.ExecOptions{
-		ResultFunc: func(stmt *sqlite.Stmt) error { nextID = stmt.ColumnInt64(0); return nil },
-	}); err != nil {
+	// global_id is the rowid and events are never deleted, so the log's tail is
+	// the sequence: no counter row to rewrite on every commit. The lookup seeks
+	// the last rowid; rolled-back requests leave no rows and so allocate nothing.
+	nextID, err := nextGlobalID(conn)
+	if err != nil {
 		return nil, err
 	}
-	if nextID < 1 {
-		return nil, fmt.Errorf("invalid event sequence: %d", nextID)
-	}
 	outcomes = make([]sqliteSaveResult, len(live))
-	accepted := 0
 	for i := range live {
 		req := &live[i]
 		if ctxErr := req.ctx.Err(); ctxErr != nil {
@@ -90,14 +87,16 @@ func (s *SqliteSaveEvents) executeTransaction(
 		}
 		nextID = gid + 1
 		outcomes[i] = sqliteSaveResult{transactionID: txID, globalID: gid}
-		accepted++
-	}
-	if accepted > 0 {
-		if err := sqlitex.Execute(conn, "UPDATE orisun_es_seq SET next_id = ? WHERE id = 1", &sqlitex.ExecOptions{Args: []any{nextID}}); err != nil {
-			return nil, err
-		}
 	}
 	return outcomes, nil
+}
+
+func nextGlobalID(conn *sqlite.Conn) (int64, error) {
+	var nextID int64
+	err := sqlitex.Execute(conn, "SELECT COALESCE(MAX(global_id), 0) + 1 FROM orisun_es_event", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error { nextID = stmt.ColumnInt64(0); return nil },
+	})
+	return nextID, err
 }
 
 // saveSavepointed checks CCC under the flush's IMMEDIATE transaction, which

@@ -61,12 +61,16 @@ func TestGroupCommitSequenceTracksOnlyAcceptedRequests(t *testing.T) {
 	require.EqualValues(t, 4, gid)
 }
 
-func TestGroupCommitSequenceFailureRollsBackEntireFlush(t *testing.T) {
+func TestGroupCommitCommitFailureRollsBackEntireFlush(t *testing.T) {
 	saver, pool, cleanup := newGCTestSaver(t)
 	defer cleanup()
 	conn, err := pool.Write.Take(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, sqlitex.Execute(conn, `CREATE TRIGGER reject_sequence BEFORE UPDATE ON orisun_es_seq BEGIN SELECT RAISE(ABORT,'sequence failed'); END`, nil))
+	// A deferred foreign-key violation passes every savepoint and fails only at COMMIT.
+	require.NoError(t, sqlitex.ExecuteScript(conn, `
+CREATE TABLE commit_guard_parent (id INTEGER PRIMARY KEY);
+CREATE TABLE commit_guard_child (parent INTEGER REFERENCES commit_guard_parent(id) DEFERRABLE INITIALLY DEFERRED);
+CREATE TRIGGER reject_commit AFTER INSERT ON orisun_es_event WHEN NEW.event_type = 'First' BEGIN INSERT INTO commit_guard_child VALUES (1); END;`, nil))
 	pool.Write.Put(conn)
 	requests := []*sqliteTestRequest{sequenceRequest(t, "First"), sequenceRequest(t, "Second")}
 	// The second request conflicts with the first provisional write. A later
@@ -77,7 +81,7 @@ func TestGroupCommitSequenceFailureRollsBackEntireFlush(t *testing.T) {
 	for _, req := range requests {
 		result := <-req.result
 		require.Equal(t, statuscode.Internal, statuscode.CodeOf(result.err))
-		require.ErrorContains(t, result.err, "sequence failed")
+		require.ErrorContains(t, result.err, "FOREIGN KEY constraint failed")
 	}
 	require.EqualValues(t, 1, readSeqNextID(t, pool))
 	conn, err = pool.Write.Take(t.Context())
@@ -87,7 +91,7 @@ func TestGroupCommitSequenceFailureRollsBackEntireFlush(t *testing.T) {
 		require.Zero(t, stmt.ColumnInt64(1))
 		return nil
 	}}))
-	require.NoError(t, sqlitex.Execute(conn, "DROP TRIGGER reject_sequence", nil))
+	require.NoError(t, sqlitex.Execute(conn, "DROP TRIGGER reject_commit", nil))
 	pool.Write.Put(conn)
 	_, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{mustEvent(t, "Retry", nil, nil)}, gcBoundary, nil)
 	require.NoError(t, err)

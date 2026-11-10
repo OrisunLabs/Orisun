@@ -40,11 +40,6 @@ CREATE TABLE orisun_es_write (
  consistency TEXT NOT NULL CHECK (json_valid(consistency) AND json_type(consistency) = 'array')
 );
 ` + eventTableDDL("orisun_es_event") + eventIndexesDDL + `
-CREATE TABLE IF NOT EXISTS orisun_es_seq (
-    id      INTEGER PRIMARY KEY CHECK (id = 1),
-    next_id INTEGER NOT NULL DEFAULT 1
-);
-INSERT OR IGNORE INTO orisun_es_seq (id, next_id) VALUES (1, 1);
 
 CREATE TABLE IF NOT EXISTS orisun_boundary_index_metadata (
     name         TEXT PRIMARY KEY,
@@ -183,6 +178,7 @@ func initializeSchema(conn *sqlite.Conn, ddl string, supported int) (err error) 
 
 // splitEventEnvelope rewrites canonical documents into envelope columns plus
 // application data. Application bytes, positions, and write contexts survive;
+// the position counter is dropped because the clustered log's tail replaces it.
 // the table swap rebuilds every index because each one depends on the old table.
 func splitEventEnvelope(conn *sqlite.Conn) error {
 	indexes, err := eventIndexesToRestore(conn)
@@ -209,7 +205,7 @@ FROM orisun_es_event ORDER BY global_id;
 		"SELECT COUNT(*) FROM "+temporary+", json_each("+temporary+".data) WHERE substr(json_each.key, 1, 2) = '__'"); err != nil {
 		return err
 	}
-	return sqlitex.ExecuteScript(conn, "DROP TABLE orisun_es_event; ALTER TABLE "+temporary+" RENAME TO orisun_es_event;"+eventIndexesDDL+strings.Join(indexes, ";"), nil)
+	return sqlitex.ExecuteScript(conn, "DROP TABLE orisun_es_event; DROP TABLE IF EXISTS orisun_es_seq; ALTER TABLE "+temporary+" RENAME TO orisun_es_event;"+eventIndexesDDL+strings.Join(indexes, ";"), nil)
 }
 
 // eventIndexesToRestore rebuilds managed indexes from their definitions, because

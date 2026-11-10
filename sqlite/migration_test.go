@@ -201,8 +201,12 @@ func TestStorageUpgradeSplitsEnvelopeFromDocuments(t *testing.T) {
 			if strings.Join(got, "\n") != strings.Join(want, "\n") {
 				t.Fatalf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 			}
-			if got := queryStrings(t, conn, "SELECT next_id FROM orisun_es_seq"); got[0] != "100" {
-				t.Fatalf("sequence changed: %v", got)
+			// The counter row is gone; allocation resumes after the last committed event.
+			if got := queryStrings(t, conn, "SELECT name FROM sqlite_schema WHERE name = 'orisun_es_seq'"); len(got) != 0 {
+				t.Fatal("position counter table remained")
+			}
+			if next, err := nextGlobalID(conn); err != nil || next != 11 {
+				t.Fatalf("next global id = %d, %v; want 11", next, err)
 			}
 			if got := queryStrings(t, conn, "SELECT consistency FROM orisun_es_write WHERE write_id=10"); got[0] != "[]" {
 				t.Fatalf("context changed: %v", got)

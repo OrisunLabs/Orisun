@@ -63,13 +63,9 @@ func readSeqNextID(t *testing.T, bp *BoundaryPools) int64 {
 	}
 	defer bp.Read.Put(conn)
 	var next int64
-	if err := sqlitex.Execute(conn, "SELECT next_id FROM orisun_es_seq WHERE id = 1", &sqlitex.ExecOptions{
-		ResultFunc: func(stmt *sqlite.Stmt) error {
-			next = stmt.ColumnInt64(0)
-			return nil
-		},
-	}); err != nil {
-		t.Fatalf("read seq: %v", err)
+	next, err = nextGlobalID(conn)
+	if err != nil {
+		t.Fatalf("read next global id: %v", err)
 	}
 	return next
 }

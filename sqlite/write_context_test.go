@@ -186,7 +186,7 @@ func TestWriteContextRequestRollbackAcrossEventChunks(t *testing.T) {
 			require.Empty(t, accepted)
 			require.ErrorContains(t, (<-request.result).err, "injected failure")
 			require.NoError(t, sqlitex.Execute(conn,
-				"SELECT (SELECT COUNT(*) FROM orisun_es_write), (SELECT COUNT(*) FROM orisun_es_event), next_id FROM orisun_es_seq",
+				"SELECT (SELECT COUNT(*) FROM orisun_es_write), (SELECT COUNT(*) FROM orisun_es_event), (SELECT COALESCE(MAX(global_id), 0) + 1 FROM orisun_es_event)",
 				&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
 					require.Zero(t, stmt.ColumnInt64(0))
 					require.Zero(t, stmt.ColumnInt64(1))
