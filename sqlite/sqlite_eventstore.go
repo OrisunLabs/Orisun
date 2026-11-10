@@ -1060,7 +1060,7 @@ func buildSQLiteBoundaryIndexDDL(
 			exprs = append(exprs, sqliteJSONScalarTextExpr(f.JsonKey))
 		}
 	}
-	exprs = append(exprs, "transaction_id DESC", "global_id DESC")
+	exprs = append(exprs, "transaction_id", "global_id")
 
 	var whereClause string
 	if len(conditions) > 0 {

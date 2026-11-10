@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS orisun_boundary_index_metadata (
 
 // The built-in index must use the same scalar representation as reads and CCC.
 // SQLite expression indexes require structural equality with the query expression.
-var eventTypeOrderIndexDDL = "CREATE INDEX idx_event_type_order ON orisun_es_event(" + sqliteJSONScalarTextExpr("__eventType") + ", transaction_id DESC, global_id DESC);"
+var eventTypeOrderIndexDDL = "CREATE INDEX idx_event_type_order ON orisun_es_event(" + sqliteJSONScalarTextExpr("__eventType") + ", transaction_id, global_id);"
 
 // Metadata tables are stored in a separate SQLite file so projector/admin
 // writes do not contend with the per-boundary event-log writer.
