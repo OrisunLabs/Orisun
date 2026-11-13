@@ -11,11 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// preparedPostgresSave owns its serialized input. No caller-owned slices or
-// criteria survive preparation, and the writer never validates or encodes an
-// individual request. Positions and CCC decisions remain database-owned.
+// preparedPostgresSave owns its serialized input and compiled CCC checks. No
+// caller-owned slices or criteria survive preparation, and the writer never
+// validates, encodes, or compiles an individual request. Positions and CCC
+// decisions remain database-owned.
 type preparedPostgresSave struct {
 	payload    postgresBatchPayload
+	checks     []compiledCheck
 	eventCount int
 }
 
@@ -31,7 +33,11 @@ func (s *PostgresSaveEvents) prepareSave(events eventstore.PreparedEventBatch, c
 	if err != nil {
 		return preparedPostgresSave{}, statuscode.Errorf(statuscode.Internal, "failed to marshal events: %v", err)
 	}
-	return preparedPostgresSave{payload: postgresBatchPayload{Consistency: checks, Events: encoded}, eventCount: len(events)}, nil
+	compiled, err := compileConsistencyChecks(consistency)
+	if err != nil {
+		return preparedPostgresSave{}, statuscode.Errorf(statuscode.InvalidArgument, "invalid consistency query: %v", err)
+	}
+	return preparedPostgresSave{payload: postgresBatchPayload{Consistency: checks, Events: encoded}, checks: compiled, eventCount: len(events)}, nil
 }
 
 // Validate backend-facing requests before sharing a transaction. A malformed

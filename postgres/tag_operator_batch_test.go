@@ -26,16 +26,14 @@ func TestGroupCommitReadsStateAfterAcquiringBoundaryLock(t *testing.T) {
 		t.Run(fmt.Sprintf("checked_%t", checked), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
-			payload := func(checks []orisun.ConsistencyCheck) []byte {
+			payload := func(checks []orisun.ConsistencyCheck) []any {
 				events, err := orisun.PrepareEventsForSave([]orisun.EventWithMapTags{{EventId: uuid.NewString(), EventType: "LockGuard", Data: map[string]any{"scope": t.Name(), "amount": 15}}})
 				require.NoError(t, err)
 				eventJSON, err := json.Marshal(events)
 				require.NoError(t, err)
 				checkJSON, err := orisun.MarshalConsistency(checks)
 				require.NoError(t, err)
-				encoded, err := json.Marshal([]postgresBatchPayload{{Events: eventJSON, Consistency: checkJSON}})
-				require.NoError(t, err)
-				return encoded
+				return insertRequestsArgs(t, "test_boundary", "public", []postgresBatchPayload{{Events: eventJSON, Consistency: checkJSON}})
 			}
 			var checks []orisun.ConsistencyCheck
 			if checked {
@@ -57,10 +55,10 @@ func TestGroupCommitReadsStateAfterAcquiringBoundaryLock(t *testing.T) {
 				err     error
 			}
 			done := make(chan result, 1)
-			query := "SELECT error_message FROM public.insert_event_requests_v2('test_boundary', 'public', $1::jsonb)"
+			query := "SELECT error_message FROM (" + fmt.Sprintf(insertEventRequestsWithConsistency, "public") + ") AS outcome"
 			go func() {
 				var r result
-				r.err = second.QueryRowContext(ctx, query, waitingPayload).Scan(&r.message)
+				r.err = second.QueryRowContext(ctx, query, waitingPayload...).Scan(&r.message)
 				done <- r
 			}()
 			// Observe actual lock contention, rather than depending on a sleep
@@ -71,7 +69,7 @@ func TestGroupCommitReadsStateAfterAcquiringBoundaryLock(t *testing.T) {
 				return err == nil && waiting
 			}, 5*time.Second, 10*time.Millisecond)
 			var firstError sql.NullString
-			require.NoError(t, first.QueryRowContext(ctx, query, firstPayload).Scan(&firstError))
+			require.NoError(t, first.QueryRowContext(ctx, query, firstPayload...).Scan(&firstError))
 			require.False(t, firstError.Valid)
 			require.NoError(t, first.Commit())
 			r := <-done
@@ -187,9 +185,7 @@ func TestTagOperatorsWithinGroupCommit(t *testing.T) {
 		payloads[i].Consistency, err = orisun.MarshalConsistency(checks)
 		require.NoError(t, err)
 	}
-	payload, err := json.Marshal(payloads)
-	require.NoError(t, err)
-	rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), "test_boundary", "public", payload)
+	rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), insertRequestsArgs(t, "test_boundary", "public", payloads)...)
 	require.NoError(t, err)
 	defer rows.Close()
 	count := 0
@@ -241,9 +237,7 @@ func TestTagOperatorGroupCommitMatrix(t *testing.T) {
 			}
 		}
 	}
-	encoded, err := json.Marshal(payloads)
-	require.NoError(t, err)
-	rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), "test_boundary", "public", encoded)
+	rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), insertRequestsArgs(t, "test_boundary", "public", payloads)...)
 	require.NoError(t, err)
 	defer rows.Close()
 	seen := make(map[int]bool)

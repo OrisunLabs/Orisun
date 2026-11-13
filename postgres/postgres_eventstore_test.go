@@ -512,13 +512,16 @@ func insertEventInTx(ctx context.Context, tx *sql.Tx, eventID, eventType string)
 	)
 
 	var newGlobalID, latestTransactionID, latestGlobalID int64
-	err := tx.QueryRowContext(
+	args, err := insertEventRequestsArgs("test_boundary", "public",
+		[]postgresBatchPayload{{Consistency: json.RawMessage(`[]`), Events: json.RawMessage(eventsJSON)}}, [][]compiledCheck{nil})
+	if err != nil {
+		return 0, err
+	}
+	err = tx.QueryRowContext(
 		ctx,
 		`SELECT new_global_id, latest_transaction_id, latest_global_id
-         FROM public.insert_event_requests_v2($1::text, $2::text, $3::jsonb)`,
-		"test_boundary",
-		"public",
-		[]byte(`[{"consistency":[],"events":`+eventsJSON+`}]`),
+         FROM (`+fmt.Sprintf(insertEventRequestsWithConsistency, "public")+`) AS outcome`,
+		args...,
 	).Scan(&newGlobalID, &latestTransactionID, &latestGlobalID)
 	return latestGlobalID, err
 }

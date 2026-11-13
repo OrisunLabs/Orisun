@@ -11,6 +11,9 @@
   the storage upgrade policy for disk and rollback requirements. The upgrade
   sorts index rebuilds on disk, overriding `temp_store` while it runs, so its
   memory use does not grow with boundary size.
+- PostgreSQL compiles CCC consistency queries in each caller before queueing,
+  instead of inside the serialized write function. Group-commit flushes call
+  `insert_event_requests_v3`; startup drops `insert_event_requests_v2`.
 - SQLite now rejects direct prepared saves whose data sets reserved root fields,
   matching API ingress. They were previously overwritten silently.
 

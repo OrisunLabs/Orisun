@@ -24,7 +24,7 @@ import (
 )
 
 const insertEventRequestsWithConsistency = `
-SELECT * FROM %s.insert_event_requests_v2($1::text, $2::text, $3::jsonb)
+SELECT * FROM %s.insert_event_requests_v3($1::text, $2::text, $3::jsonb, $4::INT, $5::INT[], $6::INT[], $7::INT[], $8::BIGINT[], $9::BIGINT[], $10::text, $11::jsonb, $12::jsonb, $13::text)
 `
 
 const selectMatchingEvents = `

@@ -68,9 +68,7 @@ func TestWriteContextSQLGroupCommit(t *testing.T) {
 				payloads[i].Events, err = json.Marshal(events)
 				require.NoError(t, err)
 			}
-			payload, err := json.Marshal(payloads)
-			require.NoError(t, err)
-			rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", payload)
+			rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), insertRequestsArgs(t, boundary, "public", payloads)...)
 			require.NoError(t, err)
 			ids := map[int]string{}
 			for rows.Next() {
@@ -115,9 +113,7 @@ func TestWriteContextSQLGroupCommit(t *testing.T) {
 			require.Equal(t, want, count)
 			// An insertion failure rolls back the entire flush, including write contexts.
 			broken := []postgresBatchPayload{{Consistency: json.RawMessage(`[]`), Events: json.RawMessage(`[{"event_id":"invalid-uuid","event_type":"Invalid","data":{},"metadata":{}}]`)}}
-			encoded, err := json.Marshal(broken)
-			require.NoError(t, err)
-			_, err = db.Exec(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", encoded)
+			_, err = db.Exec(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), insertRequestsArgs(t, boundary, "public", broken)...)
 			require.Error(t, err)
 			require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public."+boundary+"_orisun_es_write").Scan(&count))
 			require.Equal(t, want, count)

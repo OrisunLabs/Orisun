@@ -27,9 +27,8 @@ func TestCanonicalBatchMatchesCompleteEnvelope(t *testing.T) {
 			require.NoError(t, err)
 			checks, err := orisun.MarshalConsistency([]orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{tag}}}, Position: orisun.NotExistsPosition()}})
 			require.NoError(t, err)
-			payload, err := json.Marshal([]postgresBatchPayload{{Events: events, Consistency: json.RawMessage(`[]`)}, {Events: events, Consistency: checks}})
-			require.NoError(t, err)
-			rows, err := db.Query(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", payload)
+			payloads := []postgresBatchPayload{{Events: events, Consistency: json.RawMessage(`[]`)}, {Events: events, Consistency: checks}}
+			rows, err := db.Query(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), insertRequestsArgs(t, boundary, "public", payloads)...)
 			require.NoError(t, err)
 			defer rows.Close()
 			count := 0
@@ -71,9 +70,8 @@ func TestEnvelopeWritesResolveTheirOwnSchema(t *testing.T) {
 			consistency, err = orisun.MarshalConsistency([]orisun.ConsistencyCheck{{Criteria: []orisun.ReadCriterion{{Tags: []orisun.ReadTag{{Key: "context", Value: "one"}}}}, Position: orisun.NotExistsPosition()}})
 			require.NoError(t, err)
 		}
-		payload, err := json.Marshal([]postgresBatchPayload{{Events: events, Consistency: consistency}})
-		require.NoError(t, err)
-		rows, err := db.Query(fmt.Sprintf(insertEventRequestsWithConsistency, "envelope_tenant"), boundary, "envelope_tenant", payload)
+		payloads := []postgresBatchPayload{{Events: events, Consistency: consistency}}
+		rows, err := db.Query(fmt.Sprintf(insertEventRequestsWithConsistency, "envelope_tenant"), insertRequestsArgs(t, boundary, "envelope_tenant", payloads)...)
 		require.NoError(t, err)
 		require.True(t, rows.Next())
 		var index int
