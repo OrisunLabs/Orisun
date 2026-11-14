@@ -14,6 +14,11 @@
 - PostgreSQL compiles CCC consistency queries in each caller before queueing,
   instead of inside the serialized write function. Group-commit flushes call
   `insert_event_requests_v3`; startup drops `insert_event_requests_v2`.
+- PostgreSQL startup drops each boundary's `idx_global_order_covering` index,
+  which duplicated the key of `idx_event_order_visibility_covering`, and the
+  event table's foreign key to the write table. Both only added work to every
+  insert. Each drop briefly takes an exclusive lock on the event table once
+  per boundary.
 - SQLite now rejects direct prepared saves whose data sets reserved root fields,
   matching API ingress. They were previously overwritten silently.
 

@@ -253,6 +253,15 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	_, err = db.Exec(`SELECT setval('public.test_boundary_orisun_es_event_global_id_seq', 2, true)`)
 	require.NoError(t, err)
 
+	// Earlier releases kept a duplicate position index and a write foreign key.
+	_, err = db.Exec(`
+		CREATE INDEX test_boundary_idx_global_order_covering
+			ON public.test_boundary_orisun_es_event (transaction_id DESC, global_id DESC);
+		ALTER TABLE public.test_boundary_orisun_es_event
+			ADD FOREIGN KEY (write_id) REFERENCES public.test_boundary_orisun_es_write(write_id)
+	`)
+	require.NoError(t, err)
+
 	require.NoError(t, RunDbScripts(db, "test_boundary", "public", false, context.Background()))
 
 	rows, err := db.Query(`
@@ -287,16 +296,26 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	require.NotContains(t, visibilityIndexDef, "date_created")
 	require.NotContains(t, visibilityIndexDef, "event_type")
 
-	var globalOrderIndexDef string
+	var duplicateOrderIndexes int
 	err = db.QueryRow(`
-		SELECT indexdef
+		SELECT COUNT(*)
 		FROM pg_indexes
 		WHERE schemaname = 'public'
 		  AND tablename = 'test_boundary_orisun_es_event'
 		  AND indexname = 'test_boundary_idx_global_order_covering'
-	`).Scan(&globalOrderIndexDef)
+	`).Scan(&duplicateOrderIndexes)
 	require.NoError(t, err)
-	require.NotContains(t, globalOrderIndexDef, "INCLUDE")
+	require.Zero(t, duplicateOrderIndexes)
+
+	var foreignKeys int
+	err = db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE contype = 'f'
+		  AND conrelid = 'public.test_boundary_orisun_es_event'::regclass
+	`).Scan(&foreignKeys)
+	require.NoError(t, err)
+	require.Zero(t, foreignKeys)
 
 	var eventTypeIndexDef string
 	err = db.QueryRow(`

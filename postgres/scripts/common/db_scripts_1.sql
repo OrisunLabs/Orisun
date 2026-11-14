@@ -140,6 +140,7 @@ CREATE OR REPLACE FUNCTION initialize_boundary_tables(
 $$
 DECLARE
     prefixed_seq_name TEXT;
+    write_reference TEXT;
 BEGIN
     -- Validate boundary_name as a simple PostgreSQL identifier.
     -- - Must start with letter or underscore
@@ -160,11 +161,25 @@ BEGIN
         pg_xact_id BIGINT,
         transaction_id BIGINT GENERATED ALWAYS AS ((data->>''__commitPosition'')::BIGINT) STORED NOT NULL,
         global_id BIGINT GENERATED ALWAYS AS ((data->>''__preparePosition'')::BIGINT) STORED NOT NULL PRIMARY KEY,
-        write_id BIGINT GENERATED ALWAYS AS (NULLIF(split_part(data->>''__writeId'', '':'', 2), '''')::BIGINT) STORED REFERENCES %I.%I(write_id),
+        write_id BIGINT GENERATED ALWAYS AS (NULLIF(split_part(data->>''__writeId'', '':'', 2), '''')::BIGINT) STORED,
         metadata JSONB GENERATED ALWAYS AS (data->''__metadata'') STORED,
         date_created TEXT GENERATED ALWAYS AS (data->>''__dateCreated'') STORED NOT NULL,
         CHECK ((jsonb_typeof(data->''__dateCreated'') = ''string'' AND (data->>''__dateCreated'')::timestamptz IS NOT NULL) IS TRUE)
-    )', schema_name, boundary_name || '_orisun_es_event', schema_name, boundary_name || '_orisun_es_write');
+    )', schema_name, boundary_name || '_orisun_es_event');
+
+    -- The write function inserts each write row in the same statement as its
+    -- events, so a foreign key adds only a per-event referential check on the
+    -- serialized write path. Remove it from schemas created by earlier releases.
+    FOR write_reference IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE contype = 'f'
+          AND conrelid = format('%I.%I', schema_name, boundary_name || '_orisun_es_event')::regclass
+          AND confrelid = format('%I.%I', schema_name, boundary_name || '_orisun_es_write')::regclass
+    LOOP
+        EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT IF EXISTS %I',
+                       schema_name, boundary_name || '_orisun_es_event', write_reference);
+    END LOOP;
 
     -- Create the boundary-local global_id sequence.
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I.%I
@@ -189,8 +204,9 @@ BEGIN
 
 
     -- Create indexes used by latest-position checks and ordered event reads.
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I (transaction_id DESC, global_id DESC)',
-                   boundary_name || '_idx_global_order_covering', schema_name, boundary_name || '_orisun_es_event');
+    -- The visibility index serves every position-ordered scan; earlier releases
+    -- also kept the same key without INCLUDE, which only added write cost.
+    EXECUTE format('DROP INDEX IF EXISTS %I.%I', schema_name, boundary_name || '_idx_global_order_covering');
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.%I ((data->>''__eventType''), transaction_id DESC, global_id DESC)',
                    boundary_name || '_idx_event_type_order', schema_name, boundary_name || '_orisun_es_event');
     EXECUTE format(
