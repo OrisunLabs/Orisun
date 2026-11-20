@@ -63,7 +63,7 @@ ctx := context.Background()
   <TabItem value="node" label="Node.js">
 
 ```typescript
-import { EventStoreClient } from '@orisun/eventstore-client';
+import { EventStoreClient, ValueType } from '@orisun/eventstore-client';
 
 const client = new EventStoreClient({
   host: 'localhost',
@@ -1330,7 +1330,7 @@ await client.createIndex({
   boundary: 'orders',
   name: 'customer_id',
   fields: [
-    { jsonKey: 'customer_id', valueType: 'TEXT' },
+    { jsonKey: 'customer_id', valueType: ValueType.TEXT },
   ],
 });
 ```
