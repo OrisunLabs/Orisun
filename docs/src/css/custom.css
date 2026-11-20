@@ -27,6 +27,8 @@
   --ifm-font-family-monospace: 'JetBrains Mono', SFMono-Regular, Consolas, 'Liberation Mono', monospace;
 
   --ifm-font-size-base: 16px;
+  --ifm-font-weight-normal: 500;
+  --ifm-font-weight-semibold: 600;
   --ifm-line-height-base: 1.72;
   --ifm-heading-font-weight: 700;
   --ifm-heading-color: var(--orisun-ink);
@@ -34,7 +36,7 @@
 
   --ifm-global-radius: 0.6rem;
   --ifm-card-border-radius: 0.75rem;
-  --ifm-code-font-size: 0.86rem;
+  --ifm-code-font-size: 0.9rem;
   --ifm-code-border-radius: 0.35rem;
   --ifm-pre-line-height: 1.65;
 
@@ -348,6 +350,7 @@ div[title='Expand sidebar'] {
 .theme-doc-markdown pre code {
   border: 0;
   padding: 0;
+  background: transparent;
 }
 
 /* Code blocks */
@@ -363,7 +366,19 @@ div[title='Expand sidebar'] {
 }
 
 .theme-code-block pre {
-  font-size: 0.86rem;
+  font-size: 0.9rem;
+}
+
+/* Heavier mono weight: 400 renders thin, especially light-on-dark with antialiasing. */
+code,
+pre,
+kbd {
+  font-weight: 500;
+  font-variant-ligatures: none;
+}
+
+html[data-theme='dark'] {
+  -webkit-font-smoothing: auto;
 }
 
 /* Code block title bar */
