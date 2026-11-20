@@ -66,7 +66,7 @@ func compileCriterion(fields map[string]any) (compiledCriterion, error) {
 		}
 	}
 	sort.Strings(keys)
-	if compiled.storedSQL, err = postgresCriterionSQL(fields, "stored.data"); err != nil {
+	if compiled.storedSQL, err = storedRow("stored.").criterionSQL(fields); err != nil {
 		return compiledCriterion{}, err
 	}
 	if compiled.isEquality {
@@ -75,72 +75,10 @@ func compileCriterion(fields map[string]any) (compiledCriterion, error) {
 			return compiledCriterion{}, err
 		}
 		compiled.shape = string(shape)
-	} else if compiled.matchSQL, err = postgresCriterionSQL(fields, "candidate.document"); err != nil {
+	} else if compiled.matchSQL, err = candidateDocument("candidate.document").criterionSQL(fields); err != nil {
 		return compiledCriterion{}, err
 	}
 	return compiled, nil
-}
-
-// postgresCriterionSQL mirrors orisun_criterion_sql. Equality fields come
-// first so cheap guards run before typed comparisons where order is retained.
-func postgresCriterionSQL(fields map[string]any, dataExpression string) (string, error) {
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		_, iString := fields[keys[i]].(string)
-		_, jString := fields[keys[j]].(string)
-		if iString != jString {
-			return iString
-		}
-		return keys[i] < keys[j]
-	})
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		predicates, err := eventstore.DecodeTagPredicates(fields[key])
-		if err != nil {
-			return "", err
-		}
-		scalar := "(" + dataExpression + " ->> " + postgresQuoteLiteral(key) + ")"
-		for _, predicate := range predicates {
-			operator, err := eventstore.CanonicalTagOperator(predicate.Operator)
-			if err != nil {
-				return "", err
-			}
-			sqlOperator, _ := eventstore.TagSQLOperator(operator)
-			target := postgresQuoteLiteral(predicate.Value)
-			if operator == "eq" || operator == "ne" {
-				parts = append(parts, "("+scalar+" "+sqlOperator+" "+target+")")
-				continue
-			}
-			parts = append(parts, fmt.Sprintf(
-				`(CASE jsonb_typeof(%s -> %s) WHEN 'string' THEN (%s COLLATE "C" %s %s COLLATE "C") WHEN 'number' THEN (orisun_compare_number(%s, %s) %s 0) ELSE FALSE END)`,
-				dataExpression, postgresQuoteLiteral(key), scalar, sqlOperator, target, scalar, target, sqlOperator))
-		}
-	}
-	if len(parts) == 0 {
-		return "TRUE", nil
-	}
-	return "(" + strings.Join(parts, " AND ") + ")", nil
-}
-
-// postgresQuoteLiteral matches PostgreSQL quote_literal: quotes and
-// backslashes are doubled, and a backslash selects the E'' form.
-func postgresQuoteLiteral(value string) string {
-	var b strings.Builder
-	if strings.Contains(value, `\`) {
-		b.WriteByte('E')
-	}
-	b.WriteByte('\'')
-	for i := 0; i < len(value); i++ {
-		if value[i] == '\'' || value[i] == '\\' {
-			b.WriteByte(value[i])
-		}
-		b.WriteByte(value[i])
-	}
-	b.WriteByte('\'')
-	return b.String()
 }
 
 // postgresFlushPlan is the batch-wide CCC plan. Offsets are 1-based and each

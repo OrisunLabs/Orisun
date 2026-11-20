@@ -17,7 +17,7 @@ func TestTagOperatorsContract(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 	require.NoError(t, RunDbScripts(db, "test_boundary", "operator_tenant", false, t.Context()))
-	_, err = db.Exec("DROP FUNCTION public.orisun_criterion_sql(jsonb,text); DROP FUNCTION public.orisun_compare_number(text,text)")
+	_, err = db.Exec("DROP FUNCTION public.orisun_stored_criterion_sql(jsonb,text); DROP FUNCTION public.orisun_compare_number(text,text)")
 	require.NoError(t, err)
 	logger, _ := logging.ZapLogger("error")
 	mapping := map[string]config.BoundaryToPostgresSchemaMapping{"test_boundary": {Boundary: "test_boundary", Schema: "operator_tenant"}}

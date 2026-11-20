@@ -3,7 +3,6 @@ package postgres
 import (
 	"fmt"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
-	"github.com/lib/pq"
 	"strings"
 )
 
@@ -27,19 +26,21 @@ func boundaryIndexKeyExpressions(fields []eventstore.BoundaryIndexField, conditi
 		combinator = eventstore.IndexCombinatorAND
 	}
 
-	// Build index expression list
+	// Envelope keys resolve to their columns, exactly as criteria render them,
+	// so the planner matches index expressions and partial predicates.
+	row := storedRow("")
 	exprs := make([]string, len(fields))
 	for i, f := range fields {
-		key := pq.QuoteLiteral(f.JsonKey)
+		scalar, _, _ := row.field(f.JsonKey)
 		switch f.ValueType {
 		case "numeric":
-			exprs[i] = "((data->>" + key + ")::numeric)"
+			exprs[i] = "(" + scalar + "::numeric)"
 		case "boolean":
-			exprs[i] = "((data->>" + key + ")::boolean)"
+			exprs[i] = "(" + scalar + "::boolean)"
 		case "timestamptz":
-			exprs[i] = "((data->>" + key + ")::timestamptz)"
+			exprs[i] = "(" + scalar + "::timestamptz)"
 		default: // "text"
-			exprs[i] = "(data->>" + key + ")"
+			exprs[i] = scalar
 		}
 	}
 
@@ -58,7 +59,8 @@ func boundaryIndexKeyExpressions(fields []eventstore.BoundaryIndexField, conditi
 			if !validOps[c.Operator] {
 				return "", "", fmt.Errorf("invalid operator %q: must be one of =, >, <, >=, <=", c.Operator)
 			}
-			predicates[i] = "(data->>" + pq.QuoteLiteral(c.Key) + ") " + c.Operator + " " + pq.QuoteLiteral(c.Value)
+			scalar, _, _ := row.field(c.Key)
+			predicates[i] = scalar + " " + c.Operator + " " + postgresQuoteLiteral(c.Value)
 		}
 		whereClause = " WHERE " + strings.Join(predicates, " "+combinator+" ")
 	}

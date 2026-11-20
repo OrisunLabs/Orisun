@@ -14,13 +14,18 @@
 - PostgreSQL compiles CCC consistency queries in each caller before queueing,
   instead of inside the serialized write function. Group-commit flushes call
   `insert_event_requests_v3`; startup drops `insert_event_requests_v2`.
-- PostgreSQL startup drops each boundary's `idx_global_order_covering` index,
-  which duplicated the key of `idx_event_order_visibility_covering`, and the
-  event table's foreign key to the write table. Both only added work to every
-  insert. Each drop briefly takes an exclusive lock on the event table once
-  per boundary.
-- SQLite now rejects direct prepared saves whose data sets reserved root fields,
-  matching API ingress. They were previously overwritten silently.
+- PostgreSQL stores the event envelope in typed columns and keeps only
+  application fields in `data`, removing the second copy of metadata from every
+  row. Criteria, index definitions, and reads on reserved `__*` fields are
+  unchanged. Startup upgrades schema versions 4 and 5 to version 6 by copying
+  each boundary's event table; see the storage upgrade policy for disk, lock,
+  and rollback requirements. The rewritten table no longer has the
+  `idx_global_order_covering` index, which duplicated the key of
+  `idx_event_order_visibility_covering`, or a foreign key to the write table;
+  both only added work to every insert.
+- SQLite and PostgreSQL now reject direct prepared saves whose data sets
+  reserved root fields, matching API ingress. They were previously overwritten
+  silently.
 
 ### Added
 

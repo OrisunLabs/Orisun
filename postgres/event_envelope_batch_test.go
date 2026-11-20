@@ -58,7 +58,7 @@ func TestEnvelopeWritesResolveTheirOwnSchema(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	// A caller's default public path must not accidentally supply the helper.
-	_, err = db.Exec("DROP FUNCTION public.orisun_event_document(jsonb,jsonb,bigint,bigint,bigint,timestamptz)")
+	_, err = db.Exec("DROP FUNCTION public.orisun_event_document(jsonb,jsonb,bigint,bigint,bigint,text); DROP FUNCTION public.orisun_date_created(timestamptz)")
 	require.NoError(t, err)
 	for i := range 2 {
 		boundary := fmt.Sprintf("scoped_%d", i)

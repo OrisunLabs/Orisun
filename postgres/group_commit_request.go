@@ -3,11 +3,10 @@ package postgres
 import (
 	"errors"
 	"fmt"
-	"strings"
 
+	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	eventstore "github.com/OrisunLabs/Orisun/orisun"
-	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 )
 
@@ -53,9 +52,9 @@ func validatePostgresSaveInput(events eventstore.PreparedEventBatch, consistency
 		if _, err := uuid.Parse(event.EventId); err != nil {
 			return fmt.Errorf("invalid event_id: %w", err)
 		}
-		data := strings.TrimSpace(event.DataJSON)
-		if len(data) == 0 || data[0] != '{' || !json.Valid([]byte(data)) {
-			return errors.New("event data must be a JSON object")
+		// Storage owns top-level __* keys; data persists application fields only.
+		if err := eventdata.ValidateObject(event.DataJSON); err != nil {
+			return err
 		}
 	}
 	for _, check := range consistency {

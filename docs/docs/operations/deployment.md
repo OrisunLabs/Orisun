@@ -184,8 +184,11 @@ Recommended upgrade sequence:
 
 Current releases clear stale `pg_xact_id` values when a restored database or
 new cluster has restarted its transaction-ID range. PostgreSQL transaction IDs
-therefore do not need to be preserved for Orisun correctness. The immediately preceding storage version upgrades automatically without rewriting
-event documents, positions, or projector checkpoints. Older formats are rejected.
+therefore do not need to be preserved for Orisun correctness. The supported
+preceding storage versions upgrade automatically at startup, preserving positions
+and projector checkpoints; see the
+[storage upgrade policy](./upgrading-event-envelope) for the event rewrite this
+release performs. Older formats are rejected.
 
 ## Clustered PostgreSQL
 

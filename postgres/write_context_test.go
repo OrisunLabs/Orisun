@@ -133,12 +133,11 @@ func TestBackendOwnsEventEnvelope(t *testing.T) {
 	saver := NewPostgresSaveEvents(t.Context(), db, logger, mapping)
 	defer saver.close()
 	getter := NewPostgresGetEvents(db, logger, mapping)
-	storagecontract.Envelope(t, saver, getter, NewPostgresAdminDB(db, logger, "public", "test_boundary", mapping), "test_boundary", func(fields string) {
-		_, err := db.Exec("UPDATE test_boundary_orisun_es_event SET data = data || $1::jsonb", fields)
-		require.NoError(t, err)
-	})
+	// Saves reject reserved root keys and upgrades refuse them, so stored data
+	// holds application fields only.
+	storagecontract.Envelope(t, saver, getter, NewPostgresAdminDB(db, logger, "public", "test_boundary", mapping), "test_boundary", nil)
 	var id, kind string
-	require.NoError(t, db.QueryRow("SELECT data->>'__eventId', data->>'__eventType' FROM test_boundary_orisun_es_event").Scan(&id, &kind))
+	require.NoError(t, db.QueryRow("SELECT event_id::TEXT, event_type FROM test_boundary_orisun_es_event").Scan(&id, &kind))
 	require.NotEmpty(t, id)
 	require.Equal(t, "EnvelopeTest", kind)
 }

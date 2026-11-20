@@ -155,7 +155,7 @@ func prepopulateStreams(
 			require.NoError(b, err)
 
 			eventData := fmt.Sprintf(
-				`{"stream_id": "%s", "__eventType": "OrderPlaced", "sequence": %d}`,
+				`{"stream_id": "%s", "sequence": %d}`,
 				streamId,
 				eventIdx,
 			)
@@ -232,7 +232,7 @@ func BenchmarkConsistencyCheck_NoIndex(b *testing.B) {
 		require.NoError(b, err)
 
 		eventData := fmt.Sprintf(
-			`{"stream_id": "%s", "__eventType": "OrderPlaced", "sequence": %d}`,
+			`{"stream_id": "%s", "sequence": %d}`,
 			streamId,
 			benchEventsPerStream+i,
 		)
@@ -318,7 +318,7 @@ func BenchmarkConsistencyCheck_WithIndex(b *testing.B) {
 		require.NoError(b, err)
 
 		eventData := fmt.Sprintf(
-			`{"stream_id": "%s", "__eventType": "OrderPlaced", "sequence": %d}`,
+			`{"stream_id": "%s", "sequence": %d}`,
 			streamId,
 			benchEventsPerStream+i,
 		)
@@ -793,7 +793,7 @@ func BenchmarkPostgres_GroupCommitIndexedHistory(b *testing.B) {
 		"bench_boundary": {Boundary: "bench_boundary", Schema: "public"},
 	})
 	defer saver.close()
-	_, err = db.Exec(`CREATE INDEX history_guard ON public.bench_boundary_orisun_es_event ((data->>'context'), transaction_id DESC, global_id DESC) WHERE data->>'__eventType' = 'HistoryGuard'`)
+	_, err = db.Exec(`CREATE INDEX history_guard ON public.bench_boundary_orisun_es_event ((data->>'context'), transaction_id DESC, global_id DESC) WHERE event_type = 'HistoryGuard'`)
 	require.NoError(b, err)
 	request := func(i, count int) *postgresTestRequest {
 		events := make([]orisun.EventWithMapTags, count)
