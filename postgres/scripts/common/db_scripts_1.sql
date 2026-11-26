@@ -263,14 +263,16 @@ BEGIN
         prepare_position BIGINT NOT NULL
     )', schema_name, boundary_name || '_projector_checkpoint');
 
+    PERFORM orisun_install_write_function(schema_name, boundary_name);
 END;
 $$ LANGUAGE plpgsql;
 
 
 -- Retire alternate write implementations when upgrading an existing schema.
 DROP FUNCTION IF EXISTS insert_event_requests_v2(TEXT, TEXT, JSONB);
+DROP FUNCTION IF EXISTS insert_event_requests_v3(TEXT, TEXT, JSONB, INT, INT[], INT[], INT[], BIGINT[], BIGINT[], TEXT, JSONB, JSONB, TEXT);
 
--- Single group-commit entry point for prepared event-batch requests. Callers
+-- Group-commit entry point for prepared event-batch requests, one per boundary. Callers
 -- compile CCC before queueing: criteria arrive deduplicated as integer IDs,
 -- with each check's expected position, the literal latest-position lookup, and
 -- the operator-matching query already rendered. This function only acquires
@@ -284,9 +286,21 @@ DROP FUNCTION IF EXISTS insert_event_requests_v2(TEXT, TEXT, JSONB);
 -- whose fields are all equality strings; criterion_shapes lists their sorted
 -- key sets. latest_query and predicate_query are rendered by the storage
 -- implementation from validated criteria, never taken from a client.
-CREATE OR REPLACE FUNCTION insert_event_requests_v3(
-    boundary_name TEXT,
-    schema TEXT,
+--
+-- Each boundary gets its own copy, <boundary>_orisun_write_events, with its
+-- tables, sequence, lock and channel bound as constants. The bulk insert is then
+-- static SQL whose plan plpgsql caches per session, instead of a dynamic
+-- statement parsed and planned on every flush while the writer lock is held.
+-- initialize_boundary_tables reinstalls it, so it always matches this script.
+-- Placeholders use braces, which are never valid in a boundary name.
+CREATE OR REPLACE FUNCTION orisun_install_write_function(schema_name TEXT, boundary_name TEXT)
+    RETURNS VOID
+    LANGUAGE plpgsql
+AS
+$install$
+DECLARE
+    definition TEXT := $template$
+CREATE OR REPLACE FUNCTION {{write_function}}(
     requests JSONB,
     criterion_count INT,
     request_check_offsets INT[],
@@ -309,9 +323,9 @@ CREATE OR REPLACE FUNCTION insert_event_requests_v3(
                 error_message         TEXT
             )
     LANGUAGE plpgsql
-    SET search_path FROM CURRENT
+    SET search_path = {{schema}}
 AS
-$$
+$write$
 DECLARE
     request                  JSONB;
     request_rejected         BOOLEAN;
@@ -341,7 +355,6 @@ DECLARE
     result_global_ids         BIGINT[];
     result_errors             TEXT[];
     current_pg_xact_id        BIGINT;
-    prefixed_seq_name         TEXT;
     criterion_shape           JSONB;
     request_documents         JSONB[];
     matching_record           RECORD;
@@ -362,7 +375,6 @@ BEGIN
     END IF;
     result_global_ids := array_fill(NULL::BIGINT, ARRAY[request_count]);
     result_errors := array_fill(NULL::TEXT, ARRAY[request_count]);
-    prefixed_seq_name := format('%I.%I', schema, boundary_name || '_orisun_es_event_global_id_seq');
 
     IF criterion_count > 0 THEN
         criterion_tx_ids := array_fill(-1::BIGINT, ARRAY[criterion_count]);
@@ -381,7 +393,7 @@ BEGIN
     -- all boundary state access below, including unconditional writes. The lock
     -- remains transaction-scoped: waiting writers observe the preceding
     -- writer's committed state before deciding whether their checks pass.
-    PERFORM pg_advisory_xact_lock(hashtext(schema || '.' || boundary_name || '::position_draw'));
+    PERFORM pg_advisory_xact_lock(hashtext({{lock_name}}));
     current_pg_xact_id := pg_current_xact_id()::TEXT::BIGINT;
 
     IF latest_query IS NOT NULL THEN
@@ -429,7 +441,7 @@ BEGIN
         event_count := jsonb_array_length(request -> 'events');
         FOR event_index IN 0..event_count - 1
             LOOP
-                SELECT nextval(prefixed_seq_name::regclass) INTO inserted_gid;
+                inserted_gid := nextval({{sequence}});
                 request_global_ids := array_append(request_global_ids, inserted_gid);
                 accepted_request_indexes :=
                     array_append(accepted_request_indexes, current_index);
@@ -493,51 +505,38 @@ BEGIN
     -- Persist all accepted requests in one atomic bulk statement.
     -- Reuse assigned write IDs directly; no grouping or window aggregation.
     IF last_inserted_gid IS NOT NULL THEN
-        EXECUTE format('
-            WITH inserted_writes AS (
-                INSERT INTO %I.%I (write_id, consistency)
-                SELECT write_id, COALESCE($5 -> (ordinality - 1)::INT -> ''consistency'', ''[]''::JSONB)
-                FROM unnest($6::BIGINT[]) WITH ORDINALITY AS accepted(write_id, ordinality)
+        WITH inserted_writes AS (
+                INSERT INTO {{write_table}} (write_id, consistency)
+                SELECT write_id, COALESCE(requests -> (ordinality - 1)::INT -> 'consistency', '[]'::JSONB)
+                FROM unnest(result_global_ids) WITH ORDINALITY AS accepted(write_id, ordinality)
                 WHERE write_id IS NOT NULL
                 RETURNING write_id
             )
-            INSERT INTO %I.%I (global_id, transaction_id, write_id, pg_xact_id, event_id, date_created, event_type, metadata, data)
+            INSERT INTO {{event_table}} (global_id, transaction_id, write_id, pg_xact_id, event_id, date_created, event_type, metadata, data)
             WITH accepted_events AS (
                 SELECT accepted.request_index,
                        accepted.event_index,
                        accepted.global_id,
-                       ($6::BIGINT[])[accepted.request_index + 1] + 1 AS transaction_id
-                FROM unnest($2::INT[], $3::INT[], $4::BIGINT[])
+                       (result_global_ids)[accepted.request_index + 1] + 1 AS transaction_id
+                FROM unnest(accepted_request_indexes::INT[], accepted_event_indexes::INT[], accepted_global_ids::BIGINT[])
                     AS accepted(request_index, event_index, global_id)
             )
             SELECT accepted.global_id,
                    accepted.transaction_id,
                    inserted_writes.write_id,
-                   $1,
-                   (event_item ->> ''event_id'')::UUID,
-                   $7,
-                   event_item ->> ''event_type'',
-                   COALESCE(event_item -> ''metadata'', ''{}''::JSONB),
-                   COALESCE(event_item -> ''data'', ''{}''::JSONB)
+                   current_pg_xact_id,
+                   (event_item ->> 'event_id')::UUID,
+                   created,
+                   event_item ->> 'event_type',
+                   COALESCE(event_item -> 'metadata', '{}'::JSONB),
+                   COALESCE(event_item -> 'data', '{}'::JSONB)
             FROM accepted_events AS accepted
             JOIN inserted_writes ON inserted_writes.write_id = accepted.transaction_id - 1
             CROSS JOIN LATERAL (
-                SELECT $5 -> accepted.request_index -> ''events'' -> accepted.event_index AS event_item
+                SELECT requests -> accepted.request_index -> 'events' -> accepted.event_index AS event_item
             ) AS accepted_requests
-            ORDER BY accepted.global_id',
-            schema,
-            boundary_name || '_orisun_es_write',
-            schema,
-            boundary_name || '_orisun_es_event'
-        ) USING
-            current_pg_xact_id,
-            accepted_request_indexes,
-            accepted_event_indexes,
-            accepted_global_ids,
-            requests,
-            result_global_ids,
-            created;
-        PERFORM pg_notify('orisun_events_' || md5(boundary_name), last_inserted_gid::TEXT);
+            ORDER BY accepted.global_id;
+        PERFORM pg_notify({{channel}}, last_inserted_gid::TEXT);
     END IF;
 
     -- Expose ordered outcomes only after persistence succeeds.
@@ -554,7 +553,20 @@ BEGIN
             AS outcome(global_id, message, ordinality)
         ORDER BY outcome.ordinality;
 END;
-$$;
+$write$
+$template$;
+BEGIN
+    definition := replace(definition, '{{write_function}}', format('%I.%I', schema_name, boundary_name || '_orisun_write_events'));
+    definition := replace(definition, '{{schema}}', quote_ident(schema_name));
+    definition := replace(definition, '{{write_table}}', format('%I.%I', schema_name, boundary_name || '_orisun_es_write'));
+    definition := replace(definition, '{{event_table}}', format('%I.%I', schema_name, boundary_name || '_orisun_es_event'));
+    definition := replace(definition, '{{sequence}}',
+        quote_literal(format('%I.%I', schema_name, boundary_name || '_orisun_es_event_global_id_seq')) || '::regclass');
+    definition := replace(definition, '{{lock_name}}', quote_literal(schema_name || '.' || boundary_name || '::position_draw'));
+    definition := replace(definition, '{{channel}}', quote_literal('orisun_events_' || md5(boundary_name)));
+    EXECUTE definition;
+END;
+$install$;
 
 
 -- Get Matching Events Function

@@ -163,8 +163,12 @@ cancelled, and executes the remaining requests through one database call and
 one outer transaction. The flush uses its own timeout context so cancellation
 of one caller cannot interrupt unrelated requests in the same batch.
 
-Every flush uses `insert_event_requests_v3`, including batches of one,
-unconditional writes, and all CCC query shapes. The function takes a
+Every flush calls the boundary's own write function,
+`<boundary>_orisun_write_events`, including batches of one, unconditional
+writes, and all CCC query shapes. Boundary initialization installs it from one
+template with the boundary's tables, sequence, lock, and notification channel
+bound as constants, so its bulk insert is static SQL whose plan PostgreSQL
+caches per session. Only the rendered CCC queries remain dynamic. The function takes a
 transaction-scoped advisory lock keyed by schema and boundary, held from the
 CCC state read and position draw through commit. This orders writers across
 processes.

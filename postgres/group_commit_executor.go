@@ -16,7 +16,7 @@ type postgresBatchPayload struct {
 	Events      json.RawMessage `json:"events"`
 }
 
-// insertEventRequestsArgs binds one flush to insert_event_requests_v3.
+// insertEventRequestsArgs binds one flush to the boundary write function.
 func insertEventRequestsArgs(boundary, schema string, payloads []postgresBatchPayload, checks [][]compiledCheck) ([]any, error) {
 	payloadJSON, err := json.Marshal(payloads)
 	if err != nil {
@@ -24,7 +24,7 @@ func insertEventRequestsArgs(boundary, schema string, payloads []postgresBatchPa
 	}
 	plan := planPostgresFlush(postgresEventTable(schema, boundary), checks)
 	return []any{
-		boundary, schema, payloadJSON, plan.criterionCount,
+		payloadJSON, plan.criterionCount,
 		plan.requestCheckOffsets, plan.checkCriterionOffsets, plan.checkCriterionIDs,
 		plan.expectedTransactions, plan.expectedGlobals,
 		plan.latestQuery, plan.equalityCriteria, plan.criterionShapes, plan.predicateQuery,

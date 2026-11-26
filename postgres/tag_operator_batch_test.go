@@ -55,7 +55,7 @@ func TestGroupCommitReadsStateAfterAcquiringBoundaryLock(t *testing.T) {
 				err     error
 			}
 			done := make(chan result, 1)
-			query := "SELECT error_message FROM (" + fmt.Sprintf(insertEventRequestsWithConsistency, "public") + ") AS outcome"
+			query := "SELECT error_message FROM (" + insertEventRequestsSQL("public", "test_boundary") + ") AS outcome"
 			go func() {
 				var r result
 				r.err = second.QueryRowContext(ctx, query, waitingPayload...).Scan(&r.message)
@@ -185,7 +185,7 @@ func TestTagOperatorsWithinGroupCommit(t *testing.T) {
 		payloads[i].Consistency, err = orisun.MarshalConsistency(checks)
 		require.NoError(t, err)
 	}
-	rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), insertRequestsArgs(t, "test_boundary", "public", payloads)...)
+	rows, err := db.QueryContext(t.Context(), insertEventRequestsSQL("public", "test_boundary"), insertRequestsArgs(t, "test_boundary", "public", payloads)...)
 	require.NoError(t, err)
 	defer rows.Close()
 	count := 0
@@ -237,7 +237,7 @@ func TestTagOperatorGroupCommitMatrix(t *testing.T) {
 			}
 		}
 	}
-	rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), insertRequestsArgs(t, "test_boundary", "public", payloads)...)
+	rows, err := db.QueryContext(t.Context(), insertEventRequestsSQL("public", "test_boundary"), insertRequestsArgs(t, "test_boundary", "public", payloads)...)
 	require.NoError(t, err)
 	defer rows.Close()
 	seen := make(map[int]bool)

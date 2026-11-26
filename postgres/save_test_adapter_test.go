@@ -31,7 +31,7 @@ func (s *PostgresSaveEvents) Save(
 }
 
 // insertRequestsArgs compiles raw batch payloads exactly as prepareSave would,
-// for tests that drive insert_event_requests_v3 directly.
+// for tests that drive the boundary write function directly.
 func insertRequestsArgs(t testing.TB, boundary, schema string, payloads []postgresBatchPayload) []any {
 	t.Helper()
 	checks := make([][]compiledCheck, len(payloads))

@@ -529,7 +529,7 @@ func insertEventInTx(ctx context.Context, tx *sql.Tx, eventID, eventType string)
 	err = tx.QueryRowContext(
 		ctx,
 		`SELECT new_global_id, latest_transaction_id, latest_global_id
-         FROM (`+fmt.Sprintf(insertEventRequestsWithConsistency, "public")+`) AS outcome`,
+         FROM (`+insertEventRequestsSQL("public", "test_boundary")+`) AS outcome`,
 		args...,
 	).Scan(&newGlobalID, &latestTransactionID, &latestGlobalID)
 	return latestGlobalID, err

@@ -12,8 +12,13 @@
   sorts index rebuilds on disk, overriding `temp_store` while it runs, so its
   memory use does not grow with boundary size.
 - PostgreSQL compiles CCC consistency queries in each caller before queueing,
-  instead of inside the serialized write function. Group-commit flushes call
-  `insert_event_requests_v3`; startup drops `insert_event_requests_v2`.
+  instead of inside the serialized write function.
+- PostgreSQL installs a write function per boundary,
+  `<boundary>_orisun_write_events`, with its tables bound as constants, so the
+  bulk insert's plan is cached per session instead of being parsed and planned
+  on every flush while the writer lock is held. Boundary initialization
+  reinstalls it on every startup; startup drops the shared
+  `insert_event_requests_v2` and `insert_event_requests_v3` functions.
 - PostgreSQL stores the event envelope in typed columns and keeps only
   application fields in `data`, removing the second copy of metadata from every
   row. Criteria, index definitions, and reads on reserved `__*` fields are
