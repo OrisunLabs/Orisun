@@ -163,19 +163,27 @@ cancelled, and executes the remaining requests through one database call and
 one outer transaction. The flush uses its own timeout context so cancellation
 of one caller cannot interrupt unrelated requests in the same batch.
 
-Every flush uses `insert_event_requests_v2`, including batches of one,
-unconditional writes, and all CCC query shapes. The function takes a
+Every flush calls the boundary's own write function,
+`<boundary>_orisun_write_events`, including batches of one, unconditional
+writes, and all CCC query shapes. Boundary initialization installs it from one
+template with the boundary's tables, sequence, lock, and notification channel
+bound as constants, so its bulk insert is static SQL whose plan PostgreSQL
+caches per session. Only the rendered CCC queries remain dynamic. The function takes a
 transaction-scoped advisory lock keyed by schema and boundary, held from the
 CCC state read and position draw through commit. This orders writers across
 processes.
 
-The batcher validates request envelopes and consistency-query structure before
-building the SQL batch. Malformed requests receive individual errors and never
-participate in criterion state or position allocation.
+Each request is validated and its consistency queries compiled in the caller's
+goroutine, before it is queued. Malformed requests receive individual errors and
+never participate in criterion state or position allocation. Compilation renders
+each criterion's literal SQL predicate once, so the per-flush work left for the
+serialized writer is merging plans.
 
-The SQL function deduplicates criteria and groups them once by key shape. It
-resolves each criterion's latest persisted position with literal predicates and
-`ORDER BY ... LIMIT 1`, then evaluates requests in queue order. Accepted requests
+The flush worker deduplicates criteria across the batch and passes the SQL
+function integer criterion IDs, expected positions, and the rendered queries.
+Under the lock, the function resolves each criterion's latest persisted position
+with literal predicates and `ORDER BY ... LIMIT 1`, then evaluates requests in
+queue order. Accepted requests
 project their final event documents onto each distinct criterion key shape and
 look up matching equality criterion IDs directly. Non-equality predicates are
 evaluated against each accepted document. This retains the same comparisons for

@@ -100,7 +100,7 @@ func (db *PostgresAdminDB) checkBoundaryIndexMetadata(ctx context.Context, bound
 
 // Use PostgreSQL's own deparser for both online ownership checks and migrations.
 func expectedPostgresIndexDefinition(ctx context.Context, tx *sql.Tx, expressions, predicate string) (string, error) {
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE orisun_index_definition (data JSONB, transaction_id BIGINT, global_id BIGINT) ON COMMIT DROP`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE orisun_index_definition (global_id BIGINT, transaction_id BIGINT, write_id BIGINT, event_id UUID, date_created TEXT, event_type TEXT, metadata JSONB, data JSONB) ON COMMIT DROP`); err != nil {
 		return "", err
 	}
 	defer tx.ExecContext(ctx, "DROP TABLE IF EXISTS pg_temp.orisun_index_definition")

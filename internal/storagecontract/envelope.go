@@ -14,6 +14,8 @@ import (
 
 // Envelope verifies the backend contract directly, without API preparation or
 // response adapters. Persistence owns reserved fields; reads return domain data.
+// addStoredFields seeds reserved keys into stored data, bypassing validation;
+// it is nil for backends whose stored data can never hold reserved keys.
 func Envelope(t *testing.T, saver orisun.EventsSaver, reader orisun.EventsRetriever, indexes orisun.BoundaryIndexManager, boundary string, addStoredFields func(string)) {
 	t.Helper()
 	require.NoError(t, indexes.CreateBoundaryIndex(t.Context(), boundary, "envelope_lookup", []orisun.BoundaryIndexField{
@@ -28,8 +30,10 @@ func Envelope(t *testing.T, saver orisun.EventsSaver, reader orisun.EventsRetrie
 	savedTx, savedGID, err := saver.SavePrepared(t.Context(), input, boundary, checks)
 	require.NoError(t, err)
 	require.Equal(t, domain, input[0].DataJSON, "backend must not mutate caller input")
-	// Seed future system fields directly in storage, bypassing application validation.
-	addStoredFields(`{"__future":null,"__":{"secret":true},"___internal":[1,2]}`)
+	if addStoredFields != nil {
+		// Seed future system fields directly in storage, bypassing application validation.
+		addStoredFields(`{"__future":null,"__":{"secret":true},"___internal":[1,2]}`)
+	}
 	_, _, err = saver.SavePrepared(t.Context(), input, boundary, checks)
 	require.Equal(t, statuscode.AlreadyExists, statuscode.CodeOf(err))
 	read, err := reader.GetBatch(t.Context(), &orisun.GetEventsRequest{Boundary: boundary, Count: 10, Query: &orisun.Query{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: "__eventId", Value: id}, {Key: "__eventType", Value: "EnvelopeTest"}}}}}})

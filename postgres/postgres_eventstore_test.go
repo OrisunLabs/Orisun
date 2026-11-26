@@ -242,11 +242,11 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 
 	_, err = db.Exec(`
 		INSERT INTO public.test_boundary_orisun_es_event
-			(data)
+			(global_id, transaction_id, write_id, event_id, date_created, event_type, metadata, data)
 		VALUES
-			(orisun_event_document(jsonb_build_object('__eventId', $1::text, '__eventType','CurrentEvent','key','first'), '{}', 2, 0, 0, now())),
-			(orisun_event_document(jsonb_build_object('__eventId', $2::text, '__eventType','CurrentEvent','key','second'), '{}', 2, 1, 0, now())),
-			(orisun_event_document(jsonb_build_object('__eventId', $3::text, '__eventType','CurrentEvent','key','third'), '{}', 3, 2, 0, now()))
+			(0, 2, 0, $1, '2026-10-09T00:00:00Z', 'CurrentEvent', '{}', '{"key":"first"}'),
+			(1, 2, 0, $2, '2026-10-09T00:00:00Z', 'CurrentEvent', '{}', '{"key":"second"}'),
+			(2, 3, 0, $3, '2026-10-09T00:00:00Z', 'CurrentEvent', '{}', '{"key":"third"}')
 	`, uuid.NewString(), uuid.NewString(), uuid.NewString())
 	require.NoError(t, err)
 
@@ -287,16 +287,26 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 	require.NotContains(t, visibilityIndexDef, "date_created")
 	require.NotContains(t, visibilityIndexDef, "event_type")
 
-	var globalOrderIndexDef string
+	var duplicateOrderIndexes int
 	err = db.QueryRow(`
-		SELECT indexdef
+		SELECT COUNT(*)
 		FROM pg_indexes
 		WHERE schemaname = 'public'
 		  AND tablename = 'test_boundary_orisun_es_event'
 		  AND indexname = 'test_boundary_idx_global_order_covering'
-	`).Scan(&globalOrderIndexDef)
+	`).Scan(&duplicateOrderIndexes)
 	require.NoError(t, err)
-	require.NotContains(t, globalOrderIndexDef, "INCLUDE")
+	require.Zero(t, duplicateOrderIndexes)
+
+	var foreignKeys int
+	err = db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE contype = 'f'
+		  AND conrelid = 'public.test_boundary_orisun_es_event'::regclass
+	`).Scan(&foreignKeys)
+	require.NoError(t, err)
+	require.Zero(t, foreignKeys)
 
 	var eventTypeIndexDef string
 	err = db.QueryRow(`
@@ -307,7 +317,7 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 		  AND indexname = 'test_boundary_idx_event_type_order'
 	`).Scan(&eventTypeIndexDef)
 	require.NoError(t, err)
-	require.Contains(t, eventTypeIndexDef, "data ->> '__eventType'::text")
+	require.Contains(t, eventTypeIndexDef, "(event_type, transaction_id DESC, global_id DESC)")
 
 	var eventTypeColumnCount int
 	err = db.QueryRow(`
@@ -318,13 +328,13 @@ func TestRunDbScripts_MaintainsCurrentPostgresStorage(t *testing.T) {
 		  AND column_name = 'event_type'
 	`).Scan(&eventTypeColumnCount)
 	require.NoError(t, err)
-	require.Equal(t, 0, eventTypeColumnCount)
+	require.Equal(t, 1, eventTypeColumnCount)
 
 	var rowsMissingEventType int
 	err = db.QueryRow(`
 		SELECT COUNT(*)
 		FROM public.test_boundary_orisun_es_event
-		WHERE data->>'__eventType' IS DISTINCT FROM 'CurrentEvent'
+		WHERE event_type IS DISTINCT FROM 'CurrentEvent'
 	`).Scan(&rowsMissingEventType)
 	require.NoError(t, err)
 	require.Equal(t, 0, rowsMissingEventType)
@@ -505,20 +515,22 @@ func TestInsertsSerializePerBoundaryAndPositionsFollowCommitOrder(t *testing.T) 
 
 func insertEventInTx(ctx context.Context, tx *sql.Tx, eventID, eventType string) (int64, error) {
 	eventsJSON := fmt.Sprintf(
-		`[{"event_id":%q,"event_type":%q,"data":{"__eventType":%q},"metadata":{}}]`,
+		`[{"event_id":%q,"event_type":%q,"data":{},"metadata":{}}]`,
 		eventID,
-		eventType,
 		eventType,
 	)
 
 	var newGlobalID, latestTransactionID, latestGlobalID int64
-	err := tx.QueryRowContext(
+	args, err := insertEventRequestsArgs("test_boundary", "public",
+		[]postgresBatchPayload{{Consistency: json.RawMessage(`[]`), Events: json.RawMessage(eventsJSON)}}, [][]compiledCheck{nil})
+	if err != nil {
+		return 0, err
+	}
+	err = tx.QueryRowContext(
 		ctx,
 		`SELECT new_global_id, latest_transaction_id, latest_global_id
-         FROM public.insert_event_requests_v2($1::text, $2::text, $3::jsonb)`,
-		"test_boundary",
-		"public",
-		[]byte(`[{"consistency":[],"events":`+eventsJSON+`}]`),
+         FROM (`+insertEventRequestsSQL("public", "test_boundary")+`) AS outcome`,
+		args...,
 	).Scan(&newGlobalID, &latestTransactionID, &latestGlobalID)
 	return latestGlobalID, err
 }
@@ -1319,8 +1331,8 @@ func TestCreateAndDropBoundaryIndex(t *testing.T) {
 
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO public.test_boundary_orisun_es_event
-				(data)
-			VALUES (orisun_event_document(jsonb_build_object('__eventId', $1::text, 'amount','not-a-number'), '{}', 1, 0, 0, now()))
+				(global_id, transaction_id, write_id, event_id, date_created, event_type, metadata, data)
+			VALUES (0, 1, 0, $1, '2026-10-09T00:00:00Z', 'Created', '{}', '{"amount":"not-a-number"}')
 		`, uuid.NewString())
 		require.NoError(t, err)
 

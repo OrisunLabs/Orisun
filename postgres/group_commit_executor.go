@@ -16,6 +16,21 @@ type postgresBatchPayload struct {
 	Events      json.RawMessage `json:"events"`
 }
 
+// insertEventRequestsArgs binds one flush to the boundary write function.
+func insertEventRequestsArgs(boundary, schema string, payloads []postgresBatchPayload, checks [][]compiledCheck) ([]any, error) {
+	payloadJSON, err := json.Marshal(payloads)
+	if err != nil {
+		return nil, fmt.Errorf("marshal group commit payload: %w", err)
+	}
+	plan := planPostgresFlush(postgresEventTable(schema, boundary), checks)
+	return []any{
+		payloadJSON, plan.criterionCount,
+		plan.requestCheckOffsets, plan.checkCriterionOffsets, plan.checkCriterionIDs,
+		plan.expectedTransactions, plan.expectedGlobals,
+		plan.latestQuery, plan.equalityCriteria, plan.criterionShapes, plan.predicateQuery,
+	}, nil
+}
+
 // executeBatch owns database execution only. It returns a complete ordered set
 // of outcomes after consuming the SQL result to completion; it never completes
 // callers. PostgreSQL owns the writer lock, CCC matching, and atomic commit.
@@ -33,18 +48,19 @@ func (s *PostgresSaveEvents) executeBatch(
 		return nil, nil
 	}
 	payloads := make([]postgresBatchPayload, len(requests))
+	checks := make([][]compiledCheck, len(requests))
 	for i, request := range requests {
 		payloads[i] = request.payload
+		checks[i] = request.checks
 	}
-
-	payloadJSON, err := json.Marshal(payloads)
+	args, err := insertEventRequestsArgs(boundary, entry.mapping.Schema, payloads, checks)
 	if err != nil {
-		return nil, fmt.Errorf("marshal group commit payload: %w", err)
+		return nil, err
 	}
 	if s.logger.IsDebugEnabled() {
 		s.logger.Debugf("postgres group commit: boundary=%s requests=%d", boundary, len(requests))
 	}
-	rows, err := s.db.QueryContext(ctx, entry.insertEventRequests, boundary, entry.mapping.Schema, payloadJSON)
+	rows, err := s.db.QueryContext(ctx, entry.insertEventRequests, args...)
 	if err != nil {
 		return nil, err
 	}

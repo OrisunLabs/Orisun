@@ -13,8 +13,29 @@
   the storage upgrade policy for disk and rollback requirements. The upgrade
   sorts index rebuilds on disk, overriding `temp_store` while it runs, so its
   memory use does not grow with boundary size.
-- SQLite now rejects direct prepared saves whose data sets reserved root fields,
-  matching API ingress. They were previously overwritten silently.
+- PostgreSQL compiles CCC consistency queries in each caller before queueing,
+  instead of inside the serialized write function.
+- PostgreSQL installs a write function per boundary,
+  `<boundary>_orisun_write_events`, with its tables bound as constants, so the
+  bulk insert's plan is cached per session instead of being parsed and planned
+  on every flush while the writer lock is held. Boundary initialization
+  reinstalls it on every startup; startup drops the shared
+  `insert_event_requests_v2` and `insert_event_requests_v3` functions.
+  `orisun_event_document`, which builds in-flush CCC candidate documents, is
+  now declared `STABLE` so PostgreSQL inlines it instead of planning its body
+  for every request.
+- PostgreSQL stores the event envelope in typed columns and keeps only
+  application fields in `data`, removing the second copy of metadata from every
+  row. Criteria, index definitions, and reads on reserved `__*` fields are
+  unchanged. Startup upgrades schema versions 4 and 5 to version 6 by copying
+  each boundary's event table; see the storage upgrade policy for disk, lock,
+  and rollback requirements. The rewritten table no longer has the
+  `idx_global_order_covering` index, which duplicated the key of
+  `idx_event_order_visibility_covering`, or a foreign key to the write table;
+  both only added work to every insert.
+- SQLite and PostgreSQL now reject direct prepared saves whose data sets
+  reserved root fields, matching API ingress. They were previously overwritten
+  silently.
 
 ### Added
 

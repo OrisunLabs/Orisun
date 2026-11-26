@@ -14,18 +14,38 @@ needed for this upgrade.
 
 | Backend | Previous release | Current storage marker |
 | --- | --- | --- |
-| PostgreSQL | v0.13.0: per-boundary schema version `4`; v0.14.0: version `5`. | Schema version `5`; removes the obsolete publisher checkpoint table when upgrading from version `4`. |
+| PostgreSQL | v0.13.0: per-boundary schema version `4`; v0.14.0 to v0.14.3: version `5`. | Schema version `6`; moves envelope fields into typed columns and removes the obsolete publisher checkpoint table when upgrading from version `4`. |
 | SQLite | v0.13.0: event version `6`, metadata version `1`; v0.14.0: event version `7`, metadata version `2`; v0.14.1 to v0.14.3: event version `8`. | Event version `9`, metadata version `2`; moves envelope fields into typed columns and removes the obsolete publisher checkpoint table when upgrading metadata version `1`. |
 
 PostgreSQL upgrades commit with boundary initialization. SQLite upgrades commit
 inside a savepoint.
 Interrupted transactions leave the previous markers intact, so startup can retry.
-SQLite event versions `6`, `7`, and `8` upgrade atomically to `9`. The upgrade
-rewrites every event: envelope fields move to typed columns, and `data` keeps only
-application fields. Event IDs, positions, write contexts, application values, and
-metadata are preserved, and criteria on reserved fields select the same events.
-All indexes are rebuilt, with managed indexes regenerated from their stored
+PostgreSQL schema versions `4` and `5` upgrade atomically to `6`; SQLite event
+versions `6`, `7`, and `8` upgrade atomically to `9`. Both upgrades rewrite every
+event: envelope fields move to typed columns, and `data` keeps only application
+fields. Event IDs, positions, write contexts, application values, and metadata
+are preserved, and criteria on reserved fields select the same events. All
+indexes are rebuilt, with managed indexes regenerated from their stored
 definitions.
+
+PostgreSQL copies each boundary's event table in position order inside that
+boundary's initialization transaction, holding an exclusive lock on the table,
+and builds its indexes after the copy. Plan for:
+
+- Free disk space of about twice the event table and its indexes. The old and
+  new tables coexist until commit, and the new table is written to the WAL;
+  size archiving and replication slots for that volume. The old table's space
+  is released when the transaction commits; no `VACUUM FULL` is needed.
+- Upgrade time that grows linearly with boundary size. As a guide, 1 million
+  events of roughly 1.3 KB each (a 1.6 GB table with its indexes) took about 22
+  seconds with PostgreSQL 13 in Docker on an Apple M1 Pro, leaving a 1.0 GB
+  table. Measure a copy of your largest boundary before planning the
+  maintenance window.
+- Objects attached to the event table itself. Unmanaged indexes are recreated
+  from their definitions. Privileges granted directly on the table and triggers
+  on it are not carried over; reapply them afterwards. A view or other object
+  that depends on the table makes the upgrade fail without changing data; drop
+  it first and recreate it against the new columns.
 
 SQLite upgrade time grows linearly with boundary size and runs before the server
 accepts traffic. As a guide, 5 million events of roughly 1 KB each (a 3.4 GB
@@ -47,9 +67,12 @@ Disk and memory during the SQLite upgrade:
   previous size; run `VACUUM` offline to reclaim the space.
 
 The upgrade refuses to run, changing nothing, if an event holds an unknown
-top-level `__*` field or a write ID that disagrees with its position. Earlier
-binaries reject event version `9`, so rollback requires restoring the pre-upgrade
-backup.
+top-level `__*` field or a write ID that disagrees with its position. PostgreSQL
+also refuses an event ID that is not a canonical lowercase UUID, and an index not
+managed by Orisun whose definition references reserved `__*` fields; drop such an
+index first and recreate it on the envelope columns afterwards. Earlier binaries
+reject PostgreSQL schema version `6` and SQLite event version `9`, so rollback
+requires restoring the pre-upgrade backup.
 
 The runtime uses only the current format; it does not resume unfinished old
 conversion jobs or serve multiple event formats.

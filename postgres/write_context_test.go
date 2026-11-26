@@ -68,9 +68,7 @@ func TestWriteContextSQLGroupCommit(t *testing.T) {
 				payloads[i].Events, err = json.Marshal(events)
 				require.NoError(t, err)
 			}
-			payload, err := json.Marshal(payloads)
-			require.NoError(t, err)
-			rows, err := db.QueryContext(t.Context(), fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", payload)
+			rows, err := db.QueryContext(t.Context(), insertEventRequestsSQL("public", boundary), insertRequestsArgs(t, boundary, "public", payloads)...)
 			require.NoError(t, err)
 			ids := map[int]string{}
 			for rows.Next() {
@@ -115,9 +113,7 @@ func TestWriteContextSQLGroupCommit(t *testing.T) {
 			require.Equal(t, want, count)
 			// An insertion failure rolls back the entire flush, including write contexts.
 			broken := []postgresBatchPayload{{Consistency: json.RawMessage(`[]`), Events: json.RawMessage(`[{"event_id":"invalid-uuid","event_type":"Invalid","data":{},"metadata":{}}]`)}}
-			encoded, err := json.Marshal(broken)
-			require.NoError(t, err)
-			_, err = db.Exec(fmt.Sprintf(insertEventRequestsWithConsistency, "public"), boundary, "public", encoded)
+			_, err = db.Exec(insertEventRequestsSQL("public", boundary), insertRequestsArgs(t, boundary, "public", broken)...)
 			require.Error(t, err)
 			require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM public."+boundary+"_orisun_es_write").Scan(&count))
 			require.Equal(t, want, count)
@@ -137,12 +133,11 @@ func TestBackendOwnsEventEnvelope(t *testing.T) {
 	saver := NewPostgresSaveEvents(t.Context(), db, logger, mapping)
 	defer saver.close()
 	getter := NewPostgresGetEvents(db, logger, mapping)
-	storagecontract.Envelope(t, saver, getter, NewPostgresAdminDB(db, logger, "public", "test_boundary", mapping), "test_boundary", func(fields string) {
-		_, err := db.Exec("UPDATE test_boundary_orisun_es_event SET data = data || $1::jsonb", fields)
-		require.NoError(t, err)
-	})
+	// Saves reject reserved root keys and upgrades refuse them, so stored data
+	// holds application fields only.
+	storagecontract.Envelope(t, saver, getter, NewPostgresAdminDB(db, logger, "public", "test_boundary", mapping), "test_boundary", nil)
 	var id, kind string
-	require.NoError(t, db.QueryRow("SELECT data->>'__eventId', data->>'__eventType' FROM test_boundary_orisun_es_event").Scan(&id, &kind))
+	require.NoError(t, db.QueryRow("SELECT event_id::TEXT, event_type FROM test_boundary_orisun_es_event").Scan(&id, &kind))
 	require.NotEmpty(t, id)
 	require.Equal(t, "EnvelopeTest", kind)
 }

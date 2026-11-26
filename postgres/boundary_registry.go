@@ -81,7 +81,7 @@ func buildPostgresBoundary(mapping config.BoundaryToPostgresSchemaMapping) postg
 	schema := mapping.Schema
 	return postgresBoundary{
 		mapping:               mapping,
-		insertEventRequests:   fmt.Sprintf(insertEventRequestsWithConsistency, schema),
+		insertEventRequests:   insertEventRequestsSQL(schema, boundary),
 		selectEvents:          fmt.Sprintf(selectMatchingEvents, schema),
 		selectLatest:          fmt.Sprintf(selectLatestByCriteria, schema),
 		getEventCount:         fmt.Sprintf("SELECT event_count FROM %s.%s_events_count limit 1", schema, boundary),

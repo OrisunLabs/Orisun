@@ -23,9 +23,12 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const insertEventRequestsWithConsistency = `
-SELECT * FROM %s.insert_event_requests_v2($1::text, $2::text, $3::jsonb)
-`
+// insertEventRequestsSQL calls the boundary's own write function, installed by
+// initialize_boundary_tables with its tables bound as constants.
+func insertEventRequestsSQL(schema, boundary string) string {
+	return "SELECT * FROM " + pq.QuoteIdentifier(schema) + "." + pq.QuoteIdentifier(boundary+"_orisun_write_events") +
+		"($1::jsonb, $2::INT, $3::INT[], $4::INT[], $5::INT[], $6::BIGINT[], $7::BIGINT[], $8::text, $9::jsonb, $10::jsonb, $11::text)"
+}
 
 const selectMatchingEvents = `
 SELECT * FROM %s.get_matching_events_v4($1::text, $2::text, $3::jsonb, $4::jsonb, $5, $6::INT)

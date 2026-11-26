@@ -108,7 +108,7 @@ func TestGroupCommitExecutionPlanMatchesSequential(t *testing.T) {
 	require.Positive(t, accepted)
 	require.Positive(t, rejected)
 	for _, query := range []string{
-		`SELECT jsonb_agg(data - '__dateCreated' ORDER BY global_id)::text FROM public.%s_orisun_es_event`,
+		`SELECT jsonb_agg(jsonb_build_array(transaction_id, global_id, write_id, event_id, event_type, metadata, data) ORDER BY global_id)::text FROM public.%s_orisun_es_event`,
 		`SELECT jsonb_agg(jsonb_build_array(write_id,consistency) ORDER BY write_id)::text FROM public.%s_orisun_es_write`,
 	} {
 		var batch, reference string
@@ -129,7 +129,7 @@ func TestGroupCommitExecutionPlanMatchesSequential(t *testing.T) {
 
 func TestGroupCommitPersistenceFailureInvalidatesEntirePlan(t *testing.T) {
 	db, saver, _ := newExecutionTest(t)
-	_, err := db.Exec(`CREATE FUNCTION public.reject_planned_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.data->>'__eventType' = 'Fail' THEN RAISE EXCEPTION 'injected persistence failure'; END IF; RETURN NEW; END $$;
+	_, err := db.Exec(`CREATE FUNCTION public.reject_planned_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type = 'Fail' THEN RAISE EXCEPTION 'injected persistence failure'; END IF; RETURN NEW; END $$;
  CREATE TRIGGER reject_planned_event BEFORE INSERT ON public.test_boundary_orisun_es_event FOR EACH ROW EXECUTE FUNCTION public.reject_planned_event()`)
 	require.NoError(t, err)
 	request := func(kind string, checks []orisun.ConsistencyCheck) *postgresTestRequest {

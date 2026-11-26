@@ -101,7 +101,7 @@ func TestPostgresGroupCommit_Unconditional(t *testing.T) {
 
 	rows, err := db.QueryContext(
 		t.Context(),
-		`SELECT data->>'__eventId', transaction_id, global_id, pg_xact_id
+		`SELECT event_id::TEXT, transaction_id, global_id, pg_xact_id
 		 FROM public.test_boundary_orisun_es_event
 		 WHERE data->>'aggregate' = 'unconditional-context'
 		 ORDER BY global_id`,
@@ -247,7 +247,7 @@ func TestPostgresGroupCommit_UnconditionalMultipleEventsPerRequest(t *testing.T)
 
 	rows, err := db.QueryContext(
 		t.Context(),
-		`SELECT transaction_id, global_id, pg_xact_id, data->>'__eventType'
+		`SELECT transaction_id, global_id, pg_xact_id, event_type
 		 FROM public.test_boundary_orisun_es_event
 		 WHERE data->>'aggregate' = $1
 		 ORDER BY global_id`,
@@ -428,7 +428,7 @@ func TestPostgresGroupCommit_InBatchWriteInvalidatesLaterCCCCheck(t *testing.T) 
 		t.Context(),
 		`SELECT COUNT(DISTINCT pg_xact_id)
 		 FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'__eventType' IN ('First', 'Second', 'Independent')`,
+		 WHERE event_type IN ('First', 'Second', 'Independent')`,
 	).Scan(&transactionCount)
 	require.NoError(t, err)
 	require.Equal(t, 1, transactionCount, "successful requests in the flush must share one database transaction")
@@ -812,7 +812,7 @@ func TestPostgresGroupCommit_TwoSaversContendOnSameContexts(t *testing.T) {
 		        COUNT(DISTINCT data->>'stream_id'),
 		        MAX(global_id)
 		 FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'__eventType' = 'Contention'`,
+		 WHERE event_type = 'Contention'`,
 	).Scan(&persistedCount, &distinctContextCount, &maxGlobalID))
 	require.Equal(t, int64(contextCount), persistedCount)
 	require.Equal(t, int64(contextCount), distinctContextCount)
@@ -1035,7 +1035,7 @@ func TestPostgresGroupCommit_IndependentCCC(t *testing.T) {
 		t.Context(),
 		`SELECT COUNT(*), COUNT(DISTINCT pg_xact_id)
 		 FROM public.test_boundary_orisun_es_event
-		 WHERE data->>'__eventType' = 'IndependentV2'`,
+		 WHERE event_type = 'IndependentV2'`,
 	).Scan(&persisted, &transactions))
 	require.Equal(t, 3, persisted, "the stale request must not persist")
 	require.Equal(t, 1, transactions, "accepted requests must share one database transaction")
@@ -1080,7 +1080,7 @@ func TestPostgresGroupCommit_TypedSnapshotHistory(t *testing.T) {
 		"test_boundary": {Boundary: "test_boundary", Schema: "public"},
 	})
 	t.Cleanup(saver.close)
-	_, err = db.Exec(`CREATE INDEX typed_snapshot_guard ON public.test_boundary_orisun_es_event ((data->>'aggregate'), transaction_id DESC, global_id DESC) WHERE data->>'__eventType' = 'Guard'`)
+	_, err = db.Exec(`CREATE INDEX typed_snapshot_guard ON public.test_boundary_orisun_es_event ((data->>'aggregate'), transaction_id DESC, global_id DESC) WHERE event_type = 'Guard'`)
 	require.NoError(t, err)
 	const key = "customer's context"
 	tx, gid, err := saver.Save(t.Context(), []orisun.EventWithMapTags{
