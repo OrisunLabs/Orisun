@@ -140,8 +140,11 @@ $$;
 -- The logical event document: application data plus the envelope under its
 -- reserved keys. Group commit matches operator criteria against it for events
 -- not yet stored; stored rows keep the envelope in typed columns instead.
+-- STABLE, not IMMUTABLE: jsonb_build_object is STABLE, and PostgreSQL inlines
+-- a SQL function only when its body is no more volatile than declared. An
+-- IMMUTABLE declaration would plan and execute the body separately per call.
 CREATE OR REPLACE FUNCTION orisun_event_document(payload JSONB, meta JSONB, tx BIGINT, gid BIGINT, wid BIGINT, created TEXT)
-RETURNS JSONB LANGUAGE SQL IMMUTABLE AS $$
+RETURNS JSONB LANGUAGE SQL STABLE AS $$
  SELECT payload || jsonb_build_object(
   '__commitPosition', tx, '__preparePosition', gid,
   '__writeId', CASE WHEN wid IS NULL THEN NULL ELSE tx::TEXT || ':' || wid::TEXT END,

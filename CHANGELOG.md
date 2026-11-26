@@ -19,6 +19,9 @@
   on every flush while the writer lock is held. Boundary initialization
   reinstalls it on every startup; startup drops the shared
   `insert_event_requests_v2` and `insert_event_requests_v3` functions.
+  `orisun_event_document`, which builds in-flush CCC candidate documents, is
+  now declared `STABLE` so PostgreSQL inlines it instead of planning its body
+  for every request.
 - PostgreSQL stores the event envelope in typed columns and keeps only
   application fields in `data`, removing the second copy of metadata from every
   row. Criteria, index definitions, and reads on reserved `__*` fields are
