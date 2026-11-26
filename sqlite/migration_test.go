@@ -147,86 +147,125 @@ func TestSchemaInitializationFailureRollsBack(t *testing.T) {
 	}
 }
 
-func TestStorageUpgradesV013WithoutRewritingDocuments(t *testing.T) {
-	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "previous.db"))
-	if err := sqlitex.ExecuteScript(conn, eventDDL+`
+func execScript(t *testing.T, conn *sqlite.Conn, script string) {
+	t.Helper()
+	if err := sqlitex.ExecuteScript(conn, script, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func queryStrings(t *testing.T, conn *sqlite.Conn, query string) []string {
+	t.Helper()
+	var rows []string
+	if err := sqlitex.ExecuteTransient(conn, query, &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+		rows = append(rows, stmt.ColumnText(0))
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+func TestStorageUpgradeSplitsEnvelopeFromDocuments(t *testing.T) {
+	for _, version := range []int{6, 7, 8} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "previous.db"))
+			execScript(t, conn, legacyEventDDL+`
  INSERT INTO orisun_es_write VALUES(10, '[]');
  INSERT INTO orisun_es_event(data) VALUES
- ('{"__eventId":"a","__eventType":"Created","__commitPosition":11,"__preparePosition":10,"__writeId":"11:10","__dateCreated":"2026-10-09T00:00:00Z","__metadata":{},"account":"a"}'),
- ('{"__eventId":"b","__eventType":"Historical","__commitPosition":1,"__preparePosition":0,"__writeId":null,"__dateCreated":"2026-10-08T00:00:00Z","__metadata":{},"account":"b"}');
+ ('{"__eventId":"a","__eventType":"Created","__commitPosition":11,"__preparePosition":10,"__writeId":"11:10","__dateCreated":"2026-10-09T00:00:00Z","__metadata":{"source":"api"},"account":"a","big":9007199254740993,"ratio":0.123456789012345678901,"text":"caf\u00e9"}'),
+ ('{"__eventId":"b","__eventType":"Historical","__commitPosition":1,"__preparePosition":0,"__writeId":null,"__dateCreated":"2026-10-08T00:00:00Z","__metadata":null,"account":"b"}');
  CREATE INDEX custom_account ON orisun_es_event(json_extract(data, '$.account'));
  UPDATE orisun_es_seq SET next_id=100;
  INSERT INTO orisun_boundary_index_metadata(name,fields,conditions,combinator) VALUES('managed_account','[{"JsonKey":"account","ValueType":"text"}]','[]','AND');
- PRAGMA user_version=6;`, nil); err != nil {
-		t.Fatal(err)
+ INSERT INTO orisun_boundary_index_metadata(name,fields,conditions,combinator) VALUES('created_accounts','[{"JsonKey":"account","ValueType":"text"}]','[{"Key":"__eventType","Operator":"=","Value":"Created"}]','AND');
+`+fmt.Sprintf("PRAGMA user_version=%d;", version))
+			execScript(t, conn, "PRAGMA temp_store = MEMORY;")
+			for range 2 {
+				if err := applyMigrations(conn); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The upgrade spills its sorts to disk, then restores the configured setting.
+			if got := queryStrings(t, conn, "PRAGMA temp_store"); got[0] != "2" {
+				t.Fatalf("temp_store not restored: %v", got)
+			}
+			if connSchemaVersion(t, conn) != eventSchemaVersion {
+				t.Fatal("version not upgraded")
+			}
+			got := queryStrings(t, conn, "SELECT json_array(global_id, transaction_id, write_id, event_id, event_type, date_created, metadata) || data FROM orisun_es_event ORDER BY global_id")
+			want := []string{
+				`[0,1,null,"b","Historical","2026-10-08T00:00:00Z","null"]{"account":"b"}`,
+				`[10,11,10,"a","Created","2026-10-09T00:00:00Z","{\"source\":\"api\"}"]{"account":"a","big":9007199254740993,"ratio":0.123456789012345678901,"text":"caf\u00e9"}`,
+			}
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+			// The counter row is gone; allocation resumes after the last committed event.
+			if got := queryStrings(t, conn, "SELECT name FROM sqlite_schema WHERE name = 'orisun_es_seq'"); len(got) != 0 {
+				t.Fatal("position counter table remained")
+			}
+			if next, err := nextGlobalID(conn); err != nil || next != 11 {
+				t.Fatalf("next global id = %d, %v; want 11", next, err)
+			}
+			if got := queryStrings(t, conn, "SELECT consistency FROM orisun_es_write WHERE write_id=10"); got[0] != "[]" {
+				t.Fatalf("context changed: %v", got)
+			}
+			indexes := strings.Join(queryStrings(t, conn, "SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='orisun_es_event' ORDER BY name"), ",")
+			if indexes != "created_accounts_idx,custom_account,idx_event_position,idx_event_type_order,managed_account_idx" {
+				t.Fatalf("indexes: %s", indexes)
+			}
+			// A managed index on an envelope key must match its freshly built form.
+			ddl, _, err := buildSQLiteBoundaryIndexDDL("created_accounts", []eventstore.BoundaryIndexField{{JsonKey: "account", ValueType: "text"}}, []eventstore.BoundaryIndexCondition{{Key: "__eventType", Operator: "=", Value: "Created"}}, "AND")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyBoundaryIndexDefinition(conn, "created_accounts", ddl); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(queryStrings(t, conn, "SELECT sql FROM sqlite_schema WHERE name='created_accounts_idx'")[0], "WHERE event_type = 'Created'") {
+				t.Fatal("managed condition still reads the document")
+			}
+		})
 	}
-	ddl, _, err := buildSQLiteBoundaryIndexDDL("managed_account", []eventstore.BoundaryIndexField{{JsonKey: "account", ValueType: "text"}}, nil, "AND")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sqlitex.ExecuteTransient(conn, ddl, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := sqlitex.ExecuteTransient(conn, "SELECT sql FROM sqlite_schema WHERE name='managed_account_idx'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
-		ddl = stmt.ColumnText(0)
-		return nil
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	var before []string
-	read := func(out *[]string) error {
-		return sqlitex.ExecuteTransient(conn, "SELECT data FROM orisun_es_event ORDER BY global_id", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error { *out = append(*out, stmt.ColumnText(0)); return nil }})
-	}
-	if err := read(&before); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := applyMigrations(conn); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if connSchemaVersion(t, conn) != eventSchemaVersion {
-		t.Fatal("version not upgraded")
-	}
-	if err := sqlitex.ExecuteTransient(conn, "SELECT sql FROM sqlite_schema WHERE name='managed_account_idx'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
-		if stmt.ColumnText(0) != ddl {
-			t.Fatal("managed index changed")
-		}
-		return nil
-	}}); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	var after []string
-	if err := read(&after); err != nil {
+func TestStorageUpgradeRefusesUnrepresentableEventsWithoutChangingData(t *testing.T) {
+	for name, document := range map[string]string{
+		"unknown reserved field": `{"__eventId":"a","__eventType":"T","__commitPosition":1,"__preparePosition":1,"__writeId":null,"__dateCreated":"2026-10-09T00:00:00Z","__metadata":{},"__custom":1}`,
+		"foreign write id":       `{"__eventId":"a","__eventType":"T","__commitPosition":1,"__preparePosition":1,"__writeId":"9:1","__dateCreated":"2026-10-09T00:00:00Z","__metadata":{}}`,
+		"missing event id":       `{"__eventType":"T","__commitPosition":1,"__preparePosition":1,"__writeId":null,"__dateCreated":"2026-10-09T00:00:00Z","__metadata":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "previous.db"))
+			execScript(t, conn, legacyEventDDL+"INSERT INTO orisun_es_write VALUES(1, '[]'); INSERT INTO orisun_es_event(data) VALUES('"+document+"'); PRAGMA user_version=8; PRAGMA temp_store=MEMORY;")
+			if err := applyMigrations(conn); err == nil {
+				t.Fatal("upgrade accepted unrepresentable event")
+			}
+			if got := queryStrings(t, conn, "PRAGMA temp_store"); got[0] != "2" {
+				t.Fatalf("temp_store not restored: %v", got)
+			}
+			if got := connSchemaVersion(t, conn); got != 8 {
+				t.Fatalf("version changed to %d", got)
+			}
+			if got := queryStrings(t, conn, "SELECT data FROM orisun_es_event"); len(got) != 1 || got[0] != document {
+				t.Fatalf("document changed: %v", got)
+			}
+			if got := queryStrings(t, conn, "SELECT name FROM sqlite_schema WHERE name='orisun_es_event_v9'"); len(got) != 0 {
+				t.Fatal("temporary table remained")
+			}
+		})
+	}
+}
+
+// v0.14.3 and earlier binaries reject this version instead of misreading rows.
+func TestFreshSchemaIsNotTheLegacyDocumentFormat(t *testing.T) {
+	conn := openMigrationTestConn(t, filepath.Join(t.TempDir(), "fresh.db"))
+	if err := applyMigrations(conn); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(before, "\n") != strings.Join(after, "\n") {
-		t.Fatal("documents changed")
-	}
-	if err := sqlitex.ExecuteTransient(conn, "SELECT next_id FROM orisun_es_seq", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
-		if stmt.ColumnInt64(0) != 100 {
-			t.Fatal("sequence changed")
-		}
-		return nil
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sqlitex.ExecuteTransient(conn, "SELECT consistency FROM orisun_es_write WHERE write_id=10", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
-		if stmt.ColumnText(0) != "[]" {
-			t.Fatal("context changed")
-		}
-		return nil
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sqlitex.ExecuteTransient(conn, "SELECT count(*) FROM sqlite_schema WHERE name='custom_account'", &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
-		if stmt.ColumnInt64(0) != 1 {
-			t.Fatal("index lost")
-		}
-		return nil
-	}}); err != nil {
-		t.Fatal(err)
+	if connSchemaVersion(t, conn) <= 8 {
+		t.Fatal("split storage must not share a legacy version")
 	}
 }
 

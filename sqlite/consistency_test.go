@@ -134,3 +134,84 @@ func TestPreparedConsistencyChecksPreserveOrderAndSnapshot(t *testing.T) {
 	require.Equal(t, before, prepared[0].queries)
 	require.Equal(t, orisun.NotExistsPosition(), prepared[0].position)
 }
+
+// Envelope fields moved to columns, but criteria keep JSON-field semantics:
+// positions compare as text for equality and as exact numbers for ranges.
+func TestEnvelopeCriteriaKeepFieldSemantics(t *testing.T) {
+	saver, getter, _, cleanup := setupBenchmarkPools(t)
+	defer cleanup()
+	ctx := t.Context()
+	for i, event := range []orisun.EventWithMapTags{
+		{EventId: "a", EventType: "Alpha", Data: `{"k":"v"}`, Metadata: `{"tier":"gold"}`},
+		{EventId: "b", EventType: "Beta", Data: `{"k":"v"}`, Metadata: `"plain"`},
+		{EventId: "c", EventType: "Gamma", Data: `{"k":"v"}`, Metadata: `7`},
+	} {
+		_, gid, err := saver.Save(ctx, []orisun.EventWithMapTags{event}, benchBoundary, nil)
+		require.NoError(t, err)
+		require.EqualValues(t, i+1, gid)
+	}
+	cases := []struct {
+		key, op, value string
+		want           []string
+	}{
+		{"__eventId", "", "b", []string{"b"}},
+		{"__eventId", "ne", "b", []string{"a", "c"}},
+		{"__eventId", "gt", "a", []string{"b", "c"}},
+		{"__eventType", "", "Gamma", []string{"c"}},
+		{"__eventType", "lte", "Beta", []string{"a", "b"}},
+		{"__preparePosition", "", "2", []string{"b"}},
+		{"__preparePosition", "", "2.0", nil},
+		{"__preparePosition", "gt", "1", []string{"b", "c"}},
+		{"__preparePosition", "lt", "2.5", []string{"a", "b"}},
+		{"__preparePosition", "gt", "not-a-number", nil},
+		{"__commitPosition", "gte", "3", []string{"c"}},
+		{"__writeId", "", "2:2", []string{"b"}},
+		{"__writeId", "gt", "2:2", []string{"c"}},
+		{"__metadata", "", `{"tier":"gold"}`, []string{"a"}},
+		{"__metadata", "", "plain", []string{"b"}},
+		{"__metadata", "", "7", []string{"c"}},
+		{"__metadata", "gte", "7", []string{"b", "c"}},
+		{"__metadata", "gt", "a", []string{"b"}},
+		{"__unknown", "", "x", nil},
+		{"__eventId", "", "x' OR '1'='1", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key+" "+tc.op+" "+tc.value, func(t *testing.T) {
+			batch, err := getter.GetBatch(ctx, &orisun.GetEventsRequest{Boundary: benchBoundary, Direction: orisun.Direction_ASC, Count: 10, Query: &orisun.Query{Criteria: []*orisun.Criterion{{Tags: []*orisun.Tag{{Key: tc.key, Value: tc.value, Operator: tc.op}}}}}})
+			require.NoError(t, err)
+			var got []string
+			for _, event := range batch {
+				got = append(got, event.EventId)
+			}
+			require.Equal(t, tc.want, got)
+		})
+	}
+	first, err := getter.GetBatch(ctx, &orisun.GetEventsRequest{Boundary: benchBoundary, Direction: orisun.Direction_ASC, Count: 1})
+	require.NoError(t, err)
+	require.Equal(t, `{"k":"v"}`, first[0].Data)
+	require.Equal(t, `{"tier":"gold"}`, first[0].Metadata)
+	require.Equal(t, "1:1", first[0].WriteId)
+}
+
+// Position reads rely on the rowid trailing the index in both directions.
+func TestPositionOrderReadsUseIndex(t *testing.T) {
+	_, pool, cleanup := newGCTestSaver(t)
+	defer cleanup()
+	conn, err := pool.Read.Take(t.Context())
+	require.NoError(t, err)
+	defer pool.Read.Put(conn)
+	for _, query := range []string{
+		"SELECT global_id FROM orisun_es_event ORDER BY transaction_id ASC, global_id ASC LIMIT 1",
+		"SELECT global_id FROM orisun_es_event ORDER BY transaction_id DESC, global_id DESC LIMIT 1",
+		"SELECT global_id FROM orisun_es_event WHERE (transaction_id, global_id) >= (5, 2) ORDER BY transaction_id ASC, global_id ASC LIMIT 1",
+		"SELECT global_id FROM orisun_es_event WHERE (transaction_id, global_id) <= (5, 2) ORDER BY transaction_id DESC, global_id DESC LIMIT 1",
+	} {
+		var plan strings.Builder
+		require.NoError(t, sqlitex.ExecuteTransient(conn, "EXPLAIN QUERY PLAN "+query, &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
+			plan.WriteString(stmt.ColumnText(3))
+			return nil
+		}}))
+		require.Contains(t, plan.String(), "idx_event_position", query)
+		require.NotContains(t, plan.String(), "TEMP B-TREE", query)
+	}
+}

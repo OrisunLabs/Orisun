@@ -119,8 +119,8 @@ Events have four caller-supplied fields:
 Orisun also stores a durable `position`, `date_created`, and `write_id` on committed events. Empty or JSON-null `data` is normalized to `{}`; arrays and scalar data are rejected. SDK validators can impose stricter caller-side requirements.
 
 :::note
-Storage backends expose the event envelope through reserved fields in the
-queryable document:
+Storage backends expose the event envelope through reserved fields that criteria,
+index definitions, and live filters address like any other field:
 
 | Document field | Envelope value |
 | --- | --- |
@@ -132,12 +132,14 @@ queryable document:
 | `__dateCreated` | Creation timestamp, in UTC RFC 3339 format |
 | `__metadata` | The metadata JSON value |
 
-PostgreSQL and SQLite persist these values inside `data`. Their ordering and
-write-context columns are generated projections of that document, not separate
-writable values. PostgreSQL retains `pg_xact_id` as internal visibility bookkeeping.
+PostgreSQL persists these values inside `data`. Its ordering and write-context
+columns are generated projections of that document, not separate writable values,
+and it retains `pg_xact_id` as internal visibility bookkeeping. SQLite stores them
+in typed columns and keeps only application data in `data`. Reserved field names
+behave the same on both.
 
-On retrieval, the backend extracts the usual envelope and removes **all
-top-level `__*` fields** from returned application `data`. Nested fields and
+On retrieval, returned application `data` never contains top-level `__*` fields.
+Nested fields and
 metadata values remain untouched. API and SDK event shapes stay unchanged.
 Content criteria and live subscription filters use reserved names, for example
 `{"key":"__eventId","value":"your-event-id"}`. Metadata is a JSON value under

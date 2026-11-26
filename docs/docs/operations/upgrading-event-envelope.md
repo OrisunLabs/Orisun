@@ -15,14 +15,44 @@ needed for this upgrade.
 | Backend | Previous release | Current storage marker |
 | --- | --- | --- |
 | PostgreSQL | v0.13.0: per-boundary schema version `4`; v0.14.0: version `5`. | Schema version `5`; removes the obsolete publisher checkpoint table when upgrading from version `4`. |
-| SQLite | v0.13.0: event version `6`, metadata version `1`; v0.14.0: event version `7`, metadata version `2`. | Event version `8`, metadata version `2`; repairs the built-in event-type index and removes the obsolete publisher checkpoint table when upgrading metadata version `1`. |
+| SQLite | v0.13.0: event version `6`, metadata version `1`; v0.14.0: event version `7`, metadata version `2`; v0.14.1 to v0.14.3: event version `8`. | Event version `9`, metadata version `2`; moves envelope fields into typed columns and removes the obsolete publisher checkpoint table when upgrading metadata version `1`. |
 
 PostgreSQL upgrades commit with boundary initialization. SQLite upgrades commit
 inside a savepoint.
 Interrupted transactions leave the previous markers intact, so startup can retry.
-SQLite event versions `6` and `7` upgrade atomically to `8` by rebuilding only the built-in event-type index with the same scalar JSON expression used by reads and CCC. Application-managed indexes, event documents, write contexts and positions remain unchanged. Fresh databases create the corrected index directly. The runtime uses only current
-documents; it does not resume unfinished old conversion jobs or serve multiple
-event formats.
+SQLite event versions `6`, `7`, and `8` upgrade atomically to `9`. The upgrade
+rewrites every event: envelope fields move to typed columns, and `data` keeps only
+application fields. Event IDs, positions, write contexts, application values, and
+metadata are preserved, and criteria on reserved fields select the same events.
+All indexes are rebuilt, with managed indexes regenerated from their stored
+definitions.
+
+SQLite upgrade time grows linearly with boundary size and runs before the server
+accepts traffic. As a guide, 5 million events of roughly 1 KB each (a 3.4 GB
+event database) took about two minutes on an Apple M1 Pro SSD. Measure a copy of
+your largest boundary before planning the maintenance window.
+
+Disk and memory during the SQLite upgrade:
+
+- Keep free disk space of about 2.5 times the event database size on its volume.
+  Old and new tables coexist until commit, and the rewrite passes through the WAL.
+- Index rebuilds sort on disk. The upgrade temporarily overrides
+  `ORISUN_SQLITE_TEMP_STORE` with `FILE`, so memory stays small regardless of
+  boundary size, then restores the configured value. The sort files go to
+  SQLite's temporary directory: `SQLITE_TMPDIR`, else `TMPDIR`, else `/var/tmp`,
+  else `/tmp`. If that directory is a memory-backed `tmpfs`, as in many
+  containers, the sort consumes memory again; point `SQLITE_TMPDIR` at a
+  disk-backed directory for the first start.
+- The database file does not shrink afterward, growing to about 1.5 times its
+  previous size; run `VACUUM` offline to reclaim the space.
+
+The upgrade refuses to run, changing nothing, if an event holds an unknown
+top-level `__*` field or a write ID that disagrees with its position. Earlier
+binaries reject event version `9`, so rollback requires restoring the pre-upgrade
+backup.
+
+The runtime uses only the current format; it does not resume unfinished old
+conversion jobs or serve multiple event formats.
 
 Events saved before write-context recording retain their missing evidence: their
 `write_id` is empty, and no consistency observations are fabricated. New writes

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Changed
+
+- Server builds, container images and CI use Go 1.27.4. Source builds require
+  Go 1.27.4 or newer.
+- SQLite stores the event envelope in typed columns and keeps only application
+  fields in `data`, clustering the log by `global_id`. Criteria, index
+  definitions, and live filters on reserved `__*` fields are unchanged. Startup
+  upgrades event versions 6, 7, and 8 to version 9 by rewriting every event; see
+  the storage upgrade policy for disk and rollback requirements. The upgrade
+  sorts index rebuilds on disk, overriding `temp_store` while it runs, so its
+  memory use does not grow with boundary size.
+- SQLite now rejects direct prepared saves whose data sets reserved root fields,
+  matching API ingress. They were previously overwritten silently.
+
 ### Added
 
 - Added `SaveEventsV2`, which atomically validates multiple query-level

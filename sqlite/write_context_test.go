@@ -139,7 +139,7 @@ func TestWriteContextRollsBackOnEventInsertFailure(t *testing.T) {
 	defer cleanup()
 	requests := []*sqliteTestRequest{
 		{ctx: t.Context(), consistencyJSON: "[]", inserts: orisun.PreparedEventBatch{{EventId: "bad", EventType: "Bad", DataJSON: "invalid json", MetadataJSON: "{}"}}, result: make(chan sqliteSaveResult, 1)},
-		{ctx: t.Context(), consistencyJSON: "[]", inserts: orisun.PreparedEventBatch{{EventId: "good", EventType: "Good", DataJSON: `{"__eventType":"Good"}`, MetadataJSON: "{}"}}, result: make(chan sqliteSaveResult, 1)},
+		{ctx: t.Context(), consistencyJSON: "[]", inserts: orisun.PreparedEventBatch{{EventId: "good", EventType: "Good", DataJSON: `{"kind":"Good"}`, MetadataJSON: "{}"}}, result: make(chan sqliteSaveResult, 1)},
 	}
 	conn, err := pool.Write.Take(t.Context())
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestWriteContextRequestRollbackAcrossEventChunks(t *testing.T) {
 		t.Run(failAt, func(t *testing.T) {
 			saver, pool, cleanup := newGCTestSaver(t)
 			defer cleanup()
-			events := make(orisun.PreparedEventBatch, sqliteMaxEventsPerInsert+1)
+			events := make(orisun.PreparedEventBatch, 1000)
 			for i := range events {
 				events[i] = orisun.PreparedEvent{EventId: fmt.Sprint(i), EventType: "Created", DataJSON: "{}", MetadataJSON: "{}"}
 			}
@@ -186,7 +186,7 @@ func TestWriteContextRequestRollbackAcrossEventChunks(t *testing.T) {
 			require.Empty(t, accepted)
 			require.ErrorContains(t, (<-request.result).err, "injected failure")
 			require.NoError(t, sqlitex.Execute(conn,
-				"SELECT (SELECT COUNT(*) FROM orisun_es_write), (SELECT COUNT(*) FROM orisun_es_event), next_id FROM orisun_es_seq",
+				"SELECT (SELECT COUNT(*) FROM orisun_es_write), (SELECT COUNT(*) FROM orisun_es_event), (SELECT COALESCE(MAX(global_id), 0) + 1 FROM orisun_es_event)",
 				&sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error {
 					require.Zero(t, stmt.ColumnInt64(0))
 					require.Zero(t, stmt.ColumnInt64(1))

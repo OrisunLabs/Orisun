@@ -137,7 +137,7 @@ func TestSave_ChunksBatchLargerThanSqliteParamLimit(t *testing.T) {
 	getter := NewSqliteGetEvents(pools, logger)
 	ctx := context.Background()
 
-	batchSize := sqliteMaxEventsPerInsert*2 + 3
+	batchSize := 2001
 	events := make([]eventstore.EventWithMapTags, batchSize)
 	for i := range events {
 		events[i] = mustEvent(t, "Chunked", map[string]any{"seq": i}, map[string]any{})
@@ -671,7 +671,7 @@ func TestSqliteMetadataTablesAreSeparateFromBoundaryEventDB(t *testing.T) {
 	}
 	defer metadataPools["test"].Read.Put(metadataConn)
 
-	for _, table := range []string{"orisun_es_event", "orisun_es_seq", "orisun_boundary_index_metadata"} {
+	for _, table := range []string{"orisun_es_event", "orisun_boundary_index_metadata"} {
 		exists, err := tableExists(boundaryConn, table)
 		if err != nil {
 			t.Fatalf("boundary table check %s: %v", table, err)

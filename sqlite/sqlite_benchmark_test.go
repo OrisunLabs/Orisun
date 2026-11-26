@@ -38,11 +38,11 @@ const (
 // setupBenchmarkPools opens a single-boundary pool set against a temp directory
 // using SQLite's durable FULL synchronous mode.
 // Returns the SqliteSaveEvents/SqliteAdminDB and a teardown closure.
-func setupBenchmarkPools(b *testing.B) (*SqliteSaveEvents, *SqliteGetEvents, *SqliteAdminDB, func()) {
+func setupBenchmarkPools(b testing.TB) (*SqliteSaveEvents, *SqliteGetEvents, *SqliteAdminDB, func()) {
 	return setupBenchmarkPoolsWithSynchronous(b, "FULL")
 }
 
-func setupBenchmarkPoolsWithSynchronous(b *testing.B, synchronous string) (*SqliteSaveEvents, *SqliteGetEvents, *SqliteAdminDB, func()) {
+func setupBenchmarkPoolsWithSynchronous(b testing.TB, synchronous string) (*SqliteSaveEvents, *SqliteGetEvents, *SqliteAdminDB, func()) {
 	b.Helper()
 	dir := b.TempDir()
 	logger, err := logging.ZapLogger("warn")

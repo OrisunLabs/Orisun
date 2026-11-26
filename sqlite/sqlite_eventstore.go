@@ -16,7 +16,6 @@ import (
 	common "github.com/OrisunLabs/Orisun/admin/slices/common"
 	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	config "github.com/OrisunLabs/Orisun/config"
-	"github.com/OrisunLabs/Orisun/internal/eventdata"
 	"github.com/OrisunLabs/Orisun/internal/groupcommit"
 	"github.com/OrisunLabs/Orisun/internal/statuscode"
 	"github.com/OrisunLabs/Orisun/logging"
@@ -122,15 +121,52 @@ func renderCriterionPredicate(key string, value any) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		expr := sqliteJSONScalarTextExpr(key)
 		if op == "=" || op == "<>" {
-			parts = append(parts, expr+" "+op+" "+lit)
+			parts = append(parts, sqliteJSONScalarTextExpr(key)+" "+op+" "+lit)
 		} else {
-			path := jsonPathLiteral(key)
-			parts = append(parts, fmt.Sprintf("(CASE json_type(data, %s) WHEN 'text' THEN (%s COLLATE BINARY %s %s) WHEN 'integer' THEN (orisun_compare_number(data -> %s, %s) %s 0) WHEN 'real' THEN (orisun_compare_number(data -> %s, %s) %s 0) ELSE 0 END)", path, expr, op, lit, path, lit, op, path, lit, op))
+			parts = append(parts, sqliteRangePredicate(key, op, lit))
 		}
 	}
 	return "(" + strings.Join(parts, " AND ") + ")", nil
+}
+
+// envelopeColumn is the physical source of one storage-owned criteria key.
+// Numeric columns keep JSON number semantics: text equality and range comparison.
+type envelopeColumn struct {
+	expr    string
+	numeric bool
+}
+
+// Reads, CCC, and index definitions all address the envelope through these
+// keys. Physical columns are invisible to the query contract.
+var envelopeColumns = map[string]envelopeColumn{
+	"__eventId":         {expr: "event_id"},
+	"__eventType":       {expr: "event_type"},
+	"__dateCreated":     {expr: "date_created"},
+	"__writeId":         {expr: eventWriteIDExpr},
+	"__commitPosition":  {expr: "transaction_id", numeric: true},
+	"__preparePosition": {expr: "global_id", numeric: true},
+}
+
+// eventWriteIDExpr is NULL for events saved before write contexts were recorded.
+const eventWriteIDExpr = "(transaction_id || ':' || write_id)"
+
+// jsonFieldSource locates a key held in a JSON column. Metadata is one JSON
+// value rather than a member of data, so its root stands in for the field.
+func jsonFieldSource(key string) (document, path string) {
+	if key == "__metadata" {
+		return "metadata", "'$'"
+	}
+	return "data", jsonPathLiteral(key)
+}
+
+// sqliteFieldValueExpr renders a key's value with json_extract typing.
+func sqliteFieldValueExpr(key string) string {
+	if column, ok := envelopeColumns[key]; ok {
+		return column.expr
+	}
+	document, path := jsonFieldSource(key)
+	return fmt.Sprintf("json_extract(%s, %s)", document, path)
 }
 
 // sqliteJSONScalarTextExpr mirrors PG's `data->>'key'` text rendering: booleans
@@ -138,11 +174,32 @@ func renderCriterionPredicate(key string, value any) (string, error) {
 // the ELSE branch where json_extract yields SQL NULL — so, like PG's ->>, a
 // stored JSON null never matches any criteria value.
 func sqliteJSONScalarTextExpr(key string) string {
-	path := jsonPathLiteral(key)
-	base := fmt.Sprintf("json_extract(data, %s)", path)
+	if column, ok := envelopeColumns[key]; ok {
+		if column.numeric {
+			return "CAST(" + column.expr + " AS TEXT)"
+		}
+		return column.expr
+	}
+	document, path := jsonFieldSource(key)
 	return fmt.Sprintf(
-		"CASE json_type(data, %s) WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE CAST(%s AS TEXT) END",
-		path, base,
+		"CASE json_type(%s, %s) WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE CAST(%s AS TEXT) END",
+		document, path, sqliteFieldValueExpr(key),
+	)
+}
+
+// sqliteRangePredicate compares strings bytewise and numbers by their exact
+// JSON tokens. Any other JSON type, or a NULL column, matches nothing.
+func sqliteRangePredicate(key, op, lit string) string {
+	if column, ok := envelopeColumns[key]; ok {
+		if column.numeric {
+			return fmt.Sprintf("(orisun_compare_number(%s, %s) %s 0)", column.expr, lit, op)
+		}
+		return fmt.Sprintf("(%s COLLATE BINARY %s %s)", column.expr, op, lit)
+	}
+	document, path := jsonFieldSource(key)
+	return fmt.Sprintf(
+		"(CASE json_type(%[1]s, %[2]s) WHEN 'text' THEN (%[3]s COLLATE BINARY %[4]s %[5]s) WHEN 'integer' THEN (orisun_compare_number(%[1]s -> %[2]s, %[5]s) %[4]s 0) WHEN 'real' THEN (orisun_compare_number(%[1]s -> %[2]s, %[5]s) %[4]s 0) ELSE 0 END)",
+		document, path, sqliteJSONScalarTextExpr(key), op, lit,
 	)
 }
 
@@ -240,11 +297,10 @@ type SqliteSaveEvents struct {
 	gcTestFlushHook func(batchSize int)
 }
 
-const (
-	sqliteInsertParamsPerEvent = 1
-	sqliteMaxInsertParams      = 999
-	sqliteMaxEventsPerInsert   = sqliteMaxInsertParams / sqliteInsertParamsPerEvent
-)
+// eventReadColumns is the projection scanReadEventRow decodes.
+const eventReadColumns = "transaction_id, global_id, event_id, event_type, data, metadata, date_created, " + eventWriteIDExpr
+
+const insertEventSQL = "INSERT INTO orisun_es_event (global_id, transaction_id, write_id, event_id, event_type, date_created, metadata, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 
 // NewSqliteSaveEvents constructs the saver with the package-default
 // group-commit tuning. Use NewSqliteSaveEventsWithConfig to override.
@@ -298,7 +354,7 @@ func (s *SqliteSaveEvents) SavePrepared(
 // transaction (or savepoint). The caller owns transaction begin/commit/rollback.
 func (s *SqliteSaveEvents) saveEventsOnConn(
 	conn *sqlite.Conn,
-	eventsToInsert []preparedEventDocument,
+	eventsToInsert []preparedEventRow,
 	consistencyJSON string,
 	firstID int64,
 ) (transactionID string, globalID int64, err error) {
@@ -319,36 +375,38 @@ func (s *SqliteSaveEvents) saveEventsOnConn(
 	return strconv.FormatInt(lastID, 10), lastID, nil
 }
 
-// insertEventBatch inserts events in chunks of sqliteMaxEventsPerInsert to stay under
-// SQLite's bound-parameter limit. Callers hold an open transaction, so the full batch
-// commits atomically regardless of chunking.
-func insertEventBatch(conn *sqlite.Conn, events []preparedEventDocument, firstID, transactionID int64) error {
-	fields := map[string]any{
-		"__commitPosition": transactionID,
-		"__dateCreated":    time.Now().UTC().Format(time.RFC3339Nano),
-		"__writeId":        eventstore.WriteID(transactionID, transactionID),
+// insertEventBatch binds one cached statement per event. Callers hold an open
+// transaction, so the full batch commits atomically. The write row precedes the
+// events because write_id references it.
+func insertEventBatch(conn *sqlite.Conn, events []preparedEventRow, firstID, transactionID int64) error {
+	stmt, err := conn.Prepare(insertEventSQL)
+	if err != nil {
+		return err
 	}
-	for start := 0; start < len(events); start += sqliteMaxEventsPerInsert {
-		end := min(start+sqliteMaxEventsPerInsert, len(events))
-		chunk := events[start:end]
-
-		var sb strings.Builder
-		sb.Grow(64 + len(chunk)*5)
-		sb.WriteString("INSERT INTO orisun_es_event (data) VALUES ")
-		insertArgs := make([]any, 0, len(chunk)*sqliteInsertParamsPerEvent)
-		for i, event := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(?)")
-			data, err := positionedDocument(event, firstID+int64(start+i), fields)
-			if err != nil {
-				return err
-			}
-			insertArgs = append(insertArgs, data)
+	defer func() {
+		_ = stmt.Reset()
+		_ = stmt.ClearBindings()
+	}()
+	dateCreated := time.Now().UTC().Format(time.RFC3339Nano)
+	for i := range events {
+		event := &events[i]
+		// Keep validation errors at the insertion boundary: CCC rejection must
+		// retain precedence, and failed requests must not affect their neighbors.
+		if event.err != nil {
+			return event.err
 		}
-
-		if err := sqlitex.Execute(conn, sb.String(), &sqlitex.ExecOptions{Args: insertArgs}); err != nil {
+		stmt.BindInt64(1, firstID+int64(i))
+		stmt.BindInt64(2, transactionID)
+		stmt.BindInt64(3, transactionID)
+		stmt.BindText(4, event.eventID)
+		stmt.BindText(5, event.eventType)
+		stmt.BindText(6, dateCreated)
+		stmt.BindText(7, event.metadata)
+		stmt.BindText(8, event.data)
+		if _, err := stmt.Step(); err != nil {
+			return err
+		}
+		if err := stmt.Reset(); err != nil {
 			return err
 		}
 	}
@@ -434,8 +492,7 @@ func (s *SqliteGetEvents) GetBatch(ctx context.Context, req *eventstore.GetEvent
 	}
 
 	q := fmt.Sprintf(
-		"SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, json_extract(data, '$.__writeId') "+
-			"FROM orisun_es_event WHERE %s ORDER BY transaction_id %s, global_id %s LIMIT %d",
+		"SELECT "+eventReadColumns+" FROM orisun_es_event WHERE %s ORDER BY transaction_id %s, global_id %s LIMIT %d",
 		whereSQL, dirSQL, dirSQL, count,
 	)
 
@@ -504,8 +561,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 		if buildErr != nil {
 			return eventstore.LatestByCriteriaBatch{}, statuscode.Errorf(statuscode.InvalidArgument, "invalid criteria: %v", buildErr)
 		}
-		q := "SELECT transaction_id, global_id, json_extract(data, '$.\"__eventId\"') AS event_id, json_extract(data, '$.\"__eventType\"') AS event_type, data, metadata, date_created, json_extract(data, '$.__writeId') " +
-			"FROM orisun_es_event WHERE " + where +
+		q := "SELECT " + eventReadColumns + " FROM orisun_es_event WHERE " + where +
 			" ORDER BY transaction_id DESC, global_id DESC LIMIT 1"
 
 		// Transient: criteria literals are inlined (see buildCriteriaSQL).
@@ -532,8 +588,7 @@ func (s *SqliteGetEvents) GetLatestByCriteria(ctx context.Context, query eventst
 	return batch, nil
 }
 
-// scanReadEventRow decodes one orisun_es_event row in the canonical query order
-// (transaction_id, global_id, event_id, event_type alias, data, metadata, date_created).
+// scanReadEventRow decodes one eventReadColumns row.
 func scanReadEventRow(stmt *sqlite.Stmt) (eventstore.ReadEvent, error) {
 	created, err := parseSQLiteEventTime(stmt.ColumnText(6))
 	if err != nil {
@@ -542,7 +597,7 @@ func scanReadEventRow(stmt *sqlite.Stmt) (eventstore.ReadEvent, error) {
 	return eventstore.ReadEvent{
 		EventId:         stmt.ColumnText(2),
 		EventType:       stmt.ColumnText(3),
-		Data:            eventdata.WithoutStorageEnvelope(stmt.ColumnText(4)),
+		Data:            stmt.ColumnText(4),
 		Metadata:        stmt.ColumnText(5),
 		CommitPosition:  stmt.ColumnInt64(0),
 		PreparePosition: stmt.ColumnInt64(1),
@@ -993,8 +1048,7 @@ func buildSQLiteBoundaryIndexDDL(
 			JsonKey:   f.JsonKey,
 			ValueType: valueType,
 		}
-		path := jsonPathLiteral(f.JsonKey)
-		base := fmt.Sprintf("json_extract(data, %s)", path)
+		base := sqliteFieldValueExpr(f.JsonKey)
 		switch valueType {
 		case "numeric":
 			exprs = append(exprs, "CAST("+base+" AS REAL)")
@@ -1006,7 +1060,7 @@ func buildSQLiteBoundaryIndexDDL(
 			exprs = append(exprs, sqliteJSONScalarTextExpr(f.JsonKey))
 		}
 	}
-	exprs = append(exprs, "transaction_id DESC", "global_id DESC")
+	exprs = append(exprs, "transaction_id", "global_id")
 
 	var whereClause string
 	if len(conditions) > 0 {
@@ -1038,7 +1092,7 @@ func buildSQLiteBoundaryIndexDDL(
 	return ddl, normalizedFields, nil
 }
 
-// CreateBoundaryIndex builds a partial expression index over orisun_es_event.data JSON keys.
+// CreateBoundaryIndex builds a partial expression index over event keys.
 // Index name = "{name}_idx" inside the boundary's database.
 func (a *SqliteAdminDB) CreateBoundaryIndex(
 	ctx context.Context,
@@ -1240,7 +1294,7 @@ func buildIndexConditionPredicate(
 	typeByKey map[string]string,
 ) (string, error) {
 	valueType := typeByKey[c.Key]
-	base := fmt.Sprintf("json_extract(data, %s)", jsonPathLiteral(c.Key))
+	base := sqliteFieldValueExpr(c.Key)
 	switch normalizeIndexValueType(valueType) {
 	case "numeric":
 		f, ok := criterionFiniteFloat(c.Value)

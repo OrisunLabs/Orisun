@@ -29,7 +29,7 @@ func TestGroupCommitInterleavingsMatchSerialReads(t *testing.T) {
 					for _, p := range []*BoundaryPools{refPool, pool} {
 						conn, err := p.Write.Take(t.Context())
 						require.NoError(t, err)
-						require.NoError(t, sqlitex.Execute(conn, `CREATE TRIGGER fail_insert BEFORE INSERT ON orisun_es_event WHEN json_extract(NEW.data,'$.__eventType') = 'Fail' BEGIN SELECT RAISE(ABORT,'injected interleaving failure'); END`, nil))
+						require.NoError(t, sqlitex.Execute(conn, `CREATE TRIGGER fail_insert BEFORE INSERT ON orisun_es_event WHEN NEW.event_type = 'Fail' BEGIN SELECT RAISE(ABORT,'injected interleaving failure'); END`, nil))
 						p.Write.Put(conn)
 						if indexed {
 							admin := NewSqliteAdminDB(map[string]*BoundaryPools{gcBoundary: p}, gcBoundary, saver.logger)
@@ -157,14 +157,14 @@ func TestGroupCommitInterleavingsMatchSerialReads(t *testing.T) {
 							require.Equal(t, expected[n].gid, got.globalID)
 						}
 					}
-					// Compare persisted documents except timestamps, plus exact write contexts
+					// Compare persisted events except timestamps, plus exact write contexts
 					// and the next sequence value. Rejected events must not leave any residue.
 					snapshot := func(p *BoundaryPools) []string {
 						conn, err := p.Read.Take(t.Context())
 						require.NoError(t, err)
 						defer p.Read.Put(conn)
 						var rows []string
-						require.NoError(t, sqlitex.Execute(conn, `SELECT json_remove(data,'$.__dateCreated') FROM orisun_es_event ORDER BY transaction_id,global_id`, &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error { rows = append(rows, stmt.ColumnText(0)); return nil }}))
+						require.NoError(t, sqlitex.Execute(conn, `SELECT json_array(transaction_id,global_id,write_id,event_id,event_type,metadata,data) FROM orisun_es_event ORDER BY transaction_id,global_id`, &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error { rows = append(rows, stmt.ColumnText(0)); return nil }}))
 						require.NoError(t, sqlitex.Execute(conn, `SELECT consistency FROM orisun_es_write ORDER BY write_id`, &sqlitex.ExecOptions{ResultFunc: func(stmt *sqlite.Stmt) error { rows = append(rows, stmt.ColumnText(0)); return nil }}))
 						return rows
 					}
