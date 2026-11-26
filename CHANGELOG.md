@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Server builds, container images and CI use Go 1.27.4. Source builds require
+  Go 1.27.4 or newer.
 - SQLite stores the event envelope in typed columns and keeps only application
   fields in `data`, clustering the log by `global_id`. Criteria, index
   definitions, and live filters on reserved `__*` fields are unchanged. Startup
