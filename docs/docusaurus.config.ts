@@ -1,5 +1,25 @@
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import {themes as prismThemes, type PrismTheme} from 'prism-react-renderer';
+
+// Light code theme with every token at WCAG AA (>= 4.5:1) against its background.
+// The stock light themes (github, oneLight) use pale comment/number/keyword colors.
+const lightCodeTheme: PrismTheme = {
+  plain: {color: '#1f2328', backgroundColor: '#f6f8fa'},
+  styles: [
+    {types: ['comment', 'prolog', 'doctype', 'cdata'], style: {color: '#57606a', fontStyle: 'italic'}},
+    {types: ['punctuation', 'operator'], style: {color: '#1f2328'}},
+    {types: ['string', 'char', 'attr-value', 'template-string'], style: {color: '#0a3069'}},
+    {types: ['keyword', 'atrule', 'selector', 'tag', 'important'], style: {color: '#cf222e'}},
+    {types: ['function', 'function-variable', 'class-name', 'builtin'], style: {color: '#8250df'}},
+    {
+      types: ['number', 'boolean', 'constant', 'variable', 'property', 'attr-name', 'symbol', 'entity', 'url', 'regex'],
+      style: {color: '#0550ae'},
+    },
+    {types: ['inserted'], style: {color: '#116329'}},
+    {types: ['deleted'], style: {color: '#82071e'}},
+  ],
+};
 
 const config: Config = {
   title: 'Orisun',
@@ -26,6 +46,21 @@ const config: Config = {
       attributes: {
         rel: 'stylesheet',
         href: 'https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700,800&display=swap',
+      },
+    },
+    {
+      tagName: 'link',
+      attributes: {rel: 'preconnect', href: 'https://fonts.googleapis.com'},
+    },
+    {
+      tagName: 'link',
+      attributes: {rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: 'anonymous'},
+    },
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'stylesheet',
+        href: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400..700;1,400..700&display=swap',
       },
     },
   ],
@@ -147,6 +182,8 @@ const config: Config = {
       copyright: `Copyright ${new Date().getFullYear()} Orisun contributors. Released under the MIT License.`,
     },
     prism: {
+      theme: lightCodeTheme,
+      darkTheme: prismThemes.vsDark,
       additionalLanguages: ['bash', 'go', 'java', 'json', 'typescript', 'yaml', 'protobuf'],
     },
     tableOfContents: {
